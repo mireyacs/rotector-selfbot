@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
         print(report.describe())
         if report.backup:
             print(f"Previous version saved as {report.backup}")
+            print(
+                "Note: that backup contains whatever your config did, token "
+                "included. It is covered by .gitignore here; if you keep your "
+                "config elsewhere, make sure the .bak is ignored too."
+            )
         return 0
 
     if args.command == "proxies":

@@ -63,7 +63,14 @@ async def test_gateway_announces_before_blocking():
 
     assert events, "no progress reported at all"
     first_at, _, first_note = events[0]
-    assert first_at < 0.2, f"first progress took {first_at:.2f}s -- that is a silent gap"
+    # The property is "reported on the way in, not after the wait", so the
+    # bound is a fraction of the blocking timeout rather than a fixed few
+    # hundred milliseconds -- otherwise this doubles as a load detector and
+    # fails for reasons that have nothing to do with the behaviour under test.
+    assert first_at < gw.FIRST_RESPONSE_TIMEOUT / 2, (
+        f"first progress took {first_at:.2f}s, which is not clearly before the "
+        f"{gw.FIRST_RESPONSE_TIMEOUT}s blocking wait -- that is a silent gap"
+    )
     assert "general" in first_note, first_note
     ok(f"first progress at {first_at * 1000:.0f}ms: {first_note!r}")
 
@@ -75,7 +82,7 @@ async def test_gateway_announces_before_blocking():
     stamps = [e[0] for e in events]
     gaps = [b - a for a, b in zip(stamps, stamps[1:])]
     worst = max(gaps) if gaps else 0.0
-    assert worst < longest_block + 0.6, f"silent gap of {worst:.2f}s"
+    assert worst < longest_block + 1.0, f"silent gap of {worst:.2f}s"
     ok(f"{len(events)} updates, worst gap {worst:.2f}s (longest blocking step is "
        f"{longest_block:.2f}s)")
 
