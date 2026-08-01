@@ -1,9 +1,10 @@
 # rotector-selfbot
 
-A terminal UI that lists the Discord servers your account is in, reads the
-member list of the one you pick, and checks every member against the
-[Rotector](https://rotector.com) database — surfacing accounts with detected
-violations so you can tell who is a potential threat before interacting.
+A terminal UI that lists your Discord **servers, friends, incoming friend
+requests and group DMs**, reads the members of whichever you pick, and checks
+every one against the [Rotector](https://rotector.com) database — surfacing
+accounts with detected violations so you can tell who is a potential threat
+before interacting.
 
 ```
  SERVERS                     │ RESULTS - Test Server A
@@ -47,6 +48,20 @@ python3 -m venv .venv
 
 ## Configure
 
+Settings get added between versions, and a config written against an older one
+silently falls back to defaults for anything it does not mention. To bring an
+existing file up to date:
+
+```bash
+./.venv/bin/python -m rsb migrate --dry-run   # list what is missing
+./.venv/bin/python -m rsb migrate             # add it
+```
+
+It only *appends* what is absent, with each setting's explanatory comment. Your
+values, comments and layout are untouched, nothing is reordered, and the
+previous file is kept as `config.toml.bak`. Running it twice changes nothing.
+
+
 ```bash
 cp config.example.toml config.toml   # then put your token in it
 ```
@@ -75,15 +90,22 @@ for elevated limits.
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Move between servers / results |
-| `s` / `enter` | Scan the selected server |
+| `s` / `enter` | Scan the selected source |
 | `f` | Cycle filter: Findings → Threats → Caution+ → Tracked servers → Everything |
 | `/` | Search by name, Discord id, or linked Roblox username |
 | `e` | Export — opens a dialog for formats, scope and columns |
 | `c` | Copy the selected member's full findings to the clipboard |
-| `k` / `b` | Kick / ban the selected member |
+| `p` | Purge your own messages in the conversation with them |
+| `o` / `O` | Sort by next column / reverse — or click a header |
+| `k` / `b` | Act on the selected member (meaning depends on the source) |
 | `x` | Stop a running scan |
-| `ctrl+r` | Reload the server list |
+| `L` | Leave the selected group DM |
+| `[` `]` | Narrow / widen the sources pane (or drag the divider) |
+| `ctrl+r` | Reload the source list |
 | `q` | Quit |
+
+The divider between the two panes is **draggable** — grab it with the mouse, or
+use `[` and `]`. It clamps so neither pane can be squashed out of existence.
 
 Highlighting a row fills the detail pane with every linked Roblox account, its
 flag type, category, confidence, and the full reason text and evidence Rotector
@@ -126,6 +148,25 @@ limiter is holding for a window to roll over.
 
 CLI flags (`--token`, `--api-key`, `--rate-limit`, `--window`, `--reserve`,
 `--max-members`, `--include-bots`) override the config file. See `-m rsb --help`.
+
+## What you can scan
+
+The left pane lists four kinds of source:
+
+| Source | Members from | Coverage |
+|--------|--------------|----------|
+| **Incoming friend requests** | one REST call | complete |
+| **Friends** | one REST call | complete |
+| **Group DMs** | the channel's recipient list | complete |
+| **Servers** | the gateway member list | best effort — see below |
+
+Friend requests are listed first: someone who has just added you is exactly who
+you want checked *before* deciding, and the list is short. Blocked users and
+your own outgoing requests are not listed; 1:1 DMs are not either, since their
+recipient is normally a friend already.
+
+Friends and group DMs come back whole from a single request — no sidebar, no
+permission questions, no coverage caveat. They are also near-instant.
 
 ## How a scan works
 
@@ -238,13 +279,52 @@ exports/My-Server-20260801T120000Z/
 Ticking *Remember these settings* writes them to `[export]` in `config.toml`.
 Only that section is rewritten — comments elsewhere in the file survive.
 
+### Sorting
+
+Click any column header in either table to sort by it; click the same header
+again to reverse. `o` moves to the next column on whichever table has focus and
+`O` flips the direction, so it works without a mouse. The sorted column carries
+a `^` / `v` marker in its header.
+
+Results sort worst-verdict-first by default, which is the point of the tool.
+Sorting by **Category** groups findings by kind — every Condo case together,
+every CSAM case together. Members with no value in the sorted column always
+sink to the bottom rather than floating to the top in one direction.
+
+### Retention
+
+Rotector's terms forbid keeping their responses beyond 24 hours, so export
+folders older than that are cleared automatically when you next export.
+*Preserve older exports* in the dialog (or `export.preserve` in the config)
+turns that off and makes retention your responsibility.
+
+The cleanup is deliberately timid, since it deletes files. A folder is only
+removed if it sits directly under the export directory, its name carries a
+timestamp this tool wrote, **and** its `README.txt` contains our marker line.
+Anything else — a folder you made, an unrelated directory, a loose file — is
+left alone no matter how old it is.
+
 ## Acting on a member
 
 `c` copies the selected member's findings — verdict, every linked Roblox
 account, reasons, evidence, profile links — as plain text with attribution.
 
-`k` and `b` kick or ban, with a reason that is either generated from the
-Rotector finding or written by you. Both open a dialog showing the exact text
+`k` and `b` act on the member, and mean different things per source — kicking
+a friend is meaningless, as is banning someone from a group DM:
+
+| Source | `k` | `b` |
+|--------|-----|-----|
+| Server | kick | ban |
+| Friends | remove friend | block |
+| Friend requests | decline request | block |
+| Group DM | remove from group | block |
+
+`L` leaves the selected group DM, with a **silent** option that suppresses the
+"left the group" message the others would otherwise see. Tick *Remember* and it
+becomes the default via `moderation.silent_leave`.
+
+For servers, the reason is either generated from the Rotector finding or
+written by you. Both open a dialog showing the exact text
 that will land in the audit log. Two things are enforced rather than left to
 judgement:
 
@@ -252,13 +332,47 @@ judgement:
   actioned on their data can appeal, so `Appeal at rotector.com` is added to
   every reason including your own — and the appeal link is never what gets
   trimmed when a reason is too long for Discord's 512-character limit.
-- **Non-actionable findings are refused.** Rotector documents only *Flagged*
-  and *Confirmed* as safe to action. Anything else — including `NO DETECTIONS`
-  and `UNKNOWN` — is blocked by `moderation.require_threat`. Turning that off
-  still shows what is wrong with the action and still requires an explicit
-  per-action acknowledgement; it never becomes routine.
+- **Non-actionable findings are refused — for kicks and bans.** Rotector
+  documents only *Flagged* and *Confirmed* as safe to action. Anything else,
+  including `NO DETECTIONS` and `UNKNOWN`, is blocked by
+  `moderation.require_threat`. Turning that off still shows what is wrong with
+  the action and still requires an explicit per-action acknowledgement; it
+  never becomes routine.
+
+  The gate deliberately does **not** apply to unfriending, blocking, declining
+  a request or removing someone from your own group DM. Those restrict nobody's
+  access to a community — they are your own boundaries to set, and requiring a
+  database's endorsement before you may block someone would be absurd. The
+  verdict is still shown as context.
 
 Actioned rows are struck through and tagged `[kicked]` / `[banned]`.
+
+## Purging your messages
+
+`p` deletes **your own** messages from the conversation with the selected
+member — a DM, or the group DM you are viewing.
+
+> Only your messages. Discord provides no way to remove someone else's messages
+> from a conversation, so their side stays exactly where it is. What this
+> removes is your contributions, which is the part you actually control.
+
+The flow is deliberately two-step, because deletion cannot be undone:
+
+1. **Preview.** You choose how far back to look (days, or a cap on messages)
+   and the history is read without deleting anything. You then see how many of
+   your messages matched, out of how many scanned, with the oldest few shown.
+2. **Confirm.** You type `DELETE`. Only then does anything get removed.
+
+Deletion runs oldest-first, so an interrupted purge leaves the recent tail
+rather than a random scatter, and is paced by `purge.delete_delay` (default 1s)
+because Discord's per-channel delete limit is strict. A single failure is
+recorded and skipped rather than aborting the run.
+
+Looking up the DM is a lookup, not a create — if you have never had a DM with
+someone, this reports that rather than opening a conversation in order to
+delete one that never existed. In a group DM the dialog is explicit that this
+removes *everything* you sent to the group, not only messages aimed at one
+person.
 
 ## Time estimates
 
@@ -421,6 +535,20 @@ The client is built to honour them, but they bind *you*:
   unrelated dispatches stream in, that a silent channel still gives up, and that
   filtered subscriptions drop irrelevant events. Reverting either fix makes this
   suite hang, which is the bug it exists to catch.
+- `test_purge.py` — no network: that planning collects only your own messages
+  and deletes nothing, pagination and both limits, oldest-first deletion order,
+  survival of individual failures, mid-run stopping, and that the DM lookup
+  never opens a conversation that did not exist.
+- `test_sorting.py` — every column of both tables sorts by click and by
+  keyboard, direction toggles, blanks sink, and no row is lost or duplicated.
+- `test_layout_retention.py` — pane resizing and clamping, leaving a group DM
+  (silently, remembered, and removed from the list), the export cleanup's safety
+  rules, and config migration: that user values and comments survive, every
+  schema setting ends up present, and a second run is a no-op.
+- `test_sources.py` — friends/requests/group DMs end to end against the live
+  API: that blocked users and outgoing requests are excluded, 1:1 DMs are not
+  listed as groups, scanning needs no gateway, and that `k`/`b` resolve to
+  unfriend/block/remove-from-group and hit the right endpoint.
 - `test_export.py` — no network: CSV segmentation (2,500 rows → 3 self-contained
   parts, all rows preserved), TXT/JSON/README contents, column selection, and
   config round-tripping that proves comments elsewhere in the file survive.
@@ -464,6 +592,9 @@ rsb/
   proxy.py         route pool, health, failover, proxy probing
   export.py        CSV/TXT/JSON renderers and segmentation
   moderation.py    reason construction and actionability rules
+  sources.py       servers, friends, requests and group DMs as one type
+  migrate.py       config schema and the upgrade path for older files
+  purge.py         planning and deleting your own messages
   eta.py           throughput measurement and time estimates
   rotector.py      API client, batching, two-hop scan
   verdict.py       flag-type semantics and verdict mapping

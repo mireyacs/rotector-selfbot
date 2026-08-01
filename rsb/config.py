@@ -85,6 +85,10 @@ class ExportConfig:
     segment_size: int = 1000
     columns: list[str] = field(default_factory=list)
     directory: str = "exports"
+    #: keep exports past the 24h retention window instead of clearing them.
+    #: Rotector's terms forbid retaining their responses that long, so leaving
+    #: this off means old export folders are swept up automatically.
+    preserve: bool = False
 
 
 @dataclass
@@ -101,6 +105,24 @@ class ModerationConfig:
     default_reason: str = "Flagged by Rotector: {reason}"
     #: message history to purge on ban, in seconds (0-604800)
     delete_message_seconds: int = 0
+    #: leave group DMs without posting a "left the group" message
+    silent_leave: bool = False
+
+
+@dataclass
+class PurgeConfig:
+    """Deleting your own messages from a conversation.
+
+    Only ever your own -- Discord provides no way to remove someone else's
+    messages from a DM.
+    """
+
+    #: seconds between deletions; Discord's per-channel delete bucket is strict
+    delete_delay: float = 1.0
+    #: cap on how many of your messages to collect. 0 = no cap
+    max_messages: int = 0
+    #: only consider history this recent, in days. 0 = all of it
+    max_age_days: int = 0
 
 
 @dataclass
@@ -111,6 +133,7 @@ class Config:
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     moderation: ModerationConfig = field(default_factory=ModerationConfig)
+    purge: PurgeConfig = field(default_factory=PurgeConfig)
     source: Path | None = None
 
     def proxy_urls(self) -> list[str]:
@@ -181,9 +204,15 @@ class Config:
                 setattr(self.export, key, export[key])
 
         moderation = data.get("moderation") or {}
-        for key in ("require_threat", "default_reason", "delete_message_seconds"):
+        for key in ("require_threat", "default_reason", "delete_message_seconds",
+                    "silent_leave"):
             if key in moderation and moderation[key] is not None:
                 setattr(self.moderation, key, moderation[key])
+
+        purge = data.get("purge") or {}
+        for key in ("delete_delay", "max_messages", "max_age_days"):
+            if key in purge and purge[key] is not None:
+                setattr(self.purge, key, purge[key])
 
         proxy = data.get("proxy") or {}
         for key in ("enabled", "file", "list", "direct_as_fallback",
@@ -207,8 +236,40 @@ class Config:
             "segment_size": self.export.segment_size,
             "columns": self.export.columns,
             "directory": self.export.directory,
+            "preserve": self.export.preserve,
         }
         write_section(path, "export", body)
+        self.source = path
+        return path
+
+    def save_moderation_settings(self) -> Path:
+        """Persist the [moderation] section, leaving the rest of the file intact."""
+        path = self.config_path()
+        write_section(
+            path,
+            "moderation",
+            {
+                "require_threat": self.moderation.require_threat,
+                "default_reason": self.moderation.default_reason,
+                "delete_message_seconds": self.moderation.delete_message_seconds,
+                "silent_leave": self.moderation.silent_leave,
+            },
+        )
+        self.source = path
+        return path
+
+    def save_purge_settings(self) -> Path:
+        """Persist the [purge] section, leaving the rest of the file intact."""
+        path = self.config_path()
+        write_section(
+            path,
+            "purge",
+            {
+                "delete_delay": self.purge.delete_delay,
+                "max_messages": self.purge.max_messages,
+                "max_age_days": self.purge.max_age_days,
+            },
+        )
         self.source = path
         return path
 

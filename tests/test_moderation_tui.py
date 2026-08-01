@@ -36,6 +36,8 @@ class FakeHTTP:
     async def guilds(self):
         return [Guild(id="111", name="Srv", owner=True, permissions=8,
                       member_count=len(MEMBERS), presence_count=2)]
+    async def relationships(self): return []
+    async def private_channels(self): return []
     async def channels(self, gid):
         from rsb.discord.http import Channel
         return [Channel(id="c1", name="general", type=0, position=0,

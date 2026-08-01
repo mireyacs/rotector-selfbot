@@ -77,6 +77,8 @@ class FakeHTTP:
     async def guilds(self):
         return [Guild(id="111", name="Streaming Server", owner=False, permissions=0,
                       member_count=WAVES * PER_WAVE, presence_count=10)]
+    async def relationships(self): return []
+    async def private_channels(self): return []
     async def channels(self, gid):
         return [Channel(id="c1", name="general", type=0, position=0,
                         everyone_can_view=True)]

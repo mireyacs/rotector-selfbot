@@ -1,126 +1,137 @@
+# rotector-selfbot configuration.
+#
 # Copy to config.toml (same directory) or to
-# ~/.config/rotector-selfbot/config.toml, then fill in your token.
+# ~/.config/rotector-selfbot/config.toml.
 #
 # config.toml is gitignored. Treat the token like a password: anyone holding it
 # has full control of the account.
+#
+# Upgrading from an older version? Add any newly introduced settings with:
+#
+#     python -m rsb migrate            # apply
+#     python -m rsb migrate --dry-run  # just show what is missing
+#
+# It only appends what is absent -- your values and comments are left alone,
+# and the previous file is kept as config.toml.bak.
 
+
+# Your Discord user token. DISCORD_TOKEN overrides this.
 [discord]
-# Your Discord user token. Also readable from the DISCORD_TOKEN env var,
-# which takes precedence over this file.
+# Treat this like a password.
 token = ""
 
+
+# Rotector API access. ROTECTOR_API_KEY overrides api_key.
 [rotector]
-# Optional. Without a key you get the standard tier, which is plenty for
-# normal use. Request one at https://panel.rotector.com for higher limits.
-# Also readable from ROTECTOR_API_KEY.
+# Optional. Raises your limit on one connection.
 api_key = ""
 
-# Documented standard tier: 50 requests per 10 seconds, scoped per IP.
-# Only raise these if your API key was granted a higher limit.
+# Documented standard tier: 50 per window.
 rate_limit = 50
+
+# Rate limit window, in seconds.
 window = 10.0
 
-# Request units held back as headroom, so a shared IP or a little clock skew
-# cannot push you into a 429. Lower it for more speed, raise it to be safer.
+# Request units held back as safety headroom.
 reserve = 5
 
-# In-memory cache lifetime in seconds. Rotector's Terms of Use forbid keeping
-# responses longer than 24 hours, so this is clamped to just under that.
+# In-memory cache lifetime, clamped under 24h.
 cache_ttl = 3600
 
-# Concurrent in-flight requests. The rate limiter is the real throttle;
-# this just controls how many can be waiting on the wire at once.
+# Concurrent in-flight requests.
 concurrency = 3
 
+
+# What a scan collects and what the results table lists.
 [scan]
-# Bots have no Roblox connections, so scanning them only burns rate limit.
+# Bots have no Roblox connections.
 skip_bots = true
 
-# Cap members pulled per server. 0 means no cap.
+# Cap members per source. 0 = no cap.
 max_members = 0
 
-# In a real server almost everyone has nothing against them, and listing them
-# all buries the few that matter. These hide the noise from the results table.
-# Nothing is discarded -- the counts stay in the summary line and pressing 'f'
-# cycles to "Everything".
-hide_no_detections = true   # Rotector has not flagged them
-hide_unknown = true         # no Rotector-known Roblox account at all
+# Hide members Rotector has not flagged.
+hide_no_detections = true
 
-[proxy]
+# Hide members with no Rotector-known Roblox account.
+hide_unknown = true
+
+
 # Routing Rotector lookups over proxies.
-#
-# READ THIS FIRST. Rotector's Terms of Use prohibit "circumventing rate limits
-# through multiple keys, rotating IPs, or other means", and the stated penalty
-# is losing API access. Spreading a scan across proxy IPs is exactly that.
-# The sanctioned way to go faster is an API key from panel.rotector.com, where
-# you can request a higher limit on a single connection.
-#
-# Off by default. Turning it on is your call.
+# Rotector's Terms of Use prohibit circumventing rate limits by
+# rotating IPs. An API key is the sanctioned way to go faster.
+[proxy]
+# Off by default. Enabling it is your call.
 enabled = false
 
-# Newline-delimited proxy list. Blank lines and #comments ignored.
-# Accepts host:port, user:pass@host:port, host:port:user:pass, and
-# scheme://... for http, https, socks4, socks5.
+# Newline-delimited proxy list.
 file = "proxies.txt"
 
-# Extra proxies inline, merged with anything read from `file`.
+# Extra proxies inline.
 list = []
 
-# false -> your connection is a co-equal route and carries traffic alongside
-#          the proxies, so its budget is used too (default)
-# true  -> your connection is held back as a standby, used only once no proxy
-#          is usable
+# false = your connection is a co-equal route and carries work.
 direct_as_fallback = false
 
-# A route is parked on its first failure with escalating backoff. This is the
-# point at which it is also reported as unhealthy in the UI.
+# Failures before a route is marked unhealthy.
 max_failures = 3
 
+# Per-request timeout for proxied calls.
 timeout = 20.0
 
-# Concurrent probes while testing. Proxies are tested against the Rotector API
-# itself -- no third-party IP service is involved.
+# Concurrent probes while testing.
 probe_concurrency = 10
 
-[export]
-# Anything you change in the export dialog can be saved back here by ticking
-# "Remember these settings" -- only this section is rewritten, comments
-# elsewhere in the file are left alone.
 
+# Defaults for the export dialog. Saved here when you tick 'Remember'.
+[export]
 # Any of "csv", "txt", "json".
 formats = ["csv", "txt"]
 
-# "filtered" exports exactly what the results table is showing, honouring the
-# active filter. "all" exports every scanned member regardless of the filter.
+# "filtered" honours the results filter; "all" exports everything.
 scope = "filtered"
 
-# Rows per CSV segment. A long list is split into numbered parts inside a
-# per-export folder so spreadsheets can actually open it. 0 = one file.
+# Rows per CSV segment. 0 = one file.
 segment_size = 1000
 
-# Columns to write. Empty means the default set. Available:
-#   discord_id, username, display_name, verdict, flag, actionable, category,
-#   confidence, roblox_accounts, roblox_ids, roblox_profiles,
-#   detection_sources, tracked_servers, tracked_server_names, reasons,
-#   evidence, error
+# Columns to write. Empty = the default set.
 columns = []
 
-# Parent folder for exports; each export gets its own dated subfolder.
+# Parent folder for exports.
 directory = "exports"
 
+# Keep exports past the 24h retention window.
+# Off means old export folders are cleared automatically --
+# Rotector's terms forbid retaining their data that long.
+preserve = false
 
+
+# Deleting your own messages from a conversation with a flagged
+# account. Only ever your own -- Discord gives no way to remove
+# someone else's messages from a DM.
+[purge]
+# Seconds between deletions. Discord's delete limit is strict;
+# lowering this mostly buys you 429s and a slower purge.
+delete_delay = 1.0
+
+# Cap on messages collected. 0 = no cap.
+max_messages = 0
+
+# Only history this recent. 0 = all of it.
+max_age_days = 0
+
+
+# Acting on members from the results table.
 [moderation]
-# Kicking and banning from the results table.
-
-# Rotector documents only flag types Flagged and Confirmed as safe to action.
-# With this on, anything else is blocked outright. Turning it off still shows
-# the warning and still requires an explicit acknowledgement per action.
+# Only Flagged/Confirmed may be kicked or banned.
+# Does not apply to unfriending, blocking or leaving a group.
 require_threat = true
 
-# {reason} is replaced by the Rotector finding. The appeal link is appended
-# automatically whatever you put here -- their Terms of Use require that any
-# action taken on their data lets the affected person appeal.
+# {reason} is the finding. The appeal link is always appended.
 default_reason = "Flagged by Rotector: {reason}"
 
-# Message history to purge on ban, in seconds (0-604800). 0 keeps everything.
+# Messages to purge on ban (0-604800).
 delete_message_seconds = 0
+
+# Leave group DMs without posting "left the group".
+silent_leave = false

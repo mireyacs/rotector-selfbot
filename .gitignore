@@ -1,6 +1,16 @@
+# Secrets. config.toml holds a Discord token, proxies.txt holds proxy
+# credentials. The .bak patterns matter as much as the originals: `python -m
+# rsb migrate` writes config.toml.bak, and a backup of a secret is still a
+# secret.
 config.toml
+config.toml.bak
+proxies.txt
+proxies.txt.bak
+*.bak
+
+# Scan results contain personal data and expire after 24h.
 exports/
+
 .venv/
 __pycache__/
 *.pyc
-proxies.txt

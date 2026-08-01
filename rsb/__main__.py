@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="route Rotector lookups over the configured proxies",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with 'migrate', report what is missing without writing anything",
+    )
+    parser.add_argument(
         "--no-proxies",
         action="store_true",
         help="ignore configured proxies for this run",
@@ -54,8 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="scan",
-        choices=("scan", "proxies"),
-        help="'scan' (default) opens the scanner; 'proxies' opens the proxy tester",
+        choices=("scan", "proxies", "migrate"),
+        help=(
+            "'scan' (default) opens the scanner; 'proxies' opens the proxy "
+            "tester; 'migrate' adds newly added settings to an older config"
+        ),
     )
     return parser
 
@@ -87,6 +95,27 @@ def main(argv: list[str] | None = None) -> int:
         config.proxy.enabled = True
     if args.no_proxies:
         config.proxy.enabled = False
+
+    if args.command == "migrate":
+        from .migrate import migrate_config
+
+        target = args.config or config.config_path()
+        report = migrate_config(target, dry_run=args.dry_run)
+        if args.dry_run:
+            if report.changed:
+                print(f"{target} is missing settings:")
+                for name in report.added_sections:
+                    print(f"  [{name}]  (whole section)")
+                for name in report.added_keys:
+                    print(f"  {name}")
+                print("\nRun without --dry-run to add them.")
+            else:
+                print(f"{target} is already up to date.")
+            return 0
+        print(report.describe())
+        if report.backup:
+            print(f"Previous version saved as {report.backup}")
+        return 0
 
     if args.command == "proxies":
         # The tester needs no Discord token -- it only talks to proxies.

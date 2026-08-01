@@ -1,15 +1,22 @@
 from .gateway import DiscordGateway, GatewayError, GuildMember
 from .http import (
+    BLOCKED,
     Channel,
     DiscordAuthError,
     DiscordForbidden,
     DiscordHTTP,
     DiscordHTTPError,
     DiscordNotFound,
+    FRIEND,
+    GROUP_DM_CHANNEL,
     Guild,
+    INCOMING_REQUEST,
+    PrivateChannel,
+    Relationship,
 )
 
 __all__ = [
+    "BLOCKED",
     "Channel",
     "DiscordAuthError",
     "DiscordForbidden",
@@ -17,7 +24,12 @@ __all__ = [
     "DiscordHTTP",
     "DiscordHTTPError",
     "DiscordNotFound",
+    "FRIEND",
+    "GROUP_DM_CHANNEL",
     "GatewayError",
     "Guild",
     "GuildMember",
+    "INCOMING_REQUEST",
+    "PrivateChannel",
+    "Relationship",
 ]

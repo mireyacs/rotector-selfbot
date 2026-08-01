@@ -104,6 +104,8 @@ async def test_app_shows_live_activity():
         async def guilds(self):
             return [Guild(id="111", name="Slow Server", owner=False, permissions=0,
                           member_count=1, presence_count=1)]
+        async def relationships(self): return []
+        async def private_channels(self): return []
         async def channels(self, gid):
             await asyncio.sleep(0.4)          # a slow REST call
             return [Channel(id="c1", name="general", type=0, position=0,

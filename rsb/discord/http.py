@@ -1,7 +1,8 @@
 """Minimal Discord REST client for a user token.
 
-Only the read-only endpoints the scanner needs: identity, guild list and
-channel list.  Nothing here sends messages or mutates state.
+Covers the read-only endpoints the scanner needs -- identity, guilds, channels,
+relationships and private channels -- plus the few moderation actions the UI
+offers. Nothing here sends messages.
 """
 
 from __future__ import annotations
@@ -20,6 +21,16 @@ BROWSER_UA = (
 
 #: text-ish channel types whose member sidebar we can subscribe to
 TEXT_CHANNEL_TYPES = {0, 5}
+
+#: private channel types
+DM_CHANNEL = 1
+GROUP_DM_CHANNEL = 3
+
+#: relationship types, as used by /users/@me/relationships
+FRIEND = 1
+BLOCKED = 2
+INCOMING_REQUEST = 3
+OUTGOING_REQUEST = 4
 
 VIEW_CHANNEL = 1 << 10
 ADMINISTRATOR = 1 << 3
@@ -61,6 +72,73 @@ class Guild:
             member_count=raw.get("approximate_member_count"),
             presence_count=raw.get("approximate_presence_count"),
             icon=raw.get("icon"),
+        )
+
+
+@dataclass
+class Relationship:
+    """An entry from the user's relationship list."""
+
+    user_id: str
+    username: str
+    global_name: str | None
+    discriminator: str
+    nickname: str | None
+    type: int
+    bot: bool = False
+
+    @classmethod
+    def parse(cls, raw: dict) -> "Relationship | None":
+        user = raw.get("user") or {}
+        if not user.get("id"):
+            return None
+        return cls(
+            user_id=str(user["id"]),
+            username=user.get("username") or "unknown",
+            global_name=user.get("global_name"),
+            discriminator=str(user.get("discriminator") or "0"),
+            nickname=raw.get("nickname"),
+            type=int(raw.get("type") or 0),
+            bot=bool(user.get("bot")),
+        )
+
+
+@dataclass
+class PrivateChannel:
+    """A DM or group DM the account is a party to."""
+
+    id: str
+    type: int
+    name: str | None
+    owner_id: str | None
+    recipients: list[dict]
+
+    @property
+    def is_group(self) -> bool:
+        return self.type == GROUP_DM_CHANNEL
+
+    def display_name(self) -> str:
+        if self.name:
+            return self.name
+        names = [
+            r.get("global_name") or r.get("username") or "?"
+            for r in self.recipients[:3]
+        ]
+        label = ", ".join(names) if names else "empty group"
+        if len(self.recipients) > 3:
+            label += f" +{len(self.recipients) - 3}"
+        return label
+
+    @classmethod
+    def parse(cls, raw: dict) -> "PrivateChannel | None":
+        if not raw.get("id"):
+            return None
+        return cls(
+            id=str(raw["id"]),
+            type=int(raw.get("type") or 0),
+            name=raw.get("name"),
+            owner_id=str(raw["owner_id"]) if raw.get("owner_id") else None,
+            recipients=list(raw.get("recipients") or []),
         )
 
 
@@ -184,6 +262,18 @@ class DiscordHTTP:
         out.sort(key=lambda c: (not c.everyone_can_view, c.position))
         return out
 
+    async def relationships(self) -> list[Relationship]:
+        """Friends, pending requests and blocks, in one call."""
+        raw = await self._get("/users/@me/relationships")
+        out = [Relationship.parse(entry) for entry in raw]
+        return [r for r in out if r is not None]
+
+    async def private_channels(self) -> list[PrivateChannel]:
+        """Open DMs and group DMs."""
+        raw = await self._get("/users/@me/channels")
+        out = [PrivateChannel.parse(entry) for entry in raw]
+        return [c for c in out if c is not None]
+
     # -- moderation --------------------------------------------------------
 
     async def kick(self, guild_id: str, user_id: str, reason: str) -> None:
@@ -209,6 +299,66 @@ class DiscordHTTP:
             json={
                 "delete_message_seconds": max(0, min(604800, delete_message_seconds))
             },
+        )
+
+
+    async def remove_friend(self, user_id: str) -> None:
+        """Drop a relationship: unfriend, or withdraw/decline a request."""
+        await self._request("DELETE", f"/users/@me/relationships/{user_id}")
+
+    async def block_user(self, user_id: str) -> None:
+        """Block a user. Also removes any existing friendship."""
+        await self._request(
+            "PUT", f"/users/@me/relationships/{user_id}", json={"type": BLOCKED}
+        )
+
+    async def find_dm_channel(self, user_id: str) -> str | None:
+        """The existing DM channel with ``user_id``, or None.
+
+        Deliberately a lookup rather than ``POST /users/@me/channels``: that
+        endpoint *opens* a DM as a side effect, and opening a conversation with
+        someone in order to delete a conversation that never existed is not
+        what anybody wants.
+        """
+        for channel in await self.private_channels():
+            if channel.type != DM_CHANNEL:
+                continue
+            recipients = channel.recipients or []
+            if len(recipients) == 1 and str(recipients[0].get("id")) == str(user_id):
+                return channel.id
+        return None
+
+    async def channel_messages(
+        self, channel_id: str, limit: int = 100, before: str | None = None
+    ) -> list[dict]:
+        """One page of messages, newest first."""
+        params = {"limit": str(max(1, min(100, limit)))}
+        if before:
+            params["before"] = before
+        resp = await self._request(
+            "GET", f"/channels/{channel_id}/messages", params=params
+        )
+        body = resp.json()
+        return body if isinstance(body, list) else []
+
+    async def delete_message(self, channel_id: str, message_id: str) -> None:
+        await self._request(
+            "DELETE", f"/channels/{channel_id}/messages/{message_id}"
+        )
+
+    async def leave_group_dm(self, channel_id: str, silent: bool = False) -> None:
+        """Leave a group DM.
+
+        ``silent`` suppresses the "left the group" system message the others
+        would otherwise see -- the same option the official client offers.
+        """
+        params = {"silent": "true"} if silent else None
+        await self._request("DELETE", f"/channels/{channel_id}", params=params)
+
+    async def remove_group_recipient(self, channel_id: str, user_id: str) -> None:
+        """Remove someone from a group DM. Only the group owner may do this."""
+        await self._request(
+            "DELETE", f"/channels/{channel_id}/recipients/{user_id}"
         )
 
 
