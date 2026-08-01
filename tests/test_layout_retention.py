@@ -22,6 +22,21 @@ from textual.widgets import Button, Checkbox
 ok = lambda m: print(f"[ok] {m}")
 
 
+def select_source(app, kind):
+    """Move the sources cursor to the first source of ``kind``.
+
+    Sources sit under collapsible group headers, so a source's display row is
+    not its index in app.sources.
+    """
+    from rsb.tui.app import GROUP_KEY
+    from textual.widgets import DataTable
+    table = app.query_one("#guilds", DataTable)
+    key = next(k for k in app._source_rows if k.startswith(f"{kind}:"))
+    table.move_cursor(row=app._source_rows.index(key))
+    return next(s for s in app.sources if f"{s.kind}:{s.id}" == key)
+
+
+
 # --------------------------------------------------------------------------
 # export retention
 # --------------------------------------------------------------------------
@@ -235,10 +250,7 @@ async def test_ui():
 
         # --- leaving a group DM
         table = app.query_one("#guilds", appmod.DataTable)
-        group_index = next(
-            i for i, s in enumerate(app.sources) if s.kind == "group"
-        )
-        table.move_cursor(row=group_index)
+        select_source(app, "group")
         await pilot.pause(0.3)
         before = table.row_count
 
@@ -268,12 +280,13 @@ async def test_ui():
         assert saved["moderation"]["silent_leave"] is True
         ok("silent preference remembered in config.toml")
 
-        assert app.query_one("#guilds", appmod.DataTable).row_count == before - 1
+        # the group row goes, and so does its now-empty group header
+        assert app.query_one("#guilds", appmod.DataTable).row_count < before
         assert not any(s.id == "g1" for s in app.sources)
         ok("the group disappears from the source list once left")
 
         # --- 'L' on a non-group says so rather than doing something odd
-        table.move_cursor(row=0)
+        select_source(app, "guild")
         await pilot.pause(0.2)
         await pilot.press("L")
         await pilot.pause(0.3)

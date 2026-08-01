@@ -19,6 +19,21 @@ from textual.widgets import Button, Checkbox, Input, RadioButton
 
 ok = lambda m: print(f"[ok] {m}")
 
+
+def select_source(app, kind):
+    """Move the sources cursor to the first source of ``kind``.
+
+    Sources sit under collapsible group headers, so a source's display row is
+    not its index in app.sources.
+    """
+    from rsb.tui.app import GROUP_KEY
+    from textual.widgets import DataTable
+    table = app.query_one("#guilds", DataTable)
+    key = next(k for k in app._source_rows if k.startswith(f"{kind}:"))
+    table.move_cursor(row=app._source_rows.index(key))
+    return next(s for s in app.sources if f"{s.kind}:{s.id}" == key)
+
+
 # "1" is Confirmed in Rotector; the rest have no findings
 MEMBERS = {
     "1": GuildMember(id="1", username="flagged", nick="Flagged Guy"),
@@ -57,7 +72,7 @@ class FakeGateway:
     def __init__(self, token): self.user = None
     async def connect(self, timeout=45.0): return {}
     async def fetch_members(self, gid, channels, expected=None, on_progress=None,
-                            on_members=None):
+                            on_members=None, **kwargs):
         if on_members: on_members(list(MEMBERS.values()))
         return dict(MEMBERS)
     async def close(self): pass
@@ -90,6 +105,8 @@ async def main():
 
     async with app.run_test(size=(130, 40)) as pilot:
         await pilot.pause(0.8)
+        select_source(app, "guild")
+        await pilot.pause(0.2)
         await pilot.press("s")
         for _ in range(80):
             await pilot.pause(0.2)

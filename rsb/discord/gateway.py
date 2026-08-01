@@ -23,6 +23,7 @@ import asyncio
 import json
 import random
 import string
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -40,12 +41,25 @@ SETTLE_TIMEOUT = 2.5
 FIRST_RESPONSE_TIMEOUT = 6.0
 #: members per sidebar range
 RANGE_SIZE = 100
+#: Extra ranges requested alongside [0,99] in one subscription.
+#: Discord accepts at most three ranges per channel -- [0,99] plus two more.
+#: Sending a fourth is rejected outright and closes the socket with 4002.
+RANGES_PER_REQUEST = 2
+#: channels subscribed to at once; each carries its own slice of the list.
+#: This, not more ranges, is how a large list is read quickly.
+CHANNELS_PER_REQUEST = 5
 #: absolute cap on one request/drain round, however chatty the guild is
 MAX_ROUND_SECONDS = 20.0
 #: fraction of the guild's member count treated as full coverage
 COVERAGE_TARGET = 0.995
 #: pause between OP 8 prefix queries, to stay clear of the gateway event budget
 PREFIX_QUERY_DELAY = 0.5
+#: Discord's per-query result cap. A query returning exactly this is truncated.
+QUERY_LIMIT = 100
+#: characters prefixes are extended with when a query saturates
+PREFIX_ALPHABET = string.ascii_lowercase + string.digits + "_."
+#: how many characters deep the prefix search may go
+PREFIX_MAX_DEPTH = 2
 #: how long to wait for chunks after an OP 8 query (they arrive promptly)
 CHUNK_TIMEOUT = 1.5
 
@@ -282,6 +296,56 @@ class DiscordGateway:
         if self._fatal:
             raise self._fatal
 
+    async def watch_messages(
+        self,
+        on_author: Callable[[GuildMember], None],
+        should_stop: Callable[[], bool],
+        own_id: str | None = None,
+        include_bots: bool = False,
+        poll: float = 0.5,
+    ) -> int:
+        """Report the author of every incoming message, once each.
+
+        Runs until ``should_stop`` says otherwise. Only the *sender* is
+        reported -- message content is never read, stored or forwarded
+        anywhere; the point is to know who is talking to you, not what was
+        said.
+        """
+        queue = self._subscribe({"MESSAGE_CREATE"})
+        seen: set[str] = set()
+        count = 0
+        try:
+            while not should_stop() and not self._closed:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=poll)
+                except TimeoutError:
+                    continue
+                if item is None:
+                    self._check_alive()
+                    break
+                _event, data = item
+                author = data.get("author") or {}
+                uid = author.get("id")
+                if not uid or str(uid) in seen:
+                    continue
+                if own_id and str(uid) == str(own_id):
+                    continue
+                if author.get("bot") and not include_bots:
+                    continue
+                seen.add(str(uid))
+                member = GuildMember(
+                    id=str(uid),
+                    username=author.get("username") or "unknown",
+                    global_name=author.get("global_name"),
+                    discriminator=str(author.get("discriminator") or "0"),
+                    bot=bool(author.get("bot")),
+                )
+                count += 1
+                on_author(member)
+        finally:
+            self._unsubscribe(queue)
+        return count
+
     # -- member enumeration ------------------------------------------------
 
     async def fetch_members(
@@ -293,16 +357,21 @@ class DiscordGateway:
         on_members: MemberSink | None = None,
         coverage_target: float = COVERAGE_TARGET,
         max_channels: int = 6,
+        can_chunk: bool = False,
     ) -> dict[str, GuildMember]:
         """Enumerate members of ``guild_id``, as completely as possible.
 
         Completeness is the priority, because a member the sidebar never shows
         is a member never checked. Three things serve that:
 
-        * Channels **@everyone can view** are tried first. A sidebar only lists
-          members who can see its channel, so a restricted channel silently
-          yields a partial list -- exactly the failure that is invisible unless
-          you look for it.
+        * If the account holds **kick, ban, manage-roles or administrator** in
+          this guild, Discord will hand over the whole member list -- offline
+          members included -- for a single request. That is tried first, and
+          when it works nothing else is needed.
+        * Channels **@everyone can view** are tried first otherwise. A sidebar
+          only lists members who can see its channel, so a restricted channel
+          silently yields a partial list -- exactly the failure that is
+          invisible unless you look for it.
         * Results from several channels are **unioned**, not replaced, so
           members visible only through one channel are still picked up.
         * If the union still falls short of the guild's member count, the OP 8
@@ -328,11 +397,36 @@ class DiscordGateway:
         def covered() -> bool:
             return bool(expected) and len(members) >= expected * coverage_target
 
+        # The privileged path: one request, everyone, offline included.
+        if can_chunk:
+            if on_progress:
+                on_progress(
+                    0,
+                    expected,
+                    "Requesting the full member list (permitted for this account)",
+                )
+            await self._request_members(
+                guild_id, expected, on_progress, members, emit,
+                coverage_target=coverage_target, open_query_only=True,
+            )
+            if covered() or members:
+                self.last_coverage = (
+                    min(1.0, len(members) / expected) if expected else None
+                )
+                self.last_scrape_channels = ["full member list"]
+                if members and on_progress:
+                    on_progress(
+                        len(members), expected,
+                        f"Received the full member list ({len(members):,})",
+                    )
+                if covered():
+                    return members
+
         open_channels = [c for c in channels if c.everyone_can_view]
         restricted = [c for c in channels if not c.everyone_can_view]
         # everyone-visible first; restricted ones only as a last resort, since
         # each can only ever contribute a subset
-        ordered = (open_channels + restricted)[:max_channels]
+
 
         if not open_channels and on_progress:
             on_progress(
@@ -341,26 +435,35 @@ class DiscordGateway:
                 "No channel is visible to @everyone - member list may be partial",
             )
 
-        for index, channel in enumerate(ordered, start=1):
+        # Try the everyone-visible channels together first; if they yield
+        # nothing, fall back to trying restricted ones one at a time.
+        attempts: list[list[Channel]] = []
+        if open_channels:
+            attempts.append(open_channels[:CHANNELS_PER_REQUEST])
+        attempts += [[c] for c in restricted[:max_channels]]
+
+        for index, group in enumerate(attempts, start=1):
+            if not group:
+                continue
+            label = "/".join(f"#{c.name}" for c in group[:2])
+            if len(group) > 2:
+                label += f" +{len(group) - 2}"
             if on_progress:
                 on_progress(
                     len(members),
                     expected,
-                    f"Opening member list via #{channel.name} "
-                    f"({channel.visibility}, channel {index}/{len(ordered)})",
+                    f"Opening member list via {label} "
+                    f"({group[0].visibility}, attempt {index}/{len(attempts)})",
                 )
             before = len(members)
             await self._scrape_sidebar(
-                guild_id, channel, expected, on_progress, members, emit
+                guild_id, group, expected, on_progress, members, emit
             )
-            gained = len(members) - before
-            if gained:
-                self.last_scrape_channels.append(channel.name)
+            if len(members) > before:
+                self.last_scrape_channels += [c.name for c in group]
             elif on_progress:
                 on_progress(
-                    len(members),
-                    expected,
-                    f"#{channel.name} added nothing, trying the next channel",
+                    len(members), expected, f"{label} added nothing, trying elsewhere"
                 )
             if covered():
                 break
@@ -386,29 +489,69 @@ class DiscordGateway:
     async def _scrape_sidebar(
         self,
         guild_id: str,
-        channel: Channel,
+        channels: Sequence[Channel],
         expected: int | None,
         on_progress: ScrapeProgress | None,
         members: dict[str, GuildMember],
         emit: Callable[[], None],
     ) -> dict[str, GuildMember]:
+        """Read the member sidebar, several channels at a time.
+
+        Discord allows at most three ranges per channel in one OP 14 -- the
+        mandatory [0,99] plus two more. Speed therefore comes from subscribing
+        to several channels in the *same* request, each covering a different
+        window, which is what the real client does. Every everyone-visible
+        channel exposes the same list, so their results simply merge.
+        """
         queue = self._subscribe({"GUILD_MEMBER_LIST_UPDATE"})
-        started_with = len(members)
-        offset = 0
-        total: int | None = expected
-        barren_rounds = 0
+        targets = list(channels)[:CHANNELS_PER_REQUEST]
+        names = "/".join(f"#{c.name}" for c in targets[:2])
+        if len(targets) > 2:
+            names += f" +{len(targets) - 2}"
+
+        windows: deque[tuple[int, int]] = deque()
+        next_start = 0
+        list_size: int | None = None
+        total = expected
+        barren = 0
         first = True
+
+        def refill() -> None:
+            nonlocal next_start
+            if list_size is None:
+                return
+            while next_start < list_size:
+                windows.append((next_start, next_start + RANGE_SIZE - 1))
+                next_start += RANGE_SIZE
 
         try:
             while not self._closed:
                 self._check_alive()
-                ranges = _sidebar_ranges(offset)
+
+                requests: dict[str, list[list[int]]] = {}
+                head = [0, RANGE_SIZE - 1]
+                if first:
+                    # one probe, to learn how long the list actually is
+                    requests[targets[0].id] = [head]
+                else:
+                    for channel in targets:
+                        picked = []
+                        for _ in range(RANGES_PER_REQUEST):
+                            if not windows:
+                                break
+                            lo, hi = windows.popleft()
+                            picked.append([lo, hi])
+                        if picked:
+                            requests[channel.id] = [head, *picked]
+                    if not requests:
+                        break
+
                 await self._send(
                     {
                         "op": 14,
                         "d": {
                             "guild_id": guild_id,
-                            "channels": {channel.id: ranges},
+                            "channels": requests,
                             "members": [],
                             "activities": True,
                             "typing": True,
@@ -418,29 +561,26 @@ class DiscordGateway:
                 )
 
                 before = len(members)
-                invalidated = False
                 got_event = False
+                timeout = FIRST_RESPONSE_TIMEOUT if first else SETTLE_TIMEOUT
 
-                # Reported before draining, so the bar names the range being
-                # waited on rather than the last one that came back.
                 if on_progress:
                     if first:
-                        note = f"Waiting for #{channel.name} member list"
+                        note = f"Waiting for {names} member list"
                     else:
+                        spans = [r for rs in requests.values() for r in rs[1:]]
+                        lo = min(r[0] for r in spans)
+                        hi = max(r[1] for r in spans)
+                        of = f" of {list_size:,}" if list_size else ""
                         note = (
-                            f"Reading #{channel.name} members "
-                            f"{offset:,}-{offset + RANGE_SIZE * 2 - 1:,}"
+                            f"Reading {names} members {lo:,}-{hi:,}{of} "
+                            f"({len(requests)} channels)"
                         )
                     on_progress(len(members), total, note)
 
-                # Deadline-based, never per-item: an unrelated dispatch must
-                # not be able to extend the wait. Only a member list update for
-                # *this* guild pushes the deadline out, and never past the hard
-                # cap, so a chatty guild cannot stall the round forever.
                 now = asyncio.get_running_loop().time()
-                deadline = now + (FIRST_RESPONSE_TIMEOUT if first else SETTLE_TIMEOUT)
+                deadline = now + timeout
                 hard_deadline = now + MAX_ROUND_SECONDS
-
                 while True:
                     now = asyncio.get_running_loop().time()
                     remaining = min(deadline, hard_deadline) - now
@@ -463,37 +603,36 @@ class DiscordGateway:
                     count = data.get("member_count")
                     if isinstance(count, int) and count > 0:
                         total = count
-                    if _absorb_ops(data.get("ops") or [], members):
-                        invalidated = True
+                    groups = data.get("groups")
+                    if isinstance(groups, list) and groups:
+                        rows = sum(
+                            g.get("count", 0) for g in groups if isinstance(g, dict)
+                        )
+                        if rows:
+                            list_size = rows + len(groups)
+                    _absorb_ops(data.get("ops") or [], members)
 
                 if first and not got_event:
-                    # this channel exposes no member list at all
-                    return members
-                first = False
+                    return members  # this channel exposes no member list
+                if first:
+                    first = False
+                    refill()
+                    if not windows:
+                        break
+                    continue
 
+                refill()
                 gained = len(members) - before
                 if gained:
                     emit()
-                if on_progress:
-                    on_progress(len(members), total, f"Reading #{channel.name} member list")
-
-                if gained == 0:
-                    barren_rounds += 1
+                    barren = 0
                 else:
-                    barren_rounds = 0
-
-                if invalidated and gained == 0:
+                    barren += 1
+                if on_progress:
+                    on_progress(len(members), total, f"Reading {names} member list")
+                if barren >= 2:
                     break
-                if barren_rounds >= 2:
-                    break
-
-                offset += RANGE_SIZE * 2
-                if total is not None and offset > total + RANGE_SIZE * 2:
-                    break
-                if offset > 100_000:  # hard stop, sanity only
-                    break
-
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.2)
         finally:
             self._unsubscribe(queue)
 
@@ -506,11 +645,36 @@ class DiscordGateway:
         on_progress: ScrapeProgress | None,
         members: dict[str, GuildMember],
         emit: Callable[[], None],
+        coverage_target: float = COVERAGE_TARGET,
+        max_depth: int = PREFIX_MAX_DEPTH,
+        open_query_only: bool = False,
     ) -> dict[str, GuildMember]:
-        """OP 8 sweep: an open query first, then brute-force prefixes."""
-        queue = self._subscribe({"GUILD_MEMBERS_CHUNK"})
+        """OP 8 sweep: an open query, then adaptively deepened prefix search.
 
-        async def run_query(query: str, limit: int) -> int:
+        A flat pass over single-character prefixes cannot fill a large guild:
+        Discord returns at most :data:`QUERY_LIMIT` matches per query, so 38
+        prefixes can surface 3,800 members at the very most however many the
+        guild actually has.
+
+        So a prefix that comes back *saturated* -- exactly the limit -- is
+        understood to be hiding more, and is re-queried one character deeper
+        ("a" -> "aa", "ab", ...). Prefixes that are not saturated are left
+        alone, so the extra queries are spent only where members are actually
+        being missed.
+        """
+        queue = self._subscribe({"GUILD_MEMBERS_CHUNK"})
+        queries = [0]
+
+        def covered() -> bool:
+            return bool(expected) and len(members) >= expected * coverage_target
+
+        async def run_query(query: str, limit: int = QUERY_LIMIT) -> int:
+            """Send one query; return how many members it *returned*.
+
+            Deliberately the returned count rather than the newly-added count:
+            saturation is a property of the query, and a prefix can return a
+            full hundred that we have all seen before while still hiding more.
+            """
             await self._send(
                 {
                     "op": 8,
@@ -522,9 +686,9 @@ class DiscordGateway:
                     },
                 }
             )
+            queries[0] += 1
             before = len(members)
-            # Same deadline discipline as the sidebar drain: only a chunk for
-            # this guild may extend the wait, and never past the hard cap.
+            returned = 0
             now = asyncio.get_running_loop().time()
             deadline = now + CHUNK_TIMEOUT
             hard_deadline = now + MAX_ROUND_SECONDS
@@ -547,6 +711,7 @@ class DiscordGateway:
                     continue
                 deadline = asyncio.get_running_loop().time() + CHUNK_TIMEOUT
                 for raw in data.get("members") or []:
+                    returned += 1
                     member = GuildMember.parse(raw)
                     if member:
                         members[member.id] = member
@@ -554,48 +719,73 @@ class DiscordGateway:
                 count = data.get("chunk_count")
                 if index is None or count is None or index >= count - 1:
                     break
-            gained = len(members) - before
-            if gained:
+            if len(members) > before:
                 emit()
-            return gained
+            return returned
+
+        async def sweep(prefix: str, depth: int) -> None:
+            if covered():
+                return
+            self._check_alive()
+            if on_progress:
+                have = f"{len(members):,}"
+                want = f" of {expected:,}" if expected else ""
+                on_progress(
+                    len(members),
+                    expected,
+                    f"Searching members by name '{prefix}' "
+                    f"(query {queries[0] + 1}, {have}{want} found)",
+                )
+            returned = await run_query(prefix)
+            await asyncio.sleep(PREFIX_QUERY_DELAY)
+            # a full page back means the query was truncated, not exhausted
+            if returned >= QUERY_LIMIT and depth < max_depth:
+                for char in PREFIX_ALPHABET:
+                    if covered():
+                        return
+                    await sweep(prefix + char, depth + 1)
 
         try:
-            # With MANAGE_GUILD/elevated permissions this returns everyone.
+            # With elevated permissions an empty query returns everyone at once.
             if on_progress:
-                on_progress(0, expected, "Requesting all members (OP 8 open query)")
+                on_progress(
+                    len(members), expected, "Requesting all members (OP 8 open query)"
+                )
             await run_query("", 0)
 
-            if expected is None or len(members) < expected * 0.9:
-                alphabet = string.ascii_lowercase + string.digits + "_."
-                for i, prefix in enumerate(alphabet):
-                    self._check_alive()
-                    if on_progress:
-                        on_progress(
-                            len(members),
-                            expected,
-                            f"Searching members by prefix '{prefix}' "
-                            f"({i + 1}/{len(alphabet)})",
-                        )
-                    await run_query(prefix, 100)
-                    if expected and len(members) >= expected:
-                        break  # whole guild accounted for, no need to sweep on
-                    await asyncio.sleep(PREFIX_QUERY_DELAY)
+            if not covered() and not open_query_only:
+                for char in PREFIX_ALPHABET:
+                    if covered():
+                        break
+                    await sweep(char, 1)
         finally:
             self._unsubscribe(queue)
 
+        if on_progress:
+            on_progress(
+                len(members),
+                expected,
+                f"Name search finished after {queries[0]:,} queries",
+            )
         return members
 
 
-def _sidebar_ranges(offset: int) -> list[list[int]]:
-    """Ranges for one OP 14. ``[0,99]`` is always included, as the client does."""
+def _sidebar_ranges(offset: int, count: int = RANGES_PER_REQUEST) -> list[list[int]]:
+    """Ranges for one OP 14 subscription.
+
+    ``[0,99]`` is always included, as the real client does. Beyond that the
+    client accepts several ranges per request, so asking for a few consecutive
+    windows at once is what makes a large list finish in minutes rather than
+    tens of minutes.
+    """
     head = [0, RANGE_SIZE - 1]
     if offset == 0:
         return [head]
-    return [
-        head,
-        [offset, offset + RANGE_SIZE - 1],
-        [offset + RANGE_SIZE, offset + RANGE_SIZE * 2 - 1],
-    ]
+    ranges = [head]
+    for index in range(count):
+        start = offset + index * RANGE_SIZE
+        ranges.append([start, start + RANGE_SIZE - 1])
+    return ranges
 
 
 def _absorb_ops(ops: list[dict], members: dict[str, GuildMember]) -> bool:

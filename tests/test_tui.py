@@ -40,7 +40,7 @@ class FakeGateway:
     async def connect(self, timeout=45.0):
         self.user = {"username": "tester"}; return self.user
     async def fetch_members(self, gid, channels, expected=None, on_progress=None,
-                            on_members=None):
+                            on_members=None, **kwargs):
         if on_progress: on_progress(len(MEMBERS), expected, "#general")
         # members are streamed to the caller as they are discovered
         if on_members: on_members(list(MEMBERS.values()))
@@ -60,11 +60,18 @@ async def main():
     async with app.run_test(size=(130, 42)) as pilot:
         await pilot.pause(1.0)
         guilds = app.query_one("#guilds", appmod.DataTable)
-        assert guilds.row_count == 2, f"guild rows={guilds.row_count}"
+        # the pane groups sources under collapsible headers now
+        from rsb.tui.app import GROUP_KEY
+        real = [k for k in app._source_rows if not k.startswith(GROUP_KEY)]
+        assert sum(1 for k in real if k.startswith("guild:")) == 2, real
+        print(f"[ok] sources pane: {len(real)} sources under "
+              f"{len(app._source_rows) - len(real)} group headers")
         print(f"[ok] guild list populated: {guilds.row_count} rows")
 
         # highlighting a server shows a pre-scan time estimate
-        guilds.move_cursor(row=0)
+        guilds.move_cursor(row=app._source_rows.index(
+            next(k for k in app._source_rows if k.startswith("guild:"))
+        ))
         await pilot.pause(0.4)
         estimate = app.query_one("#detail-body", appmod.Static)
         # Static keeps its content in a name-mangled attribute in Textual 8
@@ -131,7 +138,9 @@ async def main():
         print(f"[ok] 'Everything' restores all {len(MEMBERS)} rows; cycle wraps to "
               f"{app.filter_mode.value}")
 
-        # search
+        # search targets whichever table has focus
+        app.query_one("#results", appmod.DataTable).focus()
+        await pilot.pause(0.2)
         await pilot.press("slash"); await pilot.pause(0.2)
         for ch in "suspicious": await pilot.press(ch)
         await pilot.pause(0.4)
@@ -140,7 +149,28 @@ async def main():
         assert n == 1
         await pilot.press("escape")
         app.query_one("#search", appmod.Input).value = ""
+        app.search_term = ""
+        app._rebuild_table()
         await pilot.pause(0.3)
+
+        # the same key filters the sources pane when that has focus
+        app.query_one("#guilds", appmod.DataTable).focus()
+        await pilot.pause(0.2)
+        await pilot.press("slash"); await pilot.pause(0.2)
+        assert app._search_target == "guilds", app._search_target
+        for ch in "another":
+            await pilot.press(ch)
+        await pilot.pause(0.5)
+        from rsb.tui.app import GROUP_KEY
+        visible = [k for k in app._source_rows if not k.startswith(GROUP_KEY)]
+        assert len(visible) == 1, visible
+        print(f"[ok] source search narrowed the pane to {len(visible)} source")
+        # escape closes it; "/" would just type a slash into the focused input
+        await pilot.press("escape"); await pilot.pause(0.4)
+        assert app.source_search == "", app.source_search
+        restored = [k for k in app._source_rows if not k.startswith(GROUP_KEY)]
+        assert len(restored) > 1, restored
+        print(f"[ok] clearing it restores all {len(restored)} sources")
 
         # --- export: dialog, filter scope, segmentation, remembered defaults
         import tempfile

@@ -24,6 +24,7 @@ from rsb.discord.http import (
 )
 from rsb.sources import (
     KIND_FRIENDS,
+    KIND_INBOX,
     KIND_GROUP,
     KIND_GUILD,
     KIND_REQUESTS,
@@ -34,6 +35,25 @@ from rsb.verdict import Verdict
 from textual.widgets import Button
 
 ok = lambda m: print(f"[ok] {m}")
+
+def select_source(app, kind):
+    """Move the sources cursor to the first source of ``kind``.
+
+    The pane groups sources under collapsible headers, so a source's display
+    row is not its index in app.sources.
+    """
+    from textual.widgets import DataTable
+    table = app.query_one("#guilds", DataTable)
+    key = next(k for k in app._source_rows if k.startswith(f"{kind}:"))
+    table.move_cursor(row=app._source_rows.index(key))
+    return next(s for s in app.sources if f"{s.kind}:{s.id}" == key)
+
+
+def source_rows(app):
+    """Display keys for real sources, excluding group headers."""
+    from rsb.tui.app import GROUP_KEY
+    return [k for k in app._source_rows if not k.startswith(GROUP_KEY)]
+
 
 
 def rel(uid, type_, name=None):
@@ -77,8 +97,9 @@ def test_build_sources():
     sources = build_sources(guilds, RELATIONSHIPS, CHANNELS)
     kinds = [s.kind for s in sources]
 
-    assert kinds[0] == KIND_REQUESTS, kinds
-    ok(f"source order puts friend requests first: {kinds}")
+    assert kinds[0] == KIND_INBOX, kinds
+    assert kinds[1] == KIND_REQUESTS, kinds
+    ok(f"live inbox first, then friend requests: {kinds}")
 
     friends = next(s for s in sources if s.kind == KIND_FRIENDS)
     assert friends.member_count == 3, friends.member_count
@@ -101,12 +122,17 @@ def test_build_sources():
     ok(f"group DMs listed ({[g.name for g in groups]}); unnamed ones "
        f"fall back to recipient names")
 
-    assert all(s.is_complete for s in sources if s.kind != KIND_GUILD)
+    complete = {KIND_FRIENDS, KIND_REQUESTS, KIND_GROUP}
+    assert all(s.is_complete for s in sources if s.kind in complete)
     assert not next(s for s in sources if s.kind == KIND_GUILD).is_complete
-    ok("friends/requests/groups report complete coverage; guilds do not")
+    # the inbox is a live feed: it never "completes" at all
+    inbox = next(s for s in sources if s.kind == KIND_INBOX)
+    assert inbox.is_live and not inbox.is_complete
+    ok("friends/requests/groups are complete; guilds are not; the inbox is live")
 
     assert build_sources(guilds, [], []) == build_sources(guilds)
-    assert len(build_sources(guilds)) == 1
+    bare = build_sources(guilds)
+    assert [s.kind for s in bare] == [KIND_INBOX, KIND_GUILD], bare
     ok("an account with no friends or group DMs still lists its servers")
 
 
@@ -139,9 +165,7 @@ class FakeGateway:
 
 async def scan_kind(app, pilot, kind):
     """Select the first source of ``kind`` and scan it."""
-    table = app.query_one("#guilds", appmod.DataTable)
-    index = next(i for i, s in enumerate(app.sources) if s.kind == kind)
-    table.move_cursor(row=index)
+    source = select_source(app, kind)
     await pilot.pause(0.3)
     app.rows.clear()
     await pilot.press("s")
@@ -149,7 +173,7 @@ async def scan_kind(app, pilot, kind):
         await pilot.pause(0.2)
         if app.rows and not app._activity:
             break
-    return app.sources[index]
+    return source
 
 
 async def main():
@@ -166,9 +190,12 @@ async def main():
     async with app.run_test(size=(130, 40)) as pilot:
         await pilot.pause(0.8)
         table = app.query_one("#guilds", appmod.DataTable)
-        assert table.row_count == len(app.sources) == 5, table.row_count
-        ok(f"source list shows {table.row_count} entries: "
-           f"{[(s.kind, s.name) for s in app.sources]}")
+        real = source_rows(app)
+        from rsb.tui.app import GROUP_KEY
+        headers = [k for k in app._source_rows if k.startswith(GROUP_KEY)]
+        assert len(real) == len(app.sources) == 6, (len(real), len(app.sources))
+        ok(f"{len(real)} sources under {len(headers)} group headers: "
+           f"{[h[len(GROUP_KEY):] for h in headers]}")
 
         # --- scanning friends needs no gateway at all
         source = await scan_kind(app, pilot, KIND_FRIENDS)

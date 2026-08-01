@@ -2,7 +2,12 @@
 import asyncio, sys, time
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
-from rsb.discord.gateway import _absorb_ops, _sidebar_ranges, GuildMember
+from rsb.discord.gateway import (
+    RANGES_PER_REQUEST,
+    _absorb_ops,
+    _sidebar_ranges,
+    GuildMember,
+)
 from rsb.discord.http import _everyone_can_view, ADMINISTRATOR, VIEW_CHANNEL
 from rsb.ratelimit import RateLimiter, batch_cost
 from rsb.rotector import MemberReport, RobloxAccount, TrackedServer
@@ -11,9 +16,13 @@ from rsb.verdict import Verdict, flag_is_actionable, verdict_for_flag
 ok = lambda m: print(f"[ok] {m}")
 
 # --- sidebar ranges -------------------------------------------------------
+# [0,99] is always included, as the real client does; the rest are the window
+# being scrolled to. Several per request is what keeps a large list quick.
 assert _sidebar_ranges(0) == [[0, 99]]
-assert _sidebar_ranges(200) == [[0, 99], [200, 299], [300, 399]]
-ok(f"sidebar ranges: {_sidebar_ranges(0)} then {_sidebar_ranges(200)}")
+assert _sidebar_ranges(300, count=3) == [[0, 99], [300, 399], [400, 499], [500, 599]]
+assert _sidebar_ranges(300, count=1) == [[0, 99], [300, 399]]
+ok(f"sidebar ranges batch {RANGES_PER_REQUEST} windows per request: "
+   f"{_sidebar_ranges(300)}")
 
 # --- GUILD_MEMBER_LIST_UPDATE op folding ----------------------------------
 members = {}
@@ -133,3 +142,56 @@ async def limiter_tests():
 
 asyncio.run(limiter_tests())
 print("\nALL UNIT TESTS PASSED")
+
+
+# --- no credential-shaped literals anywhere in the tree -------------------
+# This has bitten twice: once a real token in a config backup, once fixtures
+# fabricated to *look* real so they would pass a shape check. GitHub's secret
+# scanner cannot tell a plausible fake from the genuine article, and neither
+# can a person skimming a diff, so neither belongs in the repo.
+import re as _re
+import subprocess as _sp
+from pathlib import Path as _Path
+
+_TOKEN_SHAPES = [
+    # Discord user/bot token: base64ish id . timestamp . hmac
+    ("Discord token", _re.compile(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{20,}")),
+    # long opaque keys assigned to a suggestive name
+    ("API key", _re.compile(r"(?i)(api_?key|secret|password)\s*=\s*[\"'][A-Za-z0-9_\-]{24,}[\"']")),
+]
+
+_ROOT = _Path(__file__).resolve().parent.parent
+try:
+    _tracked = _sp.run(
+        ["git", "ls-files"], cwd=_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+except Exception:
+    _tracked = []
+
+if _tracked:
+    _offenders = []
+    for _name in _tracked:
+        _path = _ROOT / _name
+        if _path.suffix in (".svg", ".png", ".jpg") or not _path.is_file():
+            continue
+        try:
+            _body = _path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for _label, _pattern in _TOKEN_SHAPES:
+            for _line_no, _line in enumerate(_body.splitlines(), 1):
+                if _pattern.search(_line):
+                    _offenders.append(f"{_name}:{_line_no} ({_label})")
+
+    assert not _offenders, (
+        "credential-shaped literals in tracked files -- a push will be blocked:\n  "
+        + "\n  ".join(_offenders)
+    )
+    ok(f"no credential-shaped literals in any of {len(_tracked)} tracked files")
+
+    _ignored = (_ROOT / ".gitignore").read_text(encoding="utf-8")
+    for _pattern in ("config.toml", "*.bak", "proxies.txt"):
+        assert _pattern in _ignored, f"{_pattern} is not gitignored"
+    ok("config, proxy list and every .bak stay gitignored")
+else:
+    ok("not a git checkout; skipped the tracked-file secret scan")

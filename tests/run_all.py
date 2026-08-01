@@ -5,11 +5,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 OFFLINE = {"test_units.py", "test_progress.py", "test_gateway_scrape.py",
            "test_proxy_speedup.py", "test_export.py",
-           "test_purge.py"}
+           "test_purge.py", "test_member_coverage.py"}
 NETWORK = {"test_live_api.py", "test_tui.py", "test_routing.py",
            "test_proxy_tui.py", "test_streaming.py",
            "test_moderation_tui.py", "test_sources.py",
-           "test_layout_retention.py", "test_sorting.py"}
+           "test_layout_retention.py", "test_sorting.py",
+           "test_stop.py", "test_listing_inbox.py",
+           "test_settings_ui.py"}
 
 only_offline = "--offline" in sys.argv
 suites = sorted(OFFLINE if only_offline else OFFLINE | NETWORK)

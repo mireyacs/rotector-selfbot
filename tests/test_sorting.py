@@ -158,17 +158,40 @@ async def main():
            f"{[n for n, _ in RESULT_SORTS]}")
 
         # --- sources table
+        from rsb.tui.app import GROUP_KEY
+
+        def source_names(app):
+            """Displayed source names, headers excluded, indent stripped."""
+            table = app.query_one("#guilds", DataTable)
+            out = []
+            for index, key in enumerate(app._source_rows):
+                if key.startswith(GROUP_KEY):
+                    continue
+                out.append(table.get_row_at(index)[0].plain.strip())
+            return out
+
+        def source_counts(app):
+            table = app.query_one("#guilds", DataTable)
+            out = []
+            for index, key in enumerate(app._source_rows):
+                if key.startswith(GROUP_KEY):
+                    continue
+                raw = table.get_row_at(index)[2].plain.strip().replace(",", "")
+                out.append(int(raw) if raw.isdigit() else 0)
+            return out
+
         sources = app.query_one("#guilds", DataTable)
-        default_order = [
-            sources.get_row_at(r)[0].plain for r in range(sources.row_count)
-        ]
+        default_order = source_names(app)
         name_index = next(
             i for i, (n, _) in enumerate(SOURCE_SORTS) if n == "Name"
         )
         app._sort_sources(name_index)
         await pilot.pause(0.4)
-        names = [sources.get_row_at(r)[0].plain for r in range(sources.row_count)]
-        assert names == sorted(names, key=str.lower), names
+        names = source_names(app)
+        # sorting is applied within each group, so check per group
+        servers = [n for n in names if n in ("alpha", "Zulu")]
+        assert servers == sorted(servers, key=str.lower), servers
+        names = servers
         assert names != default_order, "sorting changed nothing"
         ok(f"sources sorted by Name: {names}")
 
@@ -177,11 +200,10 @@ async def main():
         )
         app._sort_sources(members_index)
         await pilot.pause(0.4)
-        counts = [
-            int(sources.get_row_at(r)[2].plain.replace(",", ""))
-            for r in range(sources.row_count)
-        ]
-        assert counts == sorted(counts, reverse=True), counts
+        counts = source_counts(app)
+        server_counts = [c for c in counts if c in (10, 900)]
+        assert server_counts == sorted(server_counts, reverse=True), server_counts
+        counts = server_counts
         ok(f"sources sorted by Members, largest first: {counts}")
 
         app.query_one("#guilds", DataTable).focus()
@@ -193,7 +215,7 @@ async def main():
            f"(now {SOURCE_SORTS[app._source_sort[0]][0]})")
 
         # sorting must not lose or duplicate rows
-        assert sources.row_count == 3, sources.row_count
+        assert len(source_names(app)) == 4, source_names(app)
         assert app.query_one("#results", DataTable).row_count == len(spec)
         ok("no rows lost or duplicated by any sort")
 

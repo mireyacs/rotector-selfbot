@@ -21,6 +21,21 @@ from rsb.discord.http import Channel
 ok = lambda m: print(f"[ok] {m}")
 
 
+def select_source(app, kind):
+    """Move the sources cursor to the first source of ``kind``.
+
+    Sources sit under collapsible group headers, so a source's display row is
+    not its index in app.sources.
+    """
+    from rsb.tui.app import GROUP_KEY
+    from textual.widgets import DataTable
+    table = app.query_one("#guilds", DataTable)
+    key = next(k for k in app._source_rows if k.startswith(f"{kind}:"))
+    table.move_cursor(row=app._source_rows.index(key))
+    return next(s for s in app.sources if f"{s.kind}:{s.id}" == key)
+
+
+
 class DeafWS:
     """A socket that accepts sends and never answers -- the worst case."""
 
@@ -123,7 +138,7 @@ async def test_app_shows_live_activity():
         def __init__(self, token): self.user = None
         async def connect(self, timeout=45.0): return {}
         async def fetch_members(self, gid, channels, expected=None, on_progress=None,
-                                on_members=None):
+                                on_members=None, **kwargs):
             for i in range(3):                 # a slow multi-step scrape
                 if on_progress:
                     on_progress(i * 100, expected, f"Reading #general members {i}")
@@ -152,11 +167,13 @@ async def test_app_shows_live_activity():
 
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause(0.6)
+        select_source(app, "guild")
+        await pilot.pause(0.2)
         await pilot.press("s")
         for _ in range(40):                    # sample the bar while it works
             await pilot.pause(0.06)
-            line = app._compose_status().plain
-            if app._activity is not None:
+            line = app._compose_status().plain.lstrip()
+            if app._activity is not None and line:
                 spinner_frames.add(line[0])
             if app._activity is None and seen_labels and app.rows:
                 break

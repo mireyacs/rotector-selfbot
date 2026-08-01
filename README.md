@@ -6,22 +6,22 @@ every one against the [Rotector](https://rotector.com) database — surfacing
 accounts with detected violations so you can tell who is a potential threat
 before interacting.
 
-```
- SERVERS                     │ RESULTS - Test Server A
- Server            Members   │ 45 scanned   THREAT 2  UNKNOWN 43     filter: All
- Test Server A          45   │ Member          Verdict   Flag        Category  Roblox      Srv
- Another Server          3   │ suspicious_guy  THREAT    Confirmed   Condo     Messipel90    2
-                             │ User 5          THREAT    Confirmed   Sexual    Davicukis58   -
-                             │ ─────────────────────────────────────────────────────────────
-                             │ suspicious_guy  @user1  id 1
-                             │ THREAT - Flagged or Confirmed violations. Safe to action per Rotector.
-                             │ Linked Roblox accounts (1)
-                             │   Confirmed (actionable)  Messipel90 (8423569713)  category Condo  confidence 1.00
-                             │     detected via Profile - https://www.roblox.com/users/8423569713/profile
-                             │     Condo Activity: [Trap3] Entered a condo game via unguessable entry code 8 time(s)
-                             │       - Game: furre (v4 fork) (3 clicks)
- Scanned 45 members - 2 flagged as THREAT. Data: Rotector …   |   budget 43/45 (server: 44)
-```
+![Scanning a server](docs/screenshots/results.svg)
+
+Findings only by default — a 10,833-member server lists the handful that matter,
+not all of them. Verdict, flag type, category and linked Roblox accounts, with
+the full reasons and evidence in the pane below.
+
+| | |
+|---|---|
+| ![Sources](docs/screenshots/sources.svg) | ![Settings](docs/screenshots/settings.svg) |
+| Servers, friends, requests and group DMs in collapsible groups | Every setting editable in-app; no hand-editing TOML |
+
+![Proxy tester](docs/screenshots/proxies.svg)
+
+Proxies tested against the Rotector API itself, showing which actually bring
+their own rate budget and which only look like they do.
+
 
 ## Read this first
 
@@ -90,7 +90,9 @@ for elevated limits.
 | Key | Action |
 |-----|--------|
 | `↑` `↓` | Move between servers / results |
-| `s` / `enter` | Scan the selected source |
+| `s` / `enter` | Scan the selected source (or fold a group header) |
+| `m` | List members only — no lookups |
+| `S` | Check just the highlighted member |
 | `f` | Cycle filter: Findings → Threats → Caution+ → Tracked servers → Everything |
 | `/` | Search by name, Discord id, or linked Roblox username |
 | `e` | Export — opens a dialog for formats, scope and columns |
@@ -101,6 +103,8 @@ for elevated limits.
 | `x` | Stop a running scan |
 | `L` | Leave the selected group DM |
 | `[` `]` | Narrow / widen the sources pane (or drag the divider) |
+| `ctrl+s` | Settings — edit config.toml in-app |
+| `ctrl+p` | Command palette — every command, searchable |
 | `ctrl+r` | Reload the source list |
 | `q` | Quit |
 
@@ -127,17 +131,102 @@ many are hidden (`filter: Findings  (43 hidden)`), `f` cycles to `Everything`,
 and exports always contain every scanned member. Either group can be brought
 back permanently with `hide_no_detections` / `hide_unknown` in `config.toml`.
 
+### Settings, setup and diagnostics
+
+`ctrl+s` opens an editor for every setting, generated from the same schema the
+migrator writes — booleans as checkboxes, everything else as text fields, each
+with its explanation. Saving rewrites only the sections you touched.
+
+On a first run with no token you get a **setup wizard** instead of an error.
+If something in the config cannot work, a **diagnostics screen** lists each
+check with what is wrong and how to fix it, and offers to open Settings or
+retry.
+
+Only genuinely fatal problems stop startup. Heuristics — "this token doesn't
+look right" — are advisory and shown as a warning, because a token that looks
+odd may work fine and Discord's answer is the authority, not a guess about
+its shape.
+
+### Every command is reachable twice
+
+The status line and the keybind bar are both one-row strips flanked by arrows,
+and both scroll sideways rather than clipping:
+
+```
+◀  s Scan server │  f Filter │  / Search │  e Export │  c Copy member  ▶
+```
+
+Click either arrow, or use the mouse wheel over the strip. An arrow dims when
+that end is reached, so it is obvious whether there is more; on the status line
+the arrows appear only when the message does not fit. Truncation is the failure
+mode being avoided — clipped text gives no sign that anything is missing,
+whereas a lit arrow does.
+
+In the sources pane, a single click folds a group, and the cursor stays where
+it was rather than jumping back to the top of the list.
+
+
+`ctrl+p` opens a command palette listing every binding, generated from the same
+`BINDINGS` list the bar renders — so the two cannot disagree.
+
+### Paging
+
+Results render 250 rows at a time; a five-figure member list is otherwise
+unusable, since the table redraws in full on every change. `n` and `N` move
+between pages, the summary shows `page 2/14`, and searching re-pages from the
+first page against the whole result set rather than only what is on screen.
+
+### The sources pane
+
+Sources are grouped under collapsible headers — **Live**, **People**,
+**Group DMs**, **Servers** — so a long server list can be folded out of the
+way. `s` or `enter` on a header folds it; the header stays so you can reopen
+it. Sorting applies within each group.
+
+### Listing without checking
+
+`m` enumerates a source's members and looks up **none** of them. Their verdict
+column reads `not checked` rather than a verdict, and the threat-only filters
+exclude them, because there is nothing to judge yet.
+
+From there, `S` checks just the highlighted member. Useful for a big server
+where you want the roster first and only care about a handful of people, and
+for re-checking one person after acting.
+
+### Watching incoming messages
+
+The **Incoming messages** source is a live feed rather than a list. Scanning it
+watches the gateway and checks the *sender* of each new message as it arrives —
+DMs, group DMs and servers alike — so someone messaging you out of the blue is
+checked before you reply. It runs until `x`.
+
+Only the sender is looked at. Message content is never read, stored or sent
+anywhere; the question being answered is who is talking to you, not what was
+said.
+
 ### The status bar
 
 The bottom line always names the step currently in flight, with a spinner and
 an elapsed clock once a step passes ~1.5 s:
 
 ```
-/ Opening member list via #general (channel 2/6)  7s              |  budget 43/45 (server: 44)
-\ Reading #general members 400-599 - 380 / 1,204 members  4s left |  budget 41/45
-| Looking up Discord accounts - 300 / 1,204  ETA 1m 20s (14/s)    |  routes 4/5   budget 38/45
-/ Checking 87 linked Roblox accounts for flags - 900 / 1,204      |  holding for rate limit window, 4.2s
+/ Opening member list via #general (channel 2/6)      task 7s  total 12s  |  budget 43/45
+\ Reading #general member list - 380 members found    task 4s  total 19s  |  budget 41/45
+| Checking members - 300 / 1,204   ETA 1m 20s  task 22s  total 1m 04s  |  routes 4/5  budget 38/45
 ```
+
+Three separate figures, deliberately:
+
+- **ETA** — time remaining for the phase in flight. It appears only once the
+  member list is complete; while the list is still growing, "remaining" is a
+  moving target and any number would be a guess dressed as a measurement.
+- **task** — how long the *current* step has been running.
+- **total** — how long the whole run has taken, across every phase.
+
+They are built as trailing fields and the *activity text* is what gets
+truncated to fit. Putting them inside the activity string is what made the ETA
+disappear on narrow terminals — the bar is one line with ellipsis overflow, so
+anything at the end simply got cut off.
 
 Every long step announces itself *before* it blocks, not after it finishes.
 That matters most when opening the member list: a channel that exposes no
@@ -197,6 +286,23 @@ answers with `GUILD_MEMBER_LIST_UPDATE`.
 A member the sidebar never shows is a member never checked, so coverage is
 treated as the priority:
 
+- **Several channels are subscribed to in one request.** Discord accepts at
+  most three ranges per channel — a fourth is rejected outright and closes the
+  connection — so throughput comes from covering different windows across up to
+  five channels at once, which is what the real client does. Every
+  everyone-visible channel exposes the same list, so their results merge.
+- **With the right permissions, one request gets everyone.** If the account
+  holds **kick members**, **ban members**, **manage roles** or administrator in
+  that guild, Discord will hand over the entire member list — offline members
+  included — for a single request. This is tried first, and when it works
+  nothing else is needed. It is by far the best outcome, and the only one that
+  is genuinely complete.
+- **The name search deepens where it saturates.** Discord returns at most 100
+  matches per query, so a flat pass over 38 single-letter prefixes can surface
+  3,800 members however large the guild is. A prefix that comes back with a
+  full hundred is understood to be hiding more and is re-queried a character
+  deeper (`a` → `aa`, `ab`, …); prefixes that are not saturated are left alone,
+  so the extra queries go only where members are actually being missed.
 - **Channels `@everyone` can view are always tried first.** A sidebar only
   lists members who can see its channel — scrape a staff-only channel and you
   get a partial member list with no indication anything is missing. Visibility
@@ -212,6 +318,18 @@ treated as the priority:
 
 If no channel is visible to `@everyone` at all, the status bar says so, because
 the resulting list may be partial through no fault of the tool.
+
+> **Without those permissions, one limit is not ours to fix.** Discord does not
+> put offline members in the member list of a large guild, at all, for anyone.
+> A 10,000-member server with 2,000 online exposes those 2,000 through the
+> sidebar; the rest have to be found by name search, which is bounded at 100
+> results per query. So an unprivileged scan of a large server *will* come back
+> short — and when it does, the status line says how short, and whether it was
+> permissions or Discord's own limit that caused it.
+>
+> If you have kick/ban/manage-roles in a server, you get everyone. If you do
+> not, no tool can give you everyone, and any that claims otherwise is either
+> using permissions you have not got or quietly returning a subset.
 
 > **Coverage caveat, inherited from Discord:** in large guilds the member
 > sidebar only lists non-offline members. A scan covers who is *visible*, which
@@ -535,6 +653,22 @@ The client is built to honour them, but they bind *you*:
   unrelated dispatches stream in, that a silent channel still gives up, and that
   filtered subscriptions drop irrelevant events. Reverting either fix makes this
   suite hang, which is the bug it exists to catch.
+- `test_member_coverage.py` — no network: the three fetch paths against a fake
+  guild where only some members are online. Asserts the privileged path returns
+  everyone including offline without touching the sidebar, that the
+  unprivileged path gets every online member and then recovers more by name
+  search, that saturated prefixes are deepened, and that the sidebar stops at
+  the end of the *list* rather than the member count.
+- `test_settings_ui.py` — the setup wizard writing a working config, the editor
+  covering all 31 schema settings with the right widget per type, round-tripping
+  edits, paging across 540 rows, search re-paging, and that every palette
+  command maps to a real action.
+- `test_stop.py` — that stopping a scan stops everything: the spinner, both
+  clocks, the gateway read and the lookup task. Re-wiring the stop path back to
+  cancelling only the worker group makes it fail with "spinner still active".
+- `test_listing_inbox.py` — group collapse (including that a group DM is not
+  mistaken for a group header), list-without-checking, single-member checks, and
+  the live watcher surfacing a flagged sender then stopping on `x`.
 - `test_purge.py` — no network: that planning collects only your own messages
   and deletes nothing, pagination and both limits, oldest-first deletion order,
   survival of individual failures, mid-run stopping, and that the DM lookup

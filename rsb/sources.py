@@ -28,13 +28,15 @@ KIND_GUILD = "guild"
 KIND_FRIENDS = "friends"
 KIND_REQUESTS = "requests"
 KIND_GROUP = "group"
+KIND_INBOX = "inbox"
 
 #: display order in the source list
 KIND_ORDER = {
-    KIND_REQUESTS: 0,
-    KIND_FRIENDS: 1,
-    KIND_GROUP: 2,
-    KIND_GUILD: 3,
+    KIND_INBOX: 0,
+    KIND_REQUESTS: 1,
+    KIND_FRIENDS: 2,
+    KIND_GROUP: 3,
+    KIND_GUILD: 4,
 }
 
 KIND_LABEL = {
@@ -42,7 +44,23 @@ KIND_LABEL = {
     KIND_FRIENDS: "friends",
     KIND_REQUESTS: "requests",
     KIND_GROUP: "group DM",
+    KIND_INBOX: "live",
 }
+
+#: how the sources pane groups the list, in display order
+GROUPS: list[tuple[str, tuple[str, ...]]] = [
+    ("Live", (KIND_INBOX,)),
+    ("People", (KIND_REQUESTS, KIND_FRIENDS)),
+    ("Group DMs", (KIND_GROUP,)),
+    ("Servers", (KIND_GUILD,)),
+]
+
+
+def group_for(kind: str) -> str:
+    for title, kinds in GROUPS:
+        if kind in kinds:
+            return title
+    return "Other"
 
 
 @dataclass
@@ -62,8 +80,13 @@ class ScanSource:
 
     @property
     def needs_gateway(self) -> bool:
-        """Guilds need the member sidebar; everything else arrives complete."""
-        return self.kind == KIND_GUILD
+        """Guilds need the member sidebar; the inbox needs a live feed."""
+        return self.kind in (KIND_GUILD, KIND_INBOX)
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this source never finishes on its own."""
+        return self.kind == KIND_INBOX
 
     @property
     def is_complete(self) -> bool:
@@ -113,7 +136,14 @@ def build_sources(
     Friend requests come first: someone who has just added you is precisely who
     you want checked before deciding, and the list is usually short.
     """
-    sources: list[ScanSource] = []
+    sources: list[ScanSource] = [
+        ScanSource(
+            kind=KIND_INBOX,
+            id="inbox",
+            name="Incoming messages",
+            member_count=None,
+        )
+    ]
 
     friends = [r for r in (relationships or []) if r.type == FRIEND]
     if friends:

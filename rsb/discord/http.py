@@ -34,6 +34,16 @@ OUTGOING_REQUEST = 4
 
 VIEW_CHANNEL = 1 << 10
 ADMINISTRATOR = 1 << 3
+KICK_MEMBERS = 1 << 1
+BAN_MEMBERS = 1 << 2
+MANAGE_ROLES = 1 << 28
+
+#: Holding any of these lets the gateway hand over the *entire* member list,
+#: offline members included, in a single request. Without them Discord will
+#: only ever expose the member sidebar, which hides offline members in a large
+#: guild -- so this permission check is the difference between a complete scan
+#: and a partial one.
+CHUNK_PERMISSIONS = KICK_MEMBERS | BAN_MEMBERS | MANAGE_ROLES | ADMINISTRATOR
 
 
 class DiscordAuthError(RuntimeError):
@@ -61,6 +71,20 @@ class Guild:
     member_count: int | None
     presence_count: int | None
     icon: str | None = None
+
+    @property
+    def can_chunk(self) -> bool:
+        """Whether this account may request every member at once."""
+        return bool(self.permissions & CHUNK_PERMISSIONS)
+
+    @property
+    def offline_members_hidden(self) -> bool:
+        """Whether Discord will withhold offline members from the sidebar.
+
+        Mirrors the client's own heuristic: member count, plus hoisted role
+        groups, plus the online/offline groups, at or above 1,000.
+        """
+        return (self.member_count or 0) + 2 >= 1000
 
     @classmethod
     def parse(cls, raw: dict) -> "Guild":

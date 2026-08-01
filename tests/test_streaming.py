@@ -19,6 +19,21 @@ from rsb.verdict import Verdict
 
 ok = lambda m: print(f"[ok] {m}")
 
+
+def select_source(app, kind):
+    """Move the sources cursor to the first source of ``kind``.
+
+    Sources sit under collapsible group headers, so a source's display row is
+    not its index in app.sources.
+    """
+    from rsb.tui.app import GROUP_KEY
+    from textual.widgets import DataTable
+    table = app.query_one("#guilds", DataTable)
+    key = next(k for k in app._source_rows if k.startswith(f"{kind}:"))
+    table.move_cursor(row=app._source_rows.index(key))
+    return next(s for s in app.sources if f"{s.kind}:{s.id}" == key)
+
+
 WAVES = 3
 PER_WAVE = 100
 WAVE_GAP = 0.7
@@ -53,7 +68,7 @@ class StreamingGateway:
 
     async def fetch_members(
         self, gid, channels, expected=None, on_progress=None, on_members=None
-    ):
+    , **kwargs):
         for index in range(WAVES):
             batch = wave(index)
             for member in batch:
@@ -101,6 +116,8 @@ async def main():
     async with app.run_test(size=(130, 36)) as pilot:
         await pilot.pause(0.8)
         gateway = app.gateway
+        select_source(app, "guild")
+        await pilot.pause(0.2)
         await pilot.press("s")
 
         started = time.monotonic()

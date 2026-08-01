@@ -13,6 +13,8 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
+from textual.message import Message
 from textual.widgets import (
     DataTable,
     Footer,
@@ -36,12 +38,15 @@ from ..eta import RateEstimator, estimate_scan_seconds, format_duration
 from ..export import DEFAULT_COLUMNS, export as render_export, ExportRow
 from ..moderation import Eligibility, build_reason, check_eligibility
 from ..sources import (
+    GROUPS,
     KIND_FRIENDS,
+    KIND_INBOX,
     KIND_GROUP,
     KIND_GUILD,
     KIND_REQUESTS,
     ScanSource,
     build_sources,
+    group_for,
 )
 from ..purge import (
     KIND_DM,
@@ -49,6 +54,16 @@ from ..purge import (
     PurgeTarget,
     execute_purge,
     plan_purge,
+)
+from .commands import BindingCommands, ScrollableFooter, StatusStrip
+from .settings import (
+    Check as _Check,
+    advisory_problems,
+    blocking_problems,
+    DiagnosticsScreen,
+    SettingsScreen,
+    SetupWizard,
+    run_checks,
 )
 from .dialogs import (
     ExportDialog,
@@ -95,6 +110,13 @@ _FILTER_CYCLE = list(FilterMode)
 _SPINNER = "-\\|/"
 #: only show an elapsed clock once something has run long enough to worry about
 _ELAPSED_AFTER = 1.5
+
+
+def _shorten(text: str, width: int) -> str:
+    """Trim to ``width`` cells, marking that something was cut."""
+    if width <= 1 or len(text) <= width:
+        return text
+    return text[: max(1, width - 1)].rstrip() + "\u2026"
 
 
 @dataclass
@@ -227,6 +249,45 @@ SOURCE_SORTS: list[tuple[str, "Callable[[ScanSource], object]"]] = [
 #: results default to worst-first, which is the whole point of the tool
 DEFAULT_RESULT_SORT = 1
 
+#: Row-key prefix for group headers in the sources pane. Deliberately not
+#: "group:", which is what a group DM's own key starts with -- sharing that
+#: prefix made every group DM look like a header and unselectable.
+GROUP_KEY = "grouphdr:"
+
+#: results rows rendered at once. Textual redraws the whole table on change,
+#: so a five-figure member list has to be paged or the UI crawls.
+PAGE_SIZE = 250
+
+
+class SourceTable(DataTable):
+    """The sources list, with group headers that fold on a single click.
+
+    DataTable only emits RowSelected once it has focus, so clicking a group in
+    an unfocused pane cost two clicks: one to focus, one to act. Handling the
+    click here catches the first one either way.
+    """
+
+    class GroupClicked(Message):
+        def __init__(self, title: str) -> None:
+            super().__init__()
+            self.title = title
+
+    def on_click(self, event) -> None:
+        try:
+            row, _column = self.hover_coordinate
+        except Exception:
+            return
+        if row < 0 or row >= self.row_count:
+            return
+        try:
+            key = self.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
+        except Exception:
+            return
+        if key and key.startswith(GROUP_KEY):
+            self.move_cursor(row=row)
+            self.post_message(self.GroupClicked(key[len(GROUP_KEY):]))
+            event.stop()
+
 
 class PaneDivider(Static):
     """Draggable splitter between the sources pane and the results pane.
@@ -275,11 +336,15 @@ class Row:
     report: MemberReport
     #: "kicked" / "banned" once acted on, for the table to show
     actioned: str | None = None
+    #: False for members listed but never looked up
+    checked: bool = True
 
 
 class ScannerApp(App):
     TITLE = "rotector-selfbot"
     SUB_TITLE = "Discord member safety scanner"
+    #: the palette lists every binding, so a clipped footer hides nothing
+    COMMANDS = App.COMMANDS | {BindingCommands}
 
     CSS = """
     Screen { layers: base overlay; }
@@ -324,12 +389,7 @@ class ScannerApp(App):
     #search { display: none; }
     #search.visible { display: block; }
 
-    #status {
-        height: 1;
-        background: $panel;
-        color: $text-muted;
-        padding: 0 1;
-    }
+
     #progress { height: 1; display: none; }
     #progress.visible { display: block; }
 
@@ -342,10 +402,15 @@ class ScannerApp(App):
         ("slash", "search", "Search"),
         ("e", "export", "Export"),
         ("c", "copy", "Copy member"),
+        ("n", "next_page", "Next page"),
+        ("N", "prev_page", "Prev page"),
+        ("m", "list_members", "List members only"),
+        ("S", "scan_member", "Scan this member"),
         ("p", "purge", "Purge my messages"),
         ("k", "kick", "Kick / unfriend"),
         ("b", "ban", "Ban / block"),
         ("ctrl+r", "reload_guilds", "Reload sources"),
+        ("ctrl+s", "settings", "Settings"),
         ("L", "leave_group", "Leave group DM"),
         ("[", "narrow_pane", ""),
         ("]", "widen_pane", ""),
@@ -374,6 +439,13 @@ class ScannerApp(App):
         if config.scan.hide_unknown:
             self.hidden_verdicts.add(Verdict.UNKNOWN)
         self.search_term = ""
+        self.source_search = ""
+        self._search_target: str | None = None
+        self._advisories: list = []
+        #: rows rendered per page; a table of 10k rows is unusable otherwise
+        self.page_size = PAGE_SIZE
+        self._page = 0
+        self._matching = 0
         self._shown: list[str] = []
         self._status_text = "Starting up..."
         self._status_style = ""
@@ -384,11 +456,21 @@ class ScannerApp(App):
         self._spinner_frame = 0
         # measures throughput of the phase in flight, for the live ETA
         self._eta = RateEstimator()
+        self._eta_progress: tuple[int, int] | None = None
+        self._eta_ready = False
+        #: start of the whole run, spanning every phase
+        self._process_started: float | None = None
+        #: set while a scan is being torn down, so late callbacks are ignored
+        self._stopping = False
+        self._scan_task: asyncio.Task | None = None
         self._pane_width = 56
         self.my_id: str | None = None
         # (column index, descending) per table
         self._result_sort = (DEFAULT_RESULT_SORT, False)
         self._source_sort: tuple[int, bool] | None = None
+        #: group titles the user has folded away
+        self._collapsed: set[str] = set()
+        self._source_rows: list[str] = []
 
     # -- layout ------------------------------------------------------------
 
@@ -397,7 +479,7 @@ class ScannerApp(App):
         with Horizontal(id="body"):
             with Vertical(id="servers-pane"):
                 yield Static("SOURCES", classes="pane-title")
-                yield DataTable(id="guilds", cursor_type="row", zebra_stripes=True)
+                yield SourceTable(id="guilds", cursor_type="row", zebra_stripes=True)
             yield PaneDivider()
             with Vertical(id="results-pane"):
                 yield Static("RESULTS", classes="pane-title", id="results-title")
@@ -407,8 +489,8 @@ class ScannerApp(App):
                 with VerticalScroll(id="detail"):
                     yield Static(self._welcome_text(), id="detail-body")
         yield ProgressBar(id="progress", show_eta=False)
-        yield Static(self._status_text, id="status")
-        yield Footer()
+        yield StatusStrip()
+        yield ScrollableFooter()
 
     def on_mount(self) -> None:
         guilds = self.query_one("#guilds", DataTable)
@@ -508,6 +590,10 @@ class ScannerApp(App):
     def _sources_header_clicked(self, event: DataTable.HeaderSelected) -> None:
         self._sort_sources(event.column_index)
 
+    @on(SourceTable.GroupClicked)
+    def _group_clicked(self, event: SourceTable.GroupClicked) -> None:
+        self._toggle_group(event.title)
+
     def set_pane_width(self, width: int) -> None:
         """Resize the sources pane, clamped to something usable."""
         pane = self.query_one("#servers-pane")
@@ -553,8 +639,52 @@ class ScannerApp(App):
 
     # -- connection --------------------------------------------------------
 
+    def action_settings(self) -> None:
+        self.open_settings()
+
+    @work(exclusive=True, group="settings")
+    async def open_settings(self) -> None:
+        changed = await self.push_screen_wait(SettingsScreen(self.config))
+        if changed:
+            self._set_status(
+                "Settings saved. Some changes need a restart to take effect."
+            )
+            # anything that only affects display can be applied at once
+            self.hidden_verdicts = set()
+            if self.config.scan.hide_no_detections:
+                self.hidden_verdicts.add(Verdict.NO_DETECTIONS)
+            if self.config.scan.hide_unknown:
+                self.hidden_verdicts.add(Verdict.UNKNOWN)
+            self._rebuild_table()
+
     @work(exclusive=True, group="connect")
     async def connect(self) -> None:
+        # First run, or a config that cannot work: say so up front rather than
+        # failing with a stack trace three steps later.
+        if not (self.config.token or "").strip():
+            if not await self.push_screen_wait(SetupWizard(self.config)):
+                self.exit()
+                return
+
+        blocking = blocking_problems(self.config)
+        if blocking:
+            choice = await self.push_screen_wait(
+                DiagnosticsScreen(
+                    run_checks(self.config),
+                    headline="The configuration cannot work as it stands.",
+                )
+            )
+            if choice == "settings":
+                await self.push_screen_wait(SettingsScreen(self.config))
+            if blocking_problems(self.config):
+                self._set_status(
+                    "Configuration problems unresolved - press ctrl+s to fix.",
+                    "bold red",
+                )
+                return
+
+        advisories = advisory_problems(self.config)
+
         self._set_activity("Authenticating with Discord...")
         try:
             self.http = DiscordHTTP(self.config.token or "")
@@ -584,13 +714,32 @@ class ScannerApp(App):
             keyed = "API key" if self.config.rotector.api_key else "no API key"
             routing = f" - {len(proxies)} proxies" if proxies else ""
             self.sub_title = f"{name} - {keyed}{routing}"
+            if advisories:
+                self._advisories = advisories
             await self._load_sources()
         except DiscordAuthError as exc:
             self._fatal(str(exc))
+            self.offer_diagnostics(str(exc))
         except GatewayError as exc:
             self._fatal(f"Gateway: {exc}")
         except Exception as exc:  # noqa: BLE001
             self._fatal(f"{type(exc).__name__}: {exc}")
+
+    @work(exclusive=True, group="diagnose")
+    async def offer_diagnostics(self, headline: str) -> None:
+        checks = run_checks(self.config)
+        checks.append(
+            _Check("Discord reachable", False, headline,
+                   "Check the token, and that discord.com is reachable.")
+        )
+        choice = await self.push_screen_wait(
+            DiagnosticsScreen(checks, headline=headline)
+        )
+        if choice == "settings":
+            if await self.push_screen_wait(SettingsScreen(self.config)):
+                self.connect()
+        elif choice == "retry":
+            self.connect()
 
     async def _load_sources(self) -> None:
         assert self.http is not None
@@ -611,14 +760,21 @@ class ScannerApp(App):
 
         self.sources = build_sources(guilds, relationships, private_channels)
 
-        await self._refresh_source_table()
+        await self._refresh_source_table(focus_key="")
         self.query_one("#guilds", DataTable).focus()
 
         counts = {}
         for source in self.sources:
             counts[source.label] = counts.get(source.label, 0) + 1
         summary = ", ".join(f"{n} {label}" for label, n in counts.items())
-        self._set_status(f"{summary}. Select one and press 's' to scan.")
+        note = ""
+        if self._advisories:
+            names = ", ".join(c.name for c in self._advisories)
+            note = f"  [{len(self._advisories)} config warning(s): {names} - ctrl+s]"
+        self._set_status(
+            f"{summary}. Select one and press 's' to scan.{note}",
+            "yellow" if self._advisories else "",
+        )
 
     def _fatal(self, message: str) -> None:
         self._set_status(message, "bold red")
@@ -642,11 +798,27 @@ class ScannerApp(App):
             key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
         except Exception:
             return None
+        if key and key.startswith(GROUP_KEY):
+            return None
         return next(
             (s for s in self.sources if f"{s.kind}:{s.id}" == key), None
         )
 
+    def _selected_group(self) -> str | None:
+        table = self.query_one("#guilds", DataTable)
+        if table.cursor_row < 0:
+            return None
+        try:
+            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        except Exception:
+            return None
+        return key[len(GROUP_KEY):] if key and key.startswith(GROUP_KEY) else None
+
     def action_scan(self) -> None:
+        group = self._selected_group()
+        if group is not None:
+            self._toggle_group(group)
+            return
         source = self._selected_source()
         if source is None:
             return
@@ -655,13 +827,90 @@ class ScannerApp(App):
             return
         self.scan_source(source)
 
+    def action_list_members(self) -> None:
+        """Enumerate members without looking any of them up."""
+        source = self._selected_source()
+        if source is None or source.is_live:
+            self._set_status(
+                "Pick a server, friends list or group DM to list.", "yellow"
+            )
+            return
+        if self.gateway is None:
+            self._set_status("Still connecting...", "yellow")
+            return
+        self.scan_source(source, lookup=False)
+
+    def action_scan_member(self) -> None:
+        """Look up just the highlighted member."""
+        row = self._selected_row()
+        if row is None:
+            self._set_status("No member selected.", "yellow")
+            return
+        if self.rotector is None:
+            return
+        self.scan_one(row)
+
+    @work(exclusive=True, group="scan-one")
+    async def scan_one(self, row: Row) -> None:
+        member = row.member
+        self._set_activity(f"Checking {member.display_name}...")
+        try:
+            reports = await self.rotector.scan_members([member.id])
+        except AllRoutesFailed as exc:
+            self._halt_all_routes(exc)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"Lookup failed: {exc}", "bold red")
+            return
+
+        report = reports.get(member.id)
+        if report is None:
+            self._set_status(f"No answer for {member.display_name}.", "yellow")
+            return
+
+        self.rows[member.id] = Row(
+            member=member, report=report, actioned=row.actioned, checked=True
+        )
+        self._rebuild_table()
+        verdict = report.verdict
+        self._set_status(
+            f"{member.display_name}: {verdict_label(verdict)} - "
+            f"{verdict_meaning(verdict)}",
+            verdict_style(verdict) if verdict is Verdict.THREAT else "",
+        )
+
     def action_stop_scan(self) -> None:
-        if self.workers.cancel_group(self, "scan"):
-            self._set_status("Scan cancelled.", "yellow")
-            self.query_one("#progress", ProgressBar).remove_class("visible")
+        """Stop a running scan, including the work it spawned.
+
+        The lookup pipeline runs in a plain task rather than a Textual worker,
+        so cancelling the worker group alone leaves it running -- and a running
+        pipeline keeps reporting progress, which restarts the spinner and the
+        per-task clock the user just stopped.
+        """
+        cancelled = self.workers.cancel_group(self, "scan")
+        task = self._scan_task
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled = True
+        if not cancelled:
+            return
+
+        self._stopping = True
+        self._end_run()
+        self._set_status("Scan stopped.", "yellow")
+        self.query_one("#progress", ProgressBar).remove_class("visible")
+
+    def _end_run(self) -> None:
+        """Clear everything that animates, so a stopped run looks stopped."""
+        self._activity = None
+        self._eta_progress = None
+        self._eta_ready = False
+        self._process_started = None
+        self._scan_task = None
+        self._paint_status()
 
     @work(exclusive=True, group="scan")
-    async def scan_source(self, source: ScanSource) -> None:
+    async def scan_source(self, source: ScanSource, lookup: bool = True) -> None:
         assert self.http and self.gateway and self.rotector
         self.current_source = source
         self.rows.clear()
@@ -675,6 +924,8 @@ class ScannerApp(App):
         progress = self.query_one("#progress", ProgressBar)
         progress.add_class("visible")
         progress.update(total=100, progress=0)
+        self._stopping = False
+        self._process_started = time.monotonic()
 
         try:
             def member_progress(found: int, total: int | None, note: str) -> None:
@@ -692,16 +943,30 @@ class ScannerApp(App):
             cap = self.config.scan.max_members
             truncated = 0
             reading_done = False
+            listed_dirty = [False]
+            seen = [0]
             self._eta.reset()
+            self._eta_progress = None
+            self._eta_ready = False
+
+            def live_label(checked: int = 0) -> str:
+                return (
+                    f"Watching incoming messages - {seen[0]:,} sender(s) seen, "
+                    f"{checked:,} checked - press x to stop"
+                )
 
             def scan_progress(stage: str, done: int, of: int) -> None:
                 progress.update(total=max(of, 1), progress=done)
                 self._eta.update(done)
-                if reading_done:
-                    tail = f"   {self._eta.describe(done, of)}"
-                else:
-                    tail = "   still reading members..."
-                self._set_activity(f"{stage} - {done:,} / {of:,}{tail}")
+                self._eta_progress = None if source.is_live else (done, of)
+                self._eta_ready = reading_done
+                if source.is_live:
+                    # a live feed has no end, so "watching" is the true state;
+                    # lookup progress must not overwrite it
+                    self._set_activity(live_label(done))
+                    return
+                note = "" if reading_done else "  (still reading members)"
+                self._set_activity(f"{stage} - {done:,} / {of:,}{note}")
 
             def partial(reports: list[MemberReport]) -> None:
                 for report in reports:
@@ -717,10 +982,11 @@ class ScannerApp(App):
                     queue, on_progress=scan_progress, on_partial=partial
                 )
             )
+            self._scan_task = scan_task
 
             def on_members(new_members: list[GuildMember]) -> None:
                 nonlocal truncated
-                if scan_task.done():
+                if lookup and scan_task.done():
                     # the scan died (e.g. every route failed); stop reading
                     raise _ScanAborted
                 for member in new_members:
@@ -730,10 +996,34 @@ class ScannerApp(App):
                         truncated += 1
                         continue
                     by_id[member.id] = member
-                    queue.put_nowait(member.id)
+                    if lookup:
+                        queue.put_nowait(member.id)
+                    else:
+                        # listing only: show the member, judge nothing
+                        self.rows[member.id] = Row(
+                            member=member,
+                            report=MemberReport(discord_id=member.id),
+                            checked=False,
+                        )
+                        self._append_row(member.id)
+                        listed_dirty[0] = True
 
             try:
-                if source.needs_gateway:
+                if source.is_live:
+                    self._set_activity(live_label())
+
+                    def on_author(member: GuildMember) -> None:
+                        seen[0] += 1
+                        on_members([member])
+                        self._set_activity(live_label(len(self.rows)))
+
+                    await self.gateway.watch_messages(
+                        on_author,
+                        should_stop=lambda: self._stopping,
+                        own_id=self.my_id,
+                        include_bots=not self.config.scan.skip_bots,
+                    )
+                elif source.needs_gateway:
                     self._set_activity(f"Reading channels of {source.name}...")
                     channels = await self.http.channels(source.id)
                     if not channels:
@@ -742,12 +1032,15 @@ class ScannerApp(App):
                         )
                         progress.remove_class("visible")
                         queue.put_nowait(None)
-                        await scan_task
+                        scan_task.cancel()
                         return
                     open_channels = sum(1 for c in channels if c.everyone_can_view)
+                    guild = source.guild
+                    can_chunk = bool(guild and guild.can_chunk)
                     self._set_activity(
                         f"{len(channels)} text channels, {open_channels} visible to "
                         f"@everyone"
+                        + ("  (full member list permitted)" if can_chunk else "")
                     )
                     await self.gateway.fetch_members(
                         source.id,
@@ -755,6 +1048,7 @@ class ScannerApp(App):
                         expected=source.member_count,
                         on_progress=member_progress,
                         on_members=on_members,
+                        can_chunk=can_chunk,
                     )
                 else:
                     # friends, requests and group DMs arrive complete from one
@@ -772,7 +1066,12 @@ class ScannerApp(App):
                 reading_done = True
                 queue.put_nowait(None)
 
-            await scan_task
+            if lookup:
+                await scan_task
+            else:
+                scan_task.cancel()
+                if listed_dirty[0]:
+                    self._update_summary()
 
             if not by_id:
                 self._set_status(
@@ -785,15 +1084,59 @@ class ScannerApp(App):
 
             total = len(by_id)
 
+            if not lookup:
+                took = (
+                    format_duration(time.monotonic() - self._process_started)
+                    if self._process_started
+                    else "?"
+                )
+                expected = source.member_count or 0
+                short = ""
+                if source.needs_gateway and expected and len(by_id) < expected * 0.99:
+                    pct = 100.0 * len(by_id) / expected
+                    short = (
+                        f" ({pct:.0f}% of {expected:,} - Discord hides offline "
+                        f"members from large member lists)"
+                    )
+                self._set_status(
+                    f"Listed {len(by_id):,} members of {source.name} in {took}"
+                    f"{short} - nothing looked up. Press S to check one, s for all.",
+                    "yellow" if short else "",
+                )
+                self.query_one("#results", DataTable).focus()
+                return
+
             threats = sum(1 for r in self.rows.values() if r.report.verdict is Verdict.THREAT)
             note = f" ({truncated:,} skipped by max_members)" if truncated else ""
             verdict_note = (
                 f"{threats} flagged as THREAT" if threats else "no THREAT verdicts"
             )
+            coverage = ""
+            expected = source.member_count or 0
+            if source.needs_gateway and expected and total < expected * 0.99:
+                pct = 100.0 * total / expected
+                guild = source.guild
+                if guild is not None and not guild.can_chunk:
+                    why = (
+                        "Discord only exposes the full member list to accounts "
+                        "with kick, ban or manage-roles here; without those, "
+                        "offline members in a large guild are unreachable"
+                    )
+                else:
+                    why = "Discord did not return the rest"
+                coverage = (
+                    f"  [{pct:.0f}% coverage - {expected - total:,} not reached. {why}]"
+                )
             plural = "" if total == 1 else "s"
+            took = (
+                format_duration(time.monotonic() - self._process_started)
+                if self._process_started
+                else "?"
+            )
             self._set_status(
-                f"Scanned {total:,} member{plural}{note} - {verdict_note}. {ATTRIBUTION}",
-                "bold red" if threats else "",
+                f"Scanned {total:,} member{plural}{note} in {took} - "
+                f"{verdict_note}.{coverage}",
+                "bold red" if threats else ("yellow" if coverage else ""),
             )
             self.query_one("#results", DataTable).focus()
         except asyncio.CancelledError:
@@ -806,8 +1149,18 @@ class ScannerApp(App):
             self._set_status(f"Gateway: {exc}", "bold red")
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"{type(exc).__name__}: {exc}", "bold red")
+        except asyncio.CancelledError:
+            self._end_run()
+            raise
         finally:
             progress.remove_class("visible")
+            task = self._scan_task
+            if task is not None and not task.done():
+                task.cancel()
+            self._eta_progress = None
+            self._eta_ready = False
+            self._process_started = None
+            self._scan_task = None
 
     # -- results table -----------------------------------------------------
 
@@ -820,7 +1173,12 @@ class ScannerApp(App):
             return False
         if mode is FilterMode.TRACKED and not row.report.servers:
             return False
-        if mode is FilterMode.FINDINGS and verdict in self.hidden_verdicts:
+        if not row.checked:
+            # listed but never looked up -- there is no verdict to filter on,
+            # so only the verdict-specific filters exclude them
+            if mode in (FilterMode.THREATS, FilterMode.ATTENTION):
+                return False
+        elif mode is FilterMode.FINDINGS and verdict in self.hidden_verdicts:
             # still counted in the summary, just not listed
             return False
         if self.search_term:
@@ -849,6 +1207,16 @@ class ScannerApp(App):
         else:
             roblox = Text("-", style="dim")
 
+        if not row.checked:
+            return [
+                Text(row.member.display_name, overflow="ellipsis"),
+                Text("not checked", style="dim"),
+                Text("-", style="dim"),
+                Text("-", style="dim"),
+                Text("-", style="dim"),
+                Text("-", style="dim", justify="right"),
+            ]
+
         name = Text(f"{row.member.display_name}", overflow="ellipsis")
         if row.actioned:
             name.stylize("strike dim")
@@ -864,27 +1232,68 @@ class ScannerApp(App):
         ]
 
     def _append_row(self, discord_id: str) -> None:
+        """Add a streaming result, if it belongs on the page being viewed."""
         row = self.rows[discord_id]
         if not self._passes(row):
             return
+        self._matching += 1
+        if self.page_size:
+            # only the last page grows; earlier pages are already full and
+            # rewriting them mid-scan would fight the user's scrolling
+            if self._page != self.page_count - 1:
+                return
+            if len(self._shown) >= self.page_size:
+                return
         table = self.query_one("#results", DataTable)
         table.add_row(*self._cells(row), key=discord_id)
         self._shown.append(discord_id)
+
+    def _matching_rows(self) -> list[Row]:
+        index, descending = self._result_sort
+        ordered = sorted(
+            self.rows.values(), key=RESULT_SORTS[index][1], reverse=descending
+        )
+        return [row for row in ordered if self._passes(row)]
+
+    @property
+    def page_count(self) -> int:
+        if not self.page_size:
+            return 1
+        return max(1, (self._matching + self.page_size - 1) // self.page_size)
 
     def _rebuild_table(self) -> None:
         table = self.query_one("#results", DataTable)
         table.clear()
         self._shown.clear()
-        index, descending = self._result_sort
-        ordered = sorted(
-            self.rows.values(), key=RESULT_SORTS[index][1], reverse=descending
-        )
-        for row in ordered:
-            if not self._passes(row):
-                continue
+
+        matching = self._matching_rows()
+        self._matching = len(matching)
+        self._page = max(0, min(self._page, self.page_count - 1))
+
+        if self.page_size:
+            start = self._page * self.page_size
+            page = matching[start : start + self.page_size]
+        else:
+            page = matching
+
+        for row in page:
             table.add_row(*self._cells(row), key=row.member.id)
             self._shown.append(row.member.id)
         self._update_summary()
+
+    def action_next_page(self) -> None:
+        if self._page + 1 >= self.page_count:
+            self._set_status(f"Already on the last page ({self.page_count}).")
+            return
+        self._page += 1
+        self._rebuild_table()
+
+    def action_prev_page(self) -> None:
+        if self._page == 0:
+            self._set_status("Already on the first page.")
+            return
+        self._page -= 1
+        self._rebuild_table()
 
     def _update_summary(self) -> None:
         counts = {v: 0 for v in Verdict}
@@ -905,10 +1314,15 @@ class ScannerApp(App):
             text.append("no results yet", style="dim")
 
         listed = len(self._shown)
-        hidden = len(self.rows) - listed
+        hidden = len(self.rows) - self._matching
         tail = f"   filter: {self.filter_mode.value}"
         if hidden > 0:
             tail += f"  ({hidden:,} hidden)"
+        if self.page_count > 1:
+            tail += (
+                f"  page {self._page + 1}/{self.page_count}"
+                f" ({listed:,} of {self._matching:,})"
+            )
         if self.search_term:
             tail += f'  search: "{self.search_term}"'
         text.append(tail, style="dim")
@@ -997,29 +1411,51 @@ class ScannerApp(App):
         self._rebuild_table()
 
     def action_search(self) -> None:
+        """Search whichever table has focus -- sources or results."""
         search = self.query_one("#search", Input)
+        target = self._focused_table_id()
+
         if "visible" in search.classes:
             search.remove_class("visible")
             search.value = ""
             self.search_term = ""
+            self.source_search = ""
+            self._page = 0
             self._rebuild_table()
-            self.query_one("#results", DataTable).focus()
-        else:
-            search.add_class("visible")
-            search.focus()
+            self.call_later(self._refresh_source_table)
+            self.query_one(f"#{self._search_target or 'results'}", DataTable).focus()
+            self._search_target = None
+            return
 
-    @on(Input.Changed, "#search")
-    def _on_search(self, event: Input.Changed) -> None:
-        self.search_term = event.value.strip()
-        self._rebuild_table()
-
-    @on(Input.Submitted, "#search")
-    def _on_search_submit(self) -> None:
-        self.query_one("#results", DataTable).focus()
+        self._search_target = target
+        search.placeholder = (
+            "Filter sources by name or kind..."
+            if target == "guilds"
+            else "Filter members by name, ID or Roblox account..."
+        )
+        search.add_class("visible")
+        search.focus()
 
     def action_close_search(self) -> None:
         if "visible" in self.query_one("#search", Input).classes:
             self.action_search()
+
+    @on(Input.Changed, "#search")
+    def _on_search(self, event: Input.Changed) -> None:
+        term = event.value.strip()
+        if self._search_target == "guilds":
+            self.source_search = term
+            self.call_later(self._refresh_source_table)
+        else:
+            self.search_term = term
+            self._page = 0
+            self._rebuild_table()
+
+    @on(Input.Submitted, "#search")
+    def _on_search_submit(self) -> None:
+        self.query_one(
+            f"#{self._search_target or 'results'}", DataTable
+        ).focus()
 
     def action_reload_guilds(self) -> None:
         if self.http:
@@ -1200,27 +1636,122 @@ class ScannerApp(App):
             self._update_summary()
         await self._refresh_source_table()
 
-    async def _refresh_source_table(self) -> None:
+    async def _refresh_source_table(self, focus_key: str | None = None) -> None:
+        """Rebuild the sources pane, grouped and collapsible.
+
+        DataTable has no tree mode, so groups are header rows that hide their
+        children when collapsed. Keeping it a DataTable means sorting, keys and
+        selection all keep working exactly as before.
+        """
         table = self.query_one("#guilds", DataTable)
+        # remember where the cursor was, so a rebuild does not throw the user
+        # back to the top of the list
+        if focus_key is None:
+            try:
+                index = table.cursor_row
+                if 0 <= index < len(self._source_rows):
+                    focus_key = self._source_rows[index]
+            except Exception:
+                focus_key = None
         table.clear()
+        self._source_rows = []
+
+        pool = self.sources
+        if self.source_search:
+            needle = self.source_search.lower()
+            pool = [
+                s for s in pool
+                if needle in s.name.lower() or needle in s.label.lower()
+            ]
+
         if self._source_sort is None:
-            ordered = sorted(self.sources, key=lambda s: s.sort_key)
+            ordered = sorted(pool, key=lambda s: s.sort_key)
         else:
             index, descending = self._source_sort
             ordered = sorted(
-                self.sources, key=SOURCE_SORTS[index][1], reverse=descending
-            )
-        for source in ordered:
-            count = f"{source.member_count:,}" if source.member_count else "?"
-            style = "bold cyan" if source.kind == KIND_REQUESTS else ""
-            table.add_row(
-                Text(source.name, overflow="ellipsis", style=style),
-                Text(source.label, style="dim"),
-                Text(count, justify="right"),
-                key=f"{source.kind}:{source.id}",
+                pool, key=SOURCE_SORTS[index][1], reverse=descending
             )
 
-    # -- member actions ----------------------------------------------------
+        if self.source_search and not ordered:
+            table.add_row(
+                Text(f"no source matches {self.source_search!r}", style="dim"),
+                Text(""),
+                Text(""),
+                key=f"{GROUP_KEY}__none__",
+            )
+            self._source_rows.append(f"{GROUP_KEY}__none__")
+            return
+
+        for title, _kinds in GROUPS:
+            members = [s for s in ordered if group_for(s.kind) == title]
+            if not members:
+                continue
+            collapsed = title in self._collapsed
+            total = sum(s.member_count or 0 for s in members)
+            header = Text()
+            header.append("> " if collapsed else "v ", style="bold cyan")
+            header.append(title.upper(), style="bold")
+            table.add_row(
+                header,
+                # left-aligned so it lines up with the "server" / "group DM"
+                # labels on the rows beneath it
+                Text(f"{len(members)} item(s)", style="dim"),
+                Text(f"{total:,}" if total else "", style="dim", justify="right"),
+                key=f"{GROUP_KEY}{title}",
+            )
+            self._source_rows.append(f"{GROUP_KEY}{title}")
+            if collapsed:
+                continue
+            for source in members:
+                count = f"{source.member_count:,}" if source.member_count else "?"
+                style = "bold cyan" if source.kind == KIND_REQUESTS else ""
+                name = Text("  ", style="dim")
+                name.append(source.name, style=style)
+                table.add_row(
+                    name,
+                    Text(source.label, style="dim"),
+                    Text(count, justify="right"),
+                    key=f"{source.kind}:{source.id}",
+                )
+                self._source_rows.append(f"{source.kind}:{source.id}")
+
+        self._restore_source_cursor(focus_key)
+
+    def _restore_source_cursor(self, key: str | None) -> None:
+        """Put the cursor back on ``key``, or as near to it as still exists."""
+        if not self._source_rows:
+            return
+        table = self.query_one("#guilds", DataTable)
+        if key and key in self._source_rows:
+            table.move_cursor(row=self._source_rows.index(key))
+            return
+        if key and not key.startswith(GROUP_KEY):
+            # the row was folded away; settle on its group header instead
+            source = next(
+                (s for s in self.sources if f"{s.kind}:{s.id}" == key), None
+            )
+            if source is not None:
+                header = f"{GROUP_KEY}{group_for(source.kind)}"
+                if header in self._source_rows:
+                    table.move_cursor(row=self._source_rows.index(header))
+                    return
+        first = next(
+            (i for i, k in enumerate(self._source_rows)
+             if not k.startswith(GROUP_KEY)),
+            0,
+        )
+        table.move_cursor(row=first)
+
+    def _toggle_group(self, title: str) -> None:
+        """Fold or unfold a group, leaving the cursor on its header."""
+        if title in self._collapsed:
+            self._collapsed.discard(title)
+        else:
+            self._collapsed.add(title)
+        header = f"{GROUP_KEY}{title}"
+        self.call_later(self._refresh_source_table, header)
+
+    # -- member actions ---    # -- member actions ----------------------------------------------------
 
     def _selected_row(self) -> Row | None:
         table = self.query_one("#results", DataTable)
@@ -1580,6 +2111,10 @@ class ScannerApp(App):
         self._paint_status()
 
     def _set_activity(self, text: str) -> None:
+        if self._stopping:
+            # A cancelled scan can still have coroutines in flight for a beat;
+            # without this they revive the spinner after the user stopped it.
+            return
         """Announce what is happening *now*, before the step that blocks.
 
         Every long-running step calls this on the way in, so the bar always
@@ -1591,51 +2126,86 @@ class ScannerApp(App):
         self._paint_status()
 
     def _compose_status(self) -> Text:
-        # One line tall, so wrapping would hide everything past the first word.
+        """One line: what is happening, then the timers, then the budget.
+
+        The timers and budget are built as discrete trailing fields and the
+        *activity* text is what gets truncated to fit. Embedding them in the
+        activity string is what made the ETA vanish -- the bar is one line with
+        ellipsis overflow, so anything at the end simply got cut off.
+        """
+        tail = Text(no_wrap=True, overflow="visible", end="")
+
+        if self._activity is not None:
+            eta = self._current_eta()
+            if eta is not None:
+                tail.append("  ETA ", style="dim")
+                tail.append(format_duration(eta), style="bold cyan")
+
+            task = time.monotonic() - self._activity_started
+            if task >= _ELAPSED_AFTER:
+                tail.append("  task ", style="dim")
+                tail.append(format_duration(task))
+
+        if self._process_started is not None:
+            total = time.monotonic() - self._process_started
+            tail.append("  total ", style="dim")
+            tail.append(format_duration(total), style="bold")
+
+        if self.rotector is not None:
+            state = self.rotector.limiter.snapshot()
+            tail.append("   |   ", style="dim")
+            pool = self.rotector.pool
+            if len(pool.routes) > 1:
+                healthy = pool.available_count()
+                total_routes = len(pool.routes)
+                tail.append(
+                    f"routes {healthy}/{total_routes}",
+                    style="bold red" if healthy == 0
+                    else ("yellow" if healthy < total_routes else ""),
+                )
+                tail.append("   ", style="dim")
+            if state.blocked_for > 0:
+                tail.append(
+                    f"rate limit hold {state.blocked_for:.1f}s", style="yellow"
+                )
+            else:
+                tail.append(f"budget {state.available}/{state.limit - state.reserve}")
+
+        # Nothing is truncated any more: the strip scrolls, so long messages
+        # stay readable instead of being cut off with no sign of it.
         if self._activity is not None:
             frame = _SPINNER[self._spinner_frame % len(_SPINNER)]
-            text = Text(no_wrap=True, overflow="ellipsis")
-            text.append(f"{frame} ", style="bold cyan")
-            text.append(self._activity)
-            elapsed = time.monotonic() - self._activity_started
-            if elapsed >= _ELAPSED_AFTER:
-                text.append(f"  {elapsed:.0f}s", style="dim")
+            head = Text(no_wrap=True, overflow="visible", end="")
+            head.append(f" {frame} ", style="bold cyan")
+            head.append(self._activity)
         else:
-            text = Text(
-                self._status_text,
+            head = Text(
+                f" {self._status_text}",
                 style=self._status_style,
                 no_wrap=True,
-                overflow="ellipsis",
+                overflow="visible",
+                end="",
             )
 
-        if self.rotector is None:
-            return text
-        state = self.rotector.limiter.snapshot()
-        text.append("   |   ", style="dim")
+        head.append_text(tail)
+        return head
 
-        pool = self.rotector.pool
-        if len(pool.routes) > 1:
-            healthy = pool.available_count()
-            total = len(pool.routes)
-            text.append(
-                f"routes {healthy}/{total}",
-                style="bold red" if healthy == 0 else ("yellow" if healthy < total else ""),
-            )
-            text.append("   ", style="dim")
-
-        if state.blocked_for > 0:
-            text.append(
-                f"holding for rate limit window, {state.blocked_for:.1f}s", style="yellow"
-            )
-        else:
-            text.append(f"budget {state.available}/{state.limit - state.reserve}")
-            if state.server_remaining is not None:
-                text.append(f" (server: {state.server_remaining})", style="dim")
-        return text
+    def _current_eta(self) -> float | None:
+        """Seconds remaining for the phase in flight, if it can be known yet."""
+        if self._eta_progress is None:
+            return None
+        done, total = self._eta_progress
+        if not total or done >= total:
+            return None
+        if not self._eta_ready:
+            # while the member list is still growing, "remaining" is a moving
+            # target and any figure would be a guess dressed as a measurement
+            return None
+        return self._eta.eta(done, total)
 
     def _paint_status(self) -> None:
         try:
-            self.query_one("#status", Static).update(self._compose_status())
+            self.query_one(StatusStrip).set_text(self._compose_status())
         except Exception:
             pass
 

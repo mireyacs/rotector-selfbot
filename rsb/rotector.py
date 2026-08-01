@@ -37,6 +37,9 @@ USER_AGENT = "rotector-selfbot/1.0 (+https://rotector.com)"
 
 ProgressCallback = Callable[[str, int, int], None]
 
+#: seconds of quiet before a partial batch is sent anyway
+IDLE_FLUSH = 2.0
+
 
 class RotectorError(RuntimeError):
     pass
@@ -342,6 +345,7 @@ class RotectorClient:
         incoming: "asyncio.Queue",
         on_progress: ProgressCallback | None = None,
         on_partial: Callable[[list[MemberReport]], None] | None = None,
+        idle_flush: float | None = IDLE_FLUSH,
     ) -> dict[str, MemberReport]:
         """Scan ids as they arrive, rather than waiting for the full set.
 
@@ -350,6 +354,11 @@ class RotectorClient:
         each batch fills, so lookups overlap whatever is still producing ids --
         for a guild scan, that means checking members while the member list is
         still being read.
+
+        A partial batch is dispatched after ``idle_flush`` seconds of quiet.
+        Without that, a source that trickles -- a live message feed, say --
+        would sit in the buffer forever waiting for a hundredth id that may
+        never come.
 
         Batches run concurrently, deduplication is global across the stream,
         and every id that arrives is guaranteed a report.
@@ -439,7 +448,14 @@ class RotectorClient:
                 tasks.append(asyncio.create_task(handle(chunk)))
 
         while True:
-            item = await incoming.get()
+            if idle_flush and buffer:
+                try:
+                    item = await asyncio.wait_for(incoming.get(), timeout=idle_flush)
+                except TimeoutError:
+                    dispatch(force=True)
+                    continue
+            else:
+                item = await incoming.get()
             if item is None:
                 break
             for uid in item if isinstance(item, (list, tuple, set)) else [item]:
