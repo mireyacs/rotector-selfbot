@@ -1,0 +1,83 @@
+# Copy to config.toml (same directory) or to
+# ~/.config/rotector-selfbot/config.toml, then fill in your token.
+#
+# config.toml is gitignored. Treat the token like a password: anyone holding it
+# has full control of the account.
+
+[discord]
+# Your Discord user token. Also readable from the DISCORD_TOKEN env var,
+# which takes precedence over this file.
+token = ""
+
+[rotector]
+# Optional. Without a key you get the standard tier, which is plenty for
+# normal use. Request one at https://panel.rotector.com for higher limits.
+# Also readable from ROTECTOR_API_KEY.
+api_key = ""
+
+# Documented standard tier: 50 requests per 10 seconds, scoped per IP.
+# Only raise these if your API key was granted a higher limit.
+rate_limit = 50
+window = 10.0
+
+# Request units held back as headroom, so a shared IP or a little clock skew
+# cannot push you into a 429. Lower it for more speed, raise it to be safer.
+reserve = 5
+
+# In-memory cache lifetime in seconds. Rotector's Terms of Use forbid keeping
+# responses longer than 24 hours, so this is clamped to just under that.
+cache_ttl = 3600
+
+# Concurrent in-flight requests. The rate limiter is the real throttle;
+# this just controls how many can be waiting on the wire at once.
+concurrency = 3
+
+[scan]
+# Bots have no Roblox connections, so scanning them only burns rate limit.
+skip_bots = true
+
+# Cap members pulled per server. 0 means no cap.
+max_members = 0
+
+# In a real server almost everyone has nothing against them, and listing them
+# all buries the few that matter. These hide the noise from the results table.
+# Nothing is discarded -- the counts stay in the summary line and pressing 'f'
+# cycles to "Everything".
+hide_no_detections = true   # Rotector has not flagged them
+hide_unknown = true         # no Rotector-known Roblox account at all
+
+[proxy]
+# Routing Rotector lookups over proxies.
+#
+# READ THIS FIRST. Rotector's Terms of Use prohibit "circumventing rate limits
+# through multiple keys, rotating IPs, or other means", and the stated penalty
+# is losing API access. Spreading a scan across proxy IPs is exactly that.
+# The sanctioned way to go faster is an API key from panel.rotector.com, where
+# you can request a higher limit on a single connection.
+#
+# Off by default. Turning it on is your call.
+enabled = false
+
+# Newline-delimited proxy list. Blank lines and #comments ignored.
+# Accepts host:port, user:pass@host:port, host:port:user:pass, and
+# scheme://... for http, https, socks4, socks5.
+file = "proxies.txt"
+
+# Extra proxies inline, merged with anything read from `file`.
+list = []
+
+# false -> your connection is a co-equal route and carries traffic alongside
+#          the proxies, so its budget is used too (default)
+# true  -> your connection is held back as a standby, used only once no proxy
+#          is usable
+direct_as_fallback = false
+
+# A route is parked on its first failure with escalating backoff. This is the
+# point at which it is also reported as unhealthy in the UI.
+max_failures = 3
+
+timeout = 20.0
+
+# Concurrent probes while testing. Proxies are tested against the Rotector API
+# itself -- no third-party IP service is involved.
+probe_concurrency = 10

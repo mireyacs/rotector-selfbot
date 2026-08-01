@@ -1,0 +1,22 @@
+"""Run every test script. Usage: python tests/run_all.py [--offline]"""
+import subprocess, sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+OFFLINE = {"test_units.py", "test_progress.py", "test_gateway_scrape.py",
+           "test_proxy_speedup.py"}
+NETWORK = {"test_live_api.py", "test_tui.py", "test_routing.py",
+           "test_proxy_tui.py", "test_streaming.py"}
+
+only_offline = "--offline" in sys.argv
+suites = sorted(OFFLINE if only_offline else OFFLINE | NETWORK)
+
+failed = []
+for name in suites:
+    print(f"\n{'=' * 70}\n  {name}\n{'=' * 70}")
+    if subprocess.run([sys.executable, str(HERE / name)]).returncode:
+        failed.append(name)
+
+print(f"\n{'=' * 70}")
+print(f"FAILED: {', '.join(failed)}" if failed else f"All {len(suites)} suite(s) passed.")
+sys.exit(1 if failed else 0)

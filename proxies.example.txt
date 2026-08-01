@@ -1,0 +1,11 @@
+# One proxy per line. Blank lines and #comments are ignored.
+# Every form below is accepted:
+#
+#   1.2.3.4:8080
+#   user:pass@1.2.3.4:8080
+#   1.2.3.4:8080:user:pass          (the form most vendors hand out)
+#   http://1.2.3.4:8080
+#   socks5://user:pass@1.2.3.4:1080
+#
+# Test them with:  python -m rsb proxies
+# Pressing 's' there rewrites proxies.txt with only the ones that work.

@@ -1,0 +1,6 @@
+config.toml
+exports/
+.venv/
+__pycache__/
+*.pyc
+proxies.txt
