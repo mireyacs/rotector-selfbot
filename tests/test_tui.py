@@ -1,5 +1,6 @@
 """Headless TUI smoke test: stub Discord, use the REAL Rotector API."""
 import asyncio, sys
+from pathlib import Path
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 import rsb.tui.app as appmod
@@ -139,16 +140,86 @@ async def main():
         app.query_one("#search", appmod.Input).value = ""
         await pilot.pause(0.3)
 
-        # export
-        app.action_export()
+        # --- export: dialog, filter scope, segmentation, remembered defaults
+        import tempfile
+        from rsb.tui.dialogs import ExportDialog
+        from textual.widgets import Button, Checkbox, Input as TInput, SelectionList
+
+        workdir = Path(tempfile.mkdtemp())
+        app.config.export.directory = str(workdir / "exports")
+        app.config.source = workdir / "config.toml"
+
+        app.filter_mode = appmod.FilterMode.THREATS
+        app._rebuild_table()
         await pilot.pause(0.3)
-        from pathlib import Path
-        exports = sorted(Path.cwd().glob("exports/*.json"))
-        assert exports, "no export written"
-        import json
-        payload = json.loads(exports[-1].read_text())
-        assert payload["members"] and payload["attribution"]
-        print(f"[ok] export wrote {exports[-1].name} ({len(payload['members'])} members)")
+        shown_now = len(app._shown)
+        assert 0 < shown_now < len(MEMBERS)
+
+        app.action_export()
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if isinstance(app.screen, ExportDialog):
+                break
+        assert isinstance(app.screen, ExportDialog), "export dialog never opened"
+        print(f"[ok] export dialog opened (filter shows {shown_now} of {len(MEMBERS)})")
+
+        dialog = app.screen
+        dialog.query_one("#formats", SelectionList).select_all()
+        dialog.query_one("#segment", TInput).value = "1"
+        dialog.query_one("#remember", Checkbox).value = True
+        dialog.query_one("#confirm", Button).press()
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if not isinstance(app.screen, ExportDialog):
+                break
+
+        folders = list((workdir / "exports").glob("*"))
+        assert folders, "no export folder written"
+        files = sorted(f.name for f in folders[0].iterdir())
+        print(f"[ok] exported into {folders[0].name}/ -> {len(files)} files")
+
+        csv_parts = [f for f in files if f.endswith(".csv")]
+        assert len(csv_parts) == shown_now, (
+            f"{len(csv_parts)} csv segments for {shown_now} rows at segment_size=1"
+        )
+        assert any(f.endswith(".txt") for f in files), files
+        assert any(f.endswith(".json") for f in files), files
+        print(f"[ok] segmented into {len(csv_parts)} CSV parts, plus TXT and JSON")
+
+        import json as _json
+        payload = _json.loads(
+            next(f for f in folders[0].iterdir() if f.suffix == ".json").read_text()
+        )
+        assert len(payload["members"]) == shown_now, (
+            f"export wrote {len(payload['members'])} rows, but the filter shows "
+            f"{shown_now} -- export ignored the filter"
+        )
+        assert "Threats only" in payload["scope"], payload["scope"]
+        print(f"[ok] export honoured the filter: {len(payload['members'])} rows, "
+              f"scope {payload['scope']!r}")
+
+        import tomllib as _tomllib
+        remembered = _tomllib.loads((workdir / "config.toml").read_text())
+        assert remembered["export"]["segment_size"] == 1
+        assert set(remembered["export"]["formats"]) == {"csv", "txt", "json"}
+        print(f"[ok] defaults remembered in config.toml: "
+              f"{remembered['export']['formats']}, segment {remembered['export']['segment_size']}")
+
+        # --- copy the selected member
+        table = app.query_one("#results", appmod.DataTable)
+        table.move_cursor(row=0)
+        await pilot.pause(0.2)
+        row = app._selected_row()
+        assert row is not None
+        summary = app._member_summary(row)
+        assert row.member.id in summary and "rotector.com" in summary
+        app.action_copy()
+        await pilot.pause(0.2)
+        print(f"[ok] copy produced a {len(summary)}-char summary with attribution")
+
+        app.filter_mode = appmod.FilterMode.FINDINGS
+        app._rebuild_table()
+        await pilot.pause(0.2)
 
         # render the screen so we can eyeball the layout
         app.filter_mode = appmod.FilterMode.ATTENTION

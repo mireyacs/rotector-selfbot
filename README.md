@@ -78,7 +78,9 @@ for elevated limits.
 | `s` / `enter` | Scan the selected server |
 | `f` | Cycle filter: Findings → Threats → Caution+ → Tracked servers → Everything |
 | `/` | Search by name, Discord id, or linked Roblox username |
-| `e` | Export results to `exports/` as JSON + CSV |
+| `e` | Export — opens a dialog for formats, scope and columns |
+| `c` | Copy the selected member's full findings to the clipboard |
+| `k` / `b` | Kick / ban the selected member |
 | `x` | Stop a running scan |
 | `ctrl+r` | Reload the server list |
 | `q` | Quit |
@@ -147,9 +149,28 @@ point the ETA becomes meaningful.
 
 Members themselves come from the gateway, the same way the real client reads
 them: **OP 14** subscribes to slices of the member sidebar and the server
-answers with `GUILD_MEMBER_LIST_UPDATE`. If no channel exposes a sidebar, it
-falls back to **OP 8** (`REQUEST_GUILD_MEMBERS`) — an open query if your
-permissions allow it, otherwise a prefix scan.
+answers with `GUILD_MEMBER_LIST_UPDATE`.
+
+### Reading *all* the members
+
+A member the sidebar never shows is a member never checked, so coverage is
+treated as the priority:
+
+- **Channels `@everyone` can view are always tried first.** A sidebar only
+  lists members who can see its channel — scrape a staff-only channel and you
+  get a partial member list with no indication anything is missing. Visibility
+  is resolved the way Discord resolves it: the `@everyone` role's base
+  permissions, then the category's overwrite, then the channel's own. A single
+  overwrite lookup is not enough, and getting this wrong silently excludes
+  people.
+- **Results are unioned across channels, not replaced**, so anyone visible
+  through only one channel is still picked up.
+- **If the union still falls short** of the guild's member count, the **OP 8**
+  search (`REQUEST_GUILD_MEMBERS`) sweeps for the remainder and is unioned in
+  too — an open query where permissions allow, otherwise a prefix scan.
+
+If no channel is visible to `@everyone` at all, the status bar says so, because
+the resulting list may be partial through no fault of the tool.
 
 > **Coverage caveat, inherited from Discord:** in large guilds the member
 > sidebar only lists non-offline members. A scan covers who is *visible*, which
@@ -182,6 +203,62 @@ A member with several linked accounts takes the worst verdict among them.
 Tracked-server membership is shown as its own column and in the detail pane,
 but deliberately does **not** feed the verdict — being in a monitored server is
 a signal worth seeing, not a finding about the person.
+
+## Exports
+
+`e` opens a dialog: which formats, what scope, how to segment, and which of the
+17 columns to include.
+
+**Scope defaults to the current filter.** If you have narrowed the table to
+threats, that is what gets written — exporting everyone when you asked for a
+subset is both surprising and hands on far more personal data than you wanted.
+`Everything scanned` is one radio button away.
+
+Each export lands in its own dated folder:
+
+```
+exports/My-Server-20260801T120000Z/
+  My-Server-20260801T120000Z.part1-of-3.csv
+  My-Server-20260801T120000Z.part2-of-3.csv
+  My-Server-20260801T120000Z.part3-of-3.csv
+  My-Server-20260801T120000Z.txt
+  README.txt
+```
+
+- **CSV** — segmented at `segment_size` rows (default 1000). Every part is a
+  complete CSV with its own header, so each opens on its own; a 40,000-member
+  scan becomes 40 files a spreadsheet will actually load rather than one it
+  won't.
+- **TXT** — a readable per-member report rather than a table, for reading or
+  pasting into a ticket.
+- **JSON** — the full structured data.
+- **README.txt** — what this is, the scope it was taken at, and the 24-hour
+  expiry.
+
+Ticking *Remember these settings* writes them to `[export]` in `config.toml`.
+Only that section is rewritten — comments elsewhere in the file survive.
+
+## Acting on a member
+
+`c` copies the selected member's findings — verdict, every linked Roblox
+account, reasons, evidence, profile links — as plain text with attribution.
+
+`k` and `b` kick or ban, with a reason that is either generated from the
+Rotector finding or written by you. Both open a dialog showing the exact text
+that will land in the audit log. Two things are enforced rather than left to
+judgement:
+
+- **Attribution is always appended.** Rotector's terms require that anyone
+  actioned on their data can appeal, so `Appeal at rotector.com` is added to
+  every reason including your own — and the appeal link is never what gets
+  trimmed when a reason is too long for Discord's 512-character limit.
+- **Non-actionable findings are refused.** Rotector documents only *Flagged*
+  and *Confirmed* as safe to action. Anything else — including `NO DETECTIONS`
+  and `UNKNOWN` — is blocked by `moderation.require_threat`. Turning that off
+  still shows what is wrong with the action and still requires an explicit
+  per-action acknowledgement; it never becomes routine.
+
+Actioned rows are struck through and tagged `[kicked]` / `[banned]`.
 
 ## Time estimates
 
@@ -344,6 +421,15 @@ The client is built to honour them, but they bind *you*:
   unrelated dispatches stream in, that a silent channel still gives up, and that
   filtered subscriptions drop irrelevant events. Reverting either fix makes this
   suite hang, which is the bug it exists to catch.
+- `test_export.py` — no network: CSV segmentation (2,500 rows → 3 self-contained
+  parts, all rows preserved), TXT/JSON/README contents, column selection, and
+  config round-tripping that proves comments elsewhere in the file survive.
+  Also reason construction — attribution never duplicated, never trimmed away,
+  512-char limit respected — and that every non-actionable flag type is refused.
+- `test_moderation_tui.py` — the kick/ban flow end to end with Discord stubbed:
+  that an acknowledgement is genuinely required, that `require_threat` blocks
+  even an acknowledged action, that a custom reason keeps its attribution, and
+  that a 403 is explained rather than swallowed.
 - `test_streaming.py` — a gateway that reveals members in slow waves against the
   live API, asserting on *ordering*: rows must exist before the member list has
   finished loading. Wiring the phases back up sequentially makes it fail with
@@ -376,6 +462,8 @@ rsb/
   config.py        TOML + env + flags
   ratelimit.py     sliding window, header sync, Retry-After
   proxy.py         route pool, health, failover, proxy probing
+  export.py        CSV/TXT/JSON renderers and segmentation
+  moderation.py    reason construction and actionability rules
   eta.py           throughput measurement and time estimates
   rotector.py      API client, batching, two-hop scan
   verdict.py       flag-type semantics and verdict mapping
@@ -384,6 +472,7 @@ rsb/
     gateway.py     websocket, OP 14 sidebar scrape, OP 8 fallback
   tui/app.py       Textual UI - scanner
   tui/proxies.py   Textual UI - proxy tester
+  tui/dialogs.py   export options and kick/ban modals
 ```
 
 Data: [Rotector](https://rotector.com).

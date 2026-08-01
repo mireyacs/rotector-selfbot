@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import csv
-import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -33,7 +30,11 @@ from ..discord import (
     Guild,
     GuildMember,
 )
+from ..discord.http import DiscordForbidden, DiscordNotFound
 from ..eta import RateEstimator, estimate_scan_seconds, format_duration
+from ..export import DEFAULT_COLUMNS, export as render_export, ExportRow
+from ..moderation import build_reason, check_eligibility
+from .dialogs import ExportDialog, ModerationDialog
 from ..proxy import AllRoutesFailed
 from ..ratelimit import RateLimiter
 from ..rotector import MemberReport, RotectorClient, RotectorError
@@ -82,6 +83,8 @@ class _ScanAborted(Exception):
 class Row:
     member: GuildMember
     report: MemberReport
+    #: "kicked" / "banned" once acted on, for the table to show
+    actioned: str | None = None
 
 
 class ScannerApp(App):
@@ -139,6 +142,9 @@ class ScannerApp(App):
         ("f", "cycle_filter", "Filter"),
         ("slash", "search", "Search"),
         ("e", "export", "Export"),
+        ("c", "copy", "Copy member"),
+        ("k", "kick", "Kick"),
+        ("b", "ban", "Ban"),
         ("ctrl+r", "reload_guilds", "Reload servers"),
         ("x", "stop_scan", "Stop scan"),
         ("escape", "close_search", "", ),
@@ -501,8 +507,13 @@ class ScannerApp(App):
         else:
             roblox = Text("-", style="dim")
 
+        name = Text(f"{row.member.display_name}", overflow="ellipsis")
+        if row.actioned:
+            name.stylize("strike dim")
+            name.append(f" [{row.actioned}]", style="bold green")
+
         return [
-            Text(f"{row.member.display_name}", overflow="ellipsis"),
+            name,
             Text(verdict_label(verdict), style=verdict_style(verdict)),
             Text(flag_name(worst.flag_type if worst else None)),
             Text(category_name(worst.category if worst else None) or "-"),
@@ -679,78 +690,238 @@ class ScannerApp(App):
         except Exception as exc:  # noqa: BLE001
             self._set_status(str(exc), "bold red")
 
+    # -- export ------------------------------------------------------------
+
+    def _export_rows(self, scope: str) -> list[ExportRow]:
+        """Rows for an export, honouring the table's filter unless told not to.
+
+        ``filtered`` exports exactly what is on screen, in the order shown --
+        exporting everyone when the operator has narrowed to threats is
+        surprising, and hands on far more personal data than was asked for.
+        """
+        if scope == "all":
+            source = sorted(
+                self.rows.values(),
+                key=lambda r: (-int(r.report.verdict), r.member.display_name.lower()),
+            )
+        else:
+            source = [self.rows[key] for key in self._shown if key in self.rows]
+        return [
+            ExportRow(
+                discord_id=row.member.id,
+                username=row.member.username,
+                display_name=row.member.display_name,
+                report=row.report,
+            )
+            for row in source
+        ]
+
     def action_export(self) -> None:
         if not self.rows or self.current_guild is None:
             self._set_status("Nothing to export yet.", "yellow")
             return
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in self.current_guild.name)[:40]
-        out_dir = Path.cwd() / "exports"
-        out_dir.mkdir(exist_ok=True)
-        base = out_dir / f"{safe}-{stamp}"
+        self.run_export()
 
-        payload = {
-            "guild": {"id": self.current_guild.id, "name": self.current_guild.name},
-            "generated_at": stamp,
-            "expires_at": "24 hours after generated_at (Rotector Terms of Use #1)",
-            "attribution": ATTRIBUTION,
-            "members": [
-                {
-                    "discord_id": row.member.id,
-                    "username": row.member.username,
-                    "display_name": row.member.display_name,
-                    "verdict": verdict_label(row.report.verdict),
-                    "tracked_servers": [
-                        {"id": s.server_id, "name": s.server_name, "tase": s.is_tase}
-                        for s in row.report.servers
-                    ],
-                    "roblox_accounts": [
-                        {
-                            "id": acc.user_id,
-                            "username": acc.username,
-                            "flag_type": acc.flag_type,
-                            "flag_name": flag_name(acc.flag_type),
-                            "actionable": flag_is_actionable(acc.flag_type),
-                            "category": category_name(acc.category),
-                            "confidence": acc.confidence,
-                            "reasons": acc.reasons,
-                        }
-                        for acc in row.report.accounts
-                    ],
-                }
-                for row in sorted(
-                    self.rows.values(), key=lambda r: -int(r.report.verdict)
-                )
-            ],
-        }
-        base.with_suffix(".json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-        with base.with_suffix(".csv").open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                ["discord_id", "username", "verdict", "flag", "actionable",
-                 "category", "roblox_accounts", "tracked_servers"]
+    @work(exclusive=True, group="export")
+    async def run_export(self) -> None:
+        settings = self.config.export
+        choice = await self.push_screen_wait(
+            ExportDialog(
+                formats=settings.formats,
+                scope=settings.scope,
+                segment_size=settings.segment_size,
+                columns=settings.columns or list(DEFAULT_COLUMNS),
+                filter_name=self.filter_mode.value,
+                filtered_count=len(self._shown),
+                total_count=len(self.rows),
             )
-            for row in sorted(self.rows.values(), key=lambda r: -int(r.report.verdict)):
-                worst = row.report.worst_account
-                writer.writerow([
-                    row.member.id,
-                    row.member.username,
-                    verdict_label(row.report.verdict),
-                    flag_name(worst.flag_type if worst else None),
-                    flag_is_actionable(worst.flag_type if worst else None),
-                    category_name(worst.category if worst else None) or "",
-                    " ".join(f"{a.username}({a.user_id})" for a in row.report.accounts),
-                    len(row.report.servers),
-                ])
+        )
+        if choice is None:
+            self._set_status("Export cancelled.")
+            return
+
+        rows = self._export_rows(choice.scope)
+        if not rows:
+            self._set_status(
+                "Nothing matches the current filter - nothing exported.", "yellow"
+            )
+            return
+
+        guild = self.current_guild
+        try:
+            manifest = render_export(
+                rows,
+                guild_name=guild.name,
+                guild_id=guild.id,
+                base_directory=Path(settings.directory),
+                formats=choice.formats,
+                columns=choice.columns,
+                scope=(
+                    "everything scanned"
+                    if choice.scope == "all"
+                    else f"filter: {self.filter_mode.value}"
+                ),
+                segment_size=choice.segment_size,
+            )
+        except OSError as exc:
+            self._set_status(f"Export failed: {exc}", "bold red")
+            return
+
+        if choice.remember:
+            settings.formats = choice.formats
+            settings.scope = choice.scope
+            settings.segment_size = choice.segment_size
+            settings.columns = choice.columns
+            try:
+                saved = self.config.save_export_settings()
+                remembered = f" Saved defaults to {saved.name}."
+            except OSError as exc:
+                remembered = f" (could not save defaults: {exc})"
+        else:
+            remembered = ""
 
         try:
-            shown = base.relative_to(Path.cwd())
+            shown = manifest.directory.relative_to(Path.cwd())
         except ValueError:
-            shown = base
-        self._set_status(
-            f"Exported {shown}.json and .csv - delete within 24h per Rotector ToS."
+            shown = manifest.directory
+        parts = (
+            f" in {manifest.segments} segments" if manifest.segments > 1 else ""
         )
+        self._set_status(
+            f"Exported {manifest.rows:,} members{parts} to {shown}/ "
+            f"({', '.join(manifest.formats)}).{remembered} Delete within 24h."
+        )
+
+    # -- member actions ----------------------------------------------------
+
+    def _selected_row(self) -> Row | None:
+        table = self.query_one("#results", DataTable)
+        if table.cursor_row < 0:
+            return None
+        try:
+            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        except Exception:
+            return None
+        return self.rows.get(key)
+
+    def action_copy(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            self._set_status("No member selected.", "yellow")
+            return
+        text = self._member_summary(row)
+        try:
+            self.copy_to_clipboard(text)
+        except Exception as exc:  # noqa: BLE001 - terminal may not support OSC 52
+            self._set_status(f"Could not copy: {exc}", "yellow")
+            return
+        self._set_status(
+            f"Copied {row.member.display_name} ({len(text)} chars) to the clipboard."
+        )
+
+    def _member_summary(self, row: Row) -> str:
+        """Plain-text summary of one member, for the clipboard."""
+        report = row.report
+        lines = [
+            f"{row.member.display_name} ({row.member.tag})",
+            f"Discord ID: {row.member.id}",
+            f"Verdict: {verdict_label(report.verdict)}",
+        ]
+        for account in sorted(report.accounts, key=lambda a: -int(a.verdict)):
+            lines.append(
+                f"  Roblox {account.username} ({account.user_id}) - "
+                f"{flag_name(account.flag_type)}"
+                + (f" / {category_name(account.category)}" if account.category else "")
+            )
+            lines.append(f"    {account.profile_url}")
+            for name, detail in (account.reasons or {}).items():
+                message = str(detail.get("message", "")).replace("\n", " / ")
+                lines.append(f"    {name}: {message}")
+        if report.servers:
+            lines.append(
+                f"Tracked servers: "
+                + ", ".join(s.server_name for s in report.servers[:8])
+            )
+        lines.append(ATTRIBUTION)
+        return "\n".join(lines)
+
+    def action_kick(self) -> None:
+        self._moderate("kick")
+
+    def action_ban(self) -> None:
+        self._moderate("ban")
+
+    def _moderate(self, action: str) -> None:
+        row = self._selected_row()
+        if row is None:
+            self._set_status("No member selected.", "yellow")
+            return
+        if self.current_guild is None or self.http is None:
+            return
+        self.run_moderation(action, row)
+
+    @work(exclusive=True, group="moderate")
+    async def run_moderation(self, action: str, row: Row) -> None:
+        guild = self.current_guild
+        eligibility = check_eligibility(
+            row.report, require_threat=self.config.moderation.require_threat
+        )
+        choice = await self.push_screen_wait(
+            ModerationDialog(
+                action=action,
+                member_label=f"{row.member.display_name} ({row.member.tag})",
+                member_id=row.member.id,
+                report=row.report,
+                eligibility=eligibility,
+                template=self.config.moderation.default_reason,
+                delete_message_seconds=self.config.moderation.delete_message_seconds,
+            )
+        )
+        if choice is None:
+            self._set_status(f"{action.capitalize()} cancelled.")
+            return
+
+        verb = "Kicking" if action == "kick" else "Banning"
+        self._set_activity(f"{verb} {row.member.display_name}...")
+        try:
+            if action == "kick":
+                await self.http.kick(guild.id, row.member.id, choice.reason)
+            else:
+                await self.http.ban(
+                    guild.id,
+                    row.member.id,
+                    choice.reason,
+                    choice.delete_message_seconds,
+                )
+        except DiscordForbidden:
+            self._set_status(
+                f"Cannot {action} {row.member.display_name}: this account lacks "
+                f"the permission, or the target outranks it.",
+                "bold red",
+            )
+            return
+        except DiscordNotFound:
+            self._set_status(
+                f"{row.member.display_name} is no longer in the server.", "yellow"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"{action.capitalize()} failed: {exc}", "bold red")
+            return
+
+        done = "Kicked" if action == "kick" else "Banned"
+        self._set_status(f"{done} {row.member.display_name}. Reason: {choice.reason}")
+        self._mark_actioned(row, done.lower())
+
+    def _mark_actioned(self, row: Row, what: str) -> None:
+        """Note the action on the row so it is obvious what has been handled."""
+        row.actioned = what
+        try:
+            table = self.query_one("#results", DataTable)
+            for column, cell in zip(table.columns, self._cells(row)):
+                table.update_cell(row.member.id, column, cell)
+        except Exception:
+            pass
 
     # -- status bar --------------------------------------------------------
 

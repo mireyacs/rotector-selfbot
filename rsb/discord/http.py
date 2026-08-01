@@ -22,6 +22,7 @@ BROWSER_UA = (
 TEXT_CHANNEL_TYPES = {0, 5}
 
 VIEW_CHANNEL = 1 << 10
+ADMINISTRATOR = 1 << 3
 
 
 class DiscordAuthError(RuntimeError):
@@ -30,6 +31,14 @@ class DiscordAuthError(RuntimeError):
 
 class DiscordHTTPError(RuntimeError):
     pass
+
+
+class DiscordForbidden(DiscordHTTPError):
+    """The account lacks the permission for this action."""
+
+
+class DiscordNotFound(DiscordHTTPError):
+    """The target no longer exists (already kicked, or left)."""
 
 
 @dataclass
@@ -62,6 +71,11 @@ class Channel:
     type: int
     position: int
     everyone_can_view: bool
+    parent_id: str | None = None
+
+    @property
+    def visibility(self) -> str:
+        return "everyone" if self.everyone_can_view else "restricted"
 
 
 class DiscordHTTP:
@@ -83,9 +97,9 @@ class DiscordHTTP:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def _get(self, path: str, **params):
+    async def _request(self, method: str, path: str, **kwargs):
         for attempt in range(5):
-            resp = await self._http.get(path, params=params or None)
+            resp = await self._http.request(method, path, **kwargs)
             if resp.status_code == 429:
                 body = _safe_json(resp)
                 await asyncio.sleep(float(body.get("retry_after", 1.0)) + 0.25)
@@ -96,14 +110,21 @@ class DiscordHTTP:
                     "or invalidated by a password change."
                 )
             if resp.status_code == 403:
-                raise DiscordHTTPError(f"{path}: forbidden (403)")
+                raise DiscordForbidden(f"{path}: missing permissions (403)")
+            if resp.status_code == 404:
+                raise DiscordNotFound(f"{path}: not found (404)")
             if resp.status_code >= 500:
                 await asyncio.sleep(min(2**attempt, 10))
                 continue
             if resp.status_code >= 400:
-                raise DiscordHTTPError(f"{path}: HTTP {resp.status_code} {resp.text[:200]}")
-            return resp.json()
+                detail = _safe_json(resp).get("message") or resp.text[:200]
+                raise DiscordHTTPError(f"{path}: HTTP {resp.status_code} {detail}")
+            return resp
         raise DiscordHTTPError(f"{path}: gave up after repeated failures")
+
+    async def _get(self, path: str, **params):
+        resp = await self._request("GET", path, params=params or None)
+        return resp.json()
 
     async def me(self) -> dict:
         return await self._get("/users/@me")
@@ -114,38 +135,140 @@ class DiscordHTTP:
         guilds.sort(key=lambda g: (-(g.member_count or 0), g.name.lower()))
         return guilds
 
-    async def channels(self, guild_id: str) -> list[Channel]:
-        """Text channels, most-likely-viewable first.
+    async def everyone_permissions(self, guild_id: str) -> int:
+        """Base permissions of the @everyone role (its id equals the guild id)."""
+        try:
+            roles = await self._get(f"/guilds/{guild_id}/roles")
+        except (DiscordHTTPError, DiscordForbidden):
+            return VIEW_CHANNEL  # assume the common default rather than give up
+        for role in roles:
+            if str(role.get("id")) == str(guild_id):
+                try:
+                    return int(role.get("permissions") or 0)
+                except (TypeError, ValueError):
+                    return VIEW_CHANNEL
+        return VIEW_CHANNEL
 
-        The member sidebar is keyed by a channel's permission set, so any
-        channel @everyone can read yields the full list.  Channels with an
-        explicit @everyone VIEW_CHANNEL deny are tried last.
+    async def channels(self, guild_id: str) -> list[Channel]:
+        """Text channels, ordered so the most *widely visible* come first.
+
+        This ordering is load-bearing for coverage. The member sidebar only
+        lists members who can see the channel it belongs to, so scraping a
+        staff-only channel silently returns a partial member list. Channels
+        @everyone can view are therefore always tried first.
+
+        Visibility is computed the way Discord computes it: the @everyone role's
+        base permissions, then the category's overwrite for @everyone, then the
+        channel's own -- not just a single overwrite lookup.
         """
         raw = await self._get(f"/guilds/{guild_id}/channels")
+        base = await self.everyone_permissions(guild_id)
+        by_id = {str(c["id"]): c for c in raw if c.get("id")}
+
         out: list[Channel] = []
-        for c in raw:
-            if c.get("type") not in TEXT_CHANNEL_TYPES:
+        for channel in raw:
+            if channel.get("type") not in TEXT_CHANNEL_TYPES:
                 continue
             out.append(
                 Channel(
-                    id=str(c["id"]),
-                    name=c.get("name") or "?",
-                    type=int(c.get("type", 0)),
-                    position=int(c.get("position") or 0),
-                    everyone_can_view=_everyone_can_view(c, guild_id),
+                    id=str(channel["id"]),
+                    name=channel.get("name") or "?",
+                    type=int(channel.get("type", 0)),
+                    position=int(channel.get("position") or 0),
+                    parent_id=(
+                        str(channel["parent_id"]) if channel.get("parent_id") else None
+                    ),
+                    everyone_can_view=_everyone_can_view(channel, guild_id, base, by_id),
                 )
             )
         out.sort(key=lambda c: (not c.everyone_can_view, c.position))
         return out
 
+    # -- moderation --------------------------------------------------------
 
-def _everyone_can_view(channel: dict, guild_id: str) -> bool:
-    for ow in channel.get("permission_overwrites") or []:
+    async def kick(self, guild_id: str, user_id: str, reason: str) -> None:
+        """Remove a member. They can rejoin with a new invite."""
+        await self._request(
+            "DELETE",
+            f"/guilds/{guild_id}/members/{user_id}",
+            headers=_reason_header(reason),
+        )
+
+    async def ban(
+        self,
+        guild_id: str,
+        user_id: str,
+        reason: str,
+        delete_message_seconds: int = 0,
+    ) -> None:
+        """Ban a member, optionally purging their recent messages."""
+        await self._request(
+            "PUT",
+            f"/guilds/{guild_id}/bans/{user_id}",
+            headers=_reason_header(reason),
+            json={
+                "delete_message_seconds": max(0, min(604800, delete_message_seconds))
+            },
+        )
+
+
+#: Discord truncates audit-log reasons past this
+MAX_REASON = 512
+
+
+def _reason_header(reason: str) -> dict[str, str]:
+    """Audit-log reason, trimmed and encoded as Discord requires."""
+    from urllib.parse import quote
+
+    text = " ".join((reason or "").split())[:MAX_REASON]
+    return {"X-Audit-Log-Reason": quote(text, safe="")}
+
+
+def _apply_overwrite(allowed: bool, overwrite: dict) -> bool:
+    try:
+        deny = int(overwrite.get("deny") or 0)
+        allow = int(overwrite.get("allow") or 0)
+    except (TypeError, ValueError):
+        return allowed
+    if deny & VIEW_CHANNEL:
+        allowed = False
+    if allow & VIEW_CHANNEL:
+        allowed = True
+    return allowed
+
+
+def _everyone_overwrite(channel: dict, guild_id: str) -> dict | None:
+    for overwrite in channel.get("permission_overwrites") or []:
         # type 0 == role; the @everyone role id equals the guild id
-        if str(ow.get("id")) == str(guild_id) and int(ow.get("type", 0)) == 0:
-            if int(ow.get("deny") or 0) & VIEW_CHANNEL:
-                return False
-    return True
+        if str(overwrite.get("id")) == str(guild_id) and int(overwrite.get("type", 0)) == 0:
+            return overwrite
+    return None
+
+
+def _everyone_can_view(
+    channel: dict, guild_id: str, base_permissions: int, by_id: dict[str, dict]
+) -> bool:
+    """Can the @everyone role view this channel?
+
+    Base role permissions, then the category's @everyone overwrite, then the
+    channel's own -- the same order Discord resolves them in.
+    """
+    if base_permissions & ADMINISTRATOR:
+        return True
+    allowed = bool(base_permissions & VIEW_CHANNEL)
+
+    parent_id = channel.get("parent_id")
+    if parent_id:
+        parent = by_id.get(str(parent_id))
+        if parent:
+            overwrite = _everyone_overwrite(parent, guild_id)
+            if overwrite:
+                allowed = _apply_overwrite(allowed, overwrite)
+
+    overwrite = _everyone_overwrite(channel, guild_id)
+    if overwrite:
+        allowed = _apply_overwrite(allowed, overwrite)
+    return allowed
 
 
 def _safe_json(resp: httpx.Response) -> dict:

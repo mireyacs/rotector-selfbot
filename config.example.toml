@@ -81,3 +81,46 @@ timeout = 20.0
 # Concurrent probes while testing. Proxies are tested against the Rotector API
 # itself -- no third-party IP service is involved.
 probe_concurrency = 10
+
+[export]
+# Anything you change in the export dialog can be saved back here by ticking
+# "Remember these settings" -- only this section is rewritten, comments
+# elsewhere in the file are left alone.
+
+# Any of "csv", "txt", "json".
+formats = ["csv", "txt"]
+
+# "filtered" exports exactly what the results table is showing, honouring the
+# active filter. "all" exports every scanned member regardless of the filter.
+scope = "filtered"
+
+# Rows per CSV segment. A long list is split into numbered parts inside a
+# per-export folder so spreadsheets can actually open it. 0 = one file.
+segment_size = 1000
+
+# Columns to write. Empty means the default set. Available:
+#   discord_id, username, display_name, verdict, flag, actionable, category,
+#   confidence, roblox_accounts, roblox_ids, roblox_profiles,
+#   detection_sources, tracked_servers, tracked_server_names, reasons,
+#   evidence, error
+columns = []
+
+# Parent folder for exports; each export gets its own dated subfolder.
+directory = "exports"
+
+
+[moderation]
+# Kicking and banning from the results table.
+
+# Rotector documents only flag types Flagged and Confirmed as safe to action.
+# With this on, anything else is blocked outright. Turning it off still shows
+# the warning and still requires an explicit acknowledgement per action.
+require_threat = true
+
+# {reason} is replaced by the Rotector finding. The appeal link is appended
+# automatically whatever you put here -- their Terms of Use require that any
+# action taken on their data lets the affected person appeal.
+default_reason = "Flagged by Rotector: {reason}"
+
+# Message history to purge on ban, in seconds (0-604800). 0 keeps everything.
+delete_message_seconds = 0

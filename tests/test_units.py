@@ -3,7 +3,7 @@ import asyncio, sys, time
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from rsb.discord.gateway import _absorb_ops, _sidebar_ranges, GuildMember
-from rsb.discord.http import _everyone_can_view, VIEW_CHANNEL
+from rsb.discord.http import _everyone_can_view, ADMINISTRATOR, VIEW_CHANNEL
 from rsb.ratelimit import RateLimiter, batch_cost
 from rsb.rotector import MemberReport, RobloxAccount, TrackedServer
 from rsb.verdict import Verdict, flag_is_actionable, verdict_for_flag
@@ -40,13 +40,33 @@ ok("INVALIDATE detected")
 _absorb_ops([{"op": "SYNC", "items": [None, {}, {"member": {}}, {"member": {"user": {}}}]}], members)
 ok("malformed items ignored without raising")
 
-# --- channel permission check --------------------------------------------
-assert _everyone_can_view({"permission_overwrites": []}, "g1") is True
-assert _everyone_can_view(
-    {"permission_overwrites": [{"id": "g1", "type": 0, "deny": str(VIEW_CHANNEL)}]}, "g1") is False
-assert _everyone_can_view(
-    {"permission_overwrites": [{"id": "role9", "type": 0, "deny": str(VIEW_CHANNEL)}]}, "g1") is True
-ok("channel @everyone VIEW_CHANNEL deny detection")
+# --- channel visibility ---------------------------------------------------
+# Load-bearing for coverage: the member sidebar only lists members who can see
+# the channel, so scraping a restricted channel silently truncates the scan.
+G = "g1"
+DENY = {"id": G, "type": 0, "deny": str(VIEW_CHANNEL)}
+ALLOW = {"id": G, "type": 0, "allow": str(VIEW_CHANNEL)}
+
+def visible(channel, base=VIEW_CHANNEL, parents=None):
+    return _everyone_can_view(channel, G, base, parents or {})
+
+assert visible({"permission_overwrites": []}) is True
+assert visible({"permission_overwrites": [DENY]}) is False
+assert visible({"permission_overwrites": []}, base=0) is False
+assert visible({"permission_overwrites": [ALLOW]}, base=0) is True
+assert visible({"permission_overwrites": [{"id": "r9", "type": 0,
+                                           "deny": str(VIEW_CHANNEL)}]}) is True
+ok("@everyone base permissions and channel overwrites resolved")
+
+# a category deny is inherited unless the channel re-allows it
+assert visible({"parent_id": "cat", "permission_overwrites": []},
+               parents={"cat": {"permission_overwrites": [DENY]}}) is False
+assert visible({"parent_id": "cat", "permission_overwrites": [ALLOW]},
+               parents={"cat": {"permission_overwrites": [DENY]}}) is True
+ok("category overwrites are inherited, and channel overwrites win over them")
+
+assert visible({"permission_overwrites": [DENY]}, base=ADMINISTRATOR) is True
+ok("ADMINISTRATOR on @everyone overrides every deny")
 
 # --- verdict mapping ------------------------------------------------------
 assert [verdict_for_flag(f).name for f in (0, 1, 2, 3, 4, 5, 6, 8)] == \

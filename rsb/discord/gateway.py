@@ -42,6 +42,8 @@ FIRST_RESPONSE_TIMEOUT = 6.0
 RANGE_SIZE = 100
 #: absolute cap on one request/drain round, however chatty the guild is
 MAX_ROUND_SECONDS = 20.0
+#: fraction of the guild's member count treated as full coverage
+COVERAGE_TARGET = 0.995
 #: pause between OP 8 prefix queries, to stay clear of the gateway event budget
 PREFIX_QUERY_DELAY = 0.5
 #: how long to wait for chunks after an OP 8 query (they arrive promptly)
@@ -110,6 +112,9 @@ class DiscordGateway:
         self._fatal: Exception | None = None
         # gateway budget: ~120 events / 60s, kept well under
         self._send_limit = RateLimiter(limit=110, window=60.0, reserve=15)
+        #: filled in by fetch_members, for the UI to report coverage
+        self.last_coverage: float | None = None
+        self.last_scrape_channels: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -286,39 +291,97 @@ class DiscordGateway:
         expected: int | None = None,
         on_progress: ScrapeProgress | None = None,
         on_members: MemberSink | None = None,
+        coverage_target: float = COVERAGE_TARGET,
+        max_channels: int = 6,
     ) -> dict[str, GuildMember]:
-        """Enumerate members of ``guild_id``, sidebar first then OP 8.
+        """Enumerate members of ``guild_id``, as completely as possible.
 
-        ``on_members`` is called with each round's *newly seen* members as they
-        arrive, so a caller can start work on them without waiting for the full
-        list. It never repeats a member.
+        Completeness is the priority, because a member the sidebar never shows
+        is a member never checked. Three things serve that:
+
+        * Channels **@everyone can view** are tried first. A sidebar only lists
+          members who can see its channel, so a restricted channel silently
+          yields a partial list -- exactly the failure that is invisible unless
+          you look for it.
+        * Results from several channels are **unioned**, not replaced, so
+          members visible only through one channel are still picked up.
+        * If the union still falls short of the guild's member count, the OP 8
+          search sweeps for the rest and is unioned in too.
+
+        ``on_members`` receives each newly-seen member once, as they arrive.
         """
         self._check_alive()
 
-        candidates = list(channels[:6])
-        for index, channel in enumerate(candidates, start=1):
-            # Announced before the attempt: a channel with no member list costs
-            # a full FIRST_RESPONSE_TIMEOUT of silence before we learn that.
+        members: dict[str, GuildMember] = {}
+        known: set[str] = set()
+        self.last_scrape_channels = []
+
+        def emit() -> None:
+            if not on_members:
+                known.update(members)
+                return
+            fresh = [m for mid, m in members.items() if mid not in known]
+            if fresh:
+                on_members(fresh)
+            known.update(members)
+
+        def covered() -> bool:
+            return bool(expected) and len(members) >= expected * coverage_target
+
+        open_channels = [c for c in channels if c.everyone_can_view]
+        restricted = [c for c in channels if not c.everyone_can_view]
+        # everyone-visible first; restricted ones only as a last resort, since
+        # each can only ever contribute a subset
+        ordered = (open_channels + restricted)[:max_channels]
+
+        if not open_channels and on_progress:
+            on_progress(
+                0,
+                expected,
+                "No channel is visible to @everyone - member list may be partial",
+            )
+
+        for index, channel in enumerate(ordered, start=1):
             if on_progress:
                 on_progress(
-                    0,
+                    len(members),
                     expected,
                     f"Opening member list via #{channel.name} "
-                    f"(channel {index}/{len(candidates)})",
+                    f"({channel.visibility}, channel {index}/{len(ordered)})",
                 )
-            members = await self._scrape_sidebar(
-                guild_id, channel, expected, on_progress, on_members
+            before = len(members)
+            await self._scrape_sidebar(
+                guild_id, channel, expected, on_progress, members, emit
             )
-            if members:
-                return members
-            if on_progress:
+            gained = len(members) - before
+            if gained:
+                self.last_scrape_channels.append(channel.name)
+            elif on_progress:
                 on_progress(
-                    0, expected, f"#{channel.name} exposes no member list, trying the next channel"
+                    len(members),
+                    expected,
+                    f"#{channel.name} added nothing, trying the next channel",
                 )
+            if covered():
+                break
 
-        if on_progress:
-            on_progress(0, expected, "No member list available - falling back to OP 8 search")
-        return await self._request_members(guild_id, expected, on_progress, on_members)
+        if not covered():
+            if on_progress:
+                have = f"{len(members):,}"
+                want = f" of {expected:,}" if expected else ""
+                on_progress(
+                    len(members),
+                    expected,
+                    f"Sidebar gave {have}{want} - searching for the rest (OP 8)",
+                )
+            await self._request_members(
+                guild_id, expected, on_progress, members, emit
+            )
+
+        self.last_coverage = (
+            min(1.0, len(members) / expected) if expected else None
+        )
+        return members
 
     async def _scrape_sidebar(
         self,
@@ -326,11 +389,11 @@ class DiscordGateway:
         channel: Channel,
         expected: int | None,
         on_progress: ScrapeProgress | None,
-        on_members: MemberSink | None = None,
+        members: dict[str, GuildMember],
+        emit: Callable[[], None],
     ) -> dict[str, GuildMember]:
-        members: dict[str, GuildMember] = {}
-        known: set[str] = set()
         queue = self._subscribe({"GUILD_MEMBER_LIST_UPDATE"})
+        started_with = len(members)
         offset = 0
         total: int | None = expected
         barren_rounds = 0
@@ -405,14 +468,12 @@ class DiscordGateway:
 
                 if first and not got_event:
                     # this channel exposes no member list at all
-                    return {}
+                    return members
                 first = False
 
                 gained = len(members) - before
-                if gained and on_members:
-                    # only what this round added, so the sink never sees a repeat
-                    on_members([m for m in members.values() if m.id not in known])
-                    known.update(members)
+                if gained:
+                    emit()
                 if on_progress:
                     on_progress(len(members), total, f"Reading #{channel.name} member list")
 
@@ -443,11 +504,10 @@ class DiscordGateway:
         guild_id: str,
         expected: int | None,
         on_progress: ScrapeProgress | None,
-        on_members: MemberSink | None = None,
+        members: dict[str, GuildMember],
+        emit: Callable[[], None],
     ) -> dict[str, GuildMember]:
-        """OP 8 fallback: try an open query, then brute-force prefixes."""
-        members: dict[str, GuildMember] = {}
-        known: set[str] = set()
+        """OP 8 sweep: an open query first, then brute-force prefixes."""
         queue = self._subscribe({"GUILD_MEMBERS_CHUNK"})
 
         async def run_query(query: str, limit: int) -> int:
@@ -495,9 +555,8 @@ class DiscordGateway:
                 if index is None or count is None or index >= count - 1:
                     break
             gained = len(members) - before
-            if gained and on_members:
-                on_members([m for m in members.values() if m.id not in known])
-                known.update(members)
+            if gained:
+                emit()
             return gained
 
         try:
