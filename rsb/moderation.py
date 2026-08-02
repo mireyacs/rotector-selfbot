@@ -78,9 +78,18 @@ class Eligibility:
     allowed: bool
     needs_override: bool
     explanation: str
+    #: CAUTION means Rotector found *something* but not enough to conclude.
+    #: It is the one tier where acting is defensible and still might be wrong,
+    #: so it is permitted -- behind a second, separate confirmation that
+    #: cannot be satisfied by the same click as the first.
+    needs_double_confirm: bool = False
 
 
-def check_eligibility(report: MemberReport, require_threat: bool = True) -> Eligibility:
+def check_eligibility(
+    report: MemberReport,
+    require_threat: bool = True,
+    allow_caution: bool = True,
+) -> Eligibility:
     """Whether this member may be actioned, and how strongly to warn."""
     account = report.worst_account
     flag = account.flag_type if account else None
@@ -91,6 +100,20 @@ def check_eligibility(report: MemberReport, require_threat: bool = True) -> Elig
             True,
             False,
             f"{flag_name(flag)} - documented by Rotector as safe to action.",
+        )
+
+    if verdict is Verdict.CAUTION and allow_caution:
+        # Provisional and Mixed are real findings that Rotector explicitly
+        # declines to conclude from. Acting is a judgement call, so it is
+        # allowed -- but only through a second confirmation, because the
+        # honest description of this evidence is "might be wrong".
+        return Eligibility(
+            True,
+            True,
+            f"{flag_name(flag)} - Rotector found something here but does "
+            f"not consider it conclusive, and asks that it be reviewed by a "
+            f"person. Acting is your judgement, not the database's.",
+            needs_double_confirm=True,
         )
 
     if verdict is Verdict.UNKNOWN:
@@ -110,6 +133,46 @@ def check_eligibility(report: MemberReport, require_threat: bool = True) -> Elig
         )
 
     return Eligibility(not require_threat, True, detail)
+
+
+#: default text sent to someone before they are actioned. Deliberately plain:
+#: it states what is happening, why, and how to contest it, and claims nothing
+#: Rotector does not.
+DEFAULT_NOTICE = (
+    "You are being {action} from {place}.\n\n"
+    "A Roblox account linked to your Discord account has been flagged in the "
+    "Rotector database: {reason}\n\n"
+    "If you believe this is a mistake, you can appeal at "
+    "https://rotector.com - the appeal goes to Rotector, not to this server."
+)
+
+#: how long the notice may be (Discord's message limit)
+MAX_NOTICE = 2000
+
+
+def build_notice(
+    report: MemberReport,
+    action: str,
+    place: str,
+    template: str = DEFAULT_NOTICE,
+) -> str:
+    """Compose the message sent to someone *before* they are actioned.
+
+    Sending it first is the whole point: once somebody is banned there is no
+    shared server left, and a DM can no longer reach them. A notice that
+    arrives after the door is shut is not a notice.
+    """
+    finding = summarise_finding(report)
+    fields = {"action": action, "place": place, "reason": finding}
+    try:
+        text = template.format(**fields)
+    except (KeyError, IndexError):
+        # a template with stray braces should not cost somebody their notice
+        text = f"{template}\n\n{action} - {place} - {finding}"
+
+    if "rotector.com" not in text.lower():
+        text = f"{text}\n\nYou can appeal at https://rotector.com"
+    return text[:MAX_NOTICE]
 
 
 # --------------------------------------------------------------------------
@@ -161,6 +224,7 @@ def plan_bulk(
     action: str,
     *,
     require_threat: bool = True,
+    allow_caution: bool = True,
     gated: bool = True,
     template: str = "Flagged by Rotector: {reason}",
     custom: str | None = None,
@@ -176,7 +240,11 @@ def plan_bulk(
     for row in rows:
         report = row.report
         if gated:
-            eligibility = check_eligibility(report, require_threat=require_threat)
+            eligibility = check_eligibility(
+                report,
+                require_threat=require_threat,
+                allow_caution=allow_caution,
+            )
         else:
             eligibility = Eligibility(
                 True,

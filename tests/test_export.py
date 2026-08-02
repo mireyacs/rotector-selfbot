@@ -241,11 +241,24 @@ def test_moderation_eligibility():
     assert flagged.allowed and not flagged.needs_override
     ok("Flagged is actionable")
 
-    for flag in (0, 3, 4, 6, 8):
+    for flag in (0, 3, 6, 8):
         result = check_eligibility(make_row(3, flag=flag).report)
         assert result.needs_override, f"flag {flag} should need an override"
         assert not result.allowed, f"flag {flag} allowed under require_threat"
-    ok("flag types 0/3/4/6/8 all require an explicit override, per the docs")
+        assert not result.needs_double_confirm
+    ok("flag types 0/3/6/8 all require an explicit override, per the docs")
+
+    # 4 (Provisional) and 5 (Mixed) are CAUTION: permitted, but only through a
+    # second confirmation. Not the same as actionable, and not the same as
+    # blocked either.
+    for flag in (4, 5):
+        caution = check_eligibility(make_row(3, flag=flag).report)
+        assert caution.allowed and caution.needs_double_confirm, flag
+        assert not check_eligibility(
+            make_row(3, flag=flag).report, allow_caution=False
+        ).allowed
+    ok("flag types 4/5 (CAUTION) are permitted behind a second confirmation, "
+       "and blocked again by allow_caution=false")
 
     unknown = check_eligibility(make_row(4).report)
     assert unknown.needs_override and "no Roblox account" in unknown.explanation

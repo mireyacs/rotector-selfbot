@@ -158,3 +158,27 @@ delete_message_seconds = 0
 
 # Leave group DMs without posting "left the group".
 silent_leave = false
+
+# Allow acting on CAUTION findings (Provisional/Mixed).
+# Never routine: Rotector asks that these be reviewed by a person, so the UI
+# always requires a second, separate confirmation -- ticking the box AND
+# typing the action word. Set false to remove the option entirely.
+allow_caution = true
+
+# BOT TOKENS ONLY. Try to DM someone before kicking or banning them, so they
+# know why and can appeal. Sent first because a banned account shares no server
+# with the bot and can no longer be reached. A closed DM is not a failure --
+# the action still proceeds.
+# Ignored for user tokens: messaging strangers in bulk is what gets a user
+# account flagged for spam.
+notify_before_action = true
+
+# The notice text. Blank uses the built-in wording.
+# {action}, {place} and {reason} are filled in; the appeal link is appended
+# if you leave it out.
+notify_message = ""
+
+# Seconds between members in a bulk action, and between the notices that
+# precede them. Acting fast on many people is what trips Discord's abuse
+# heuristics on a user account.
+bulk_delay = 1.0

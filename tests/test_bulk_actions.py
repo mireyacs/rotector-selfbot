@@ -22,7 +22,7 @@ from rsb.rotector import MemberReport, RobloxAccount
 from rsb.tui.app import PAGE_SIZE, Row
 from rsb.tui.dialogs import BulkActionDialog, BulkPickDialog
 from rsb.verdict import Verdict
-from textual.widgets import Button, DataTable, Input, RadioButton
+from textual.widgets import Button, Checkbox, DataTable, Input, RadioButton
 
 ok = lambda m: print(f"[ok] {m}")
 
@@ -140,10 +140,19 @@ def source_of(app, kind="guild"):
 def test_planning():
     rows = [make_row(n, flag) for n, flag in LAYOUT]
 
-    plan = plan_bulk(rows, "ban", require_threat=True)
-    assert [t.member_id for t in plan.allowed] == ["1", "2", "3"], plan.allowed
-    assert [t.member_id for t in plan.blocked] == ["4", "5", "6"]
+    # member 5 is Mixed -- CAUTION, so allowed but flagged for a second
+    # confirmation rather than acted on as though it were Confirmed
+    plan = plan_bulk(rows, "ban", require_threat=True, past="banned")
+    assert [t.member_id for t in plan.allowed] == ["1", "2", "3", "5"], plan.allowed
+    assert [t.member_id for t in plan.blocked] == ["4", "6"]
     ok(f"gated: {plan.describe()}")
+    cautious = [t.member_id for t in plan.allowed if t.eligibility.needs_double_confirm]
+    assert cautious == ["5"], cautious
+    ok(f"and the CAUTION target is marked as needing its own confirmation: {cautious}")
+
+    strict = plan_bulk(rows, "ban", require_threat=True, allow_caution=False)
+    assert [t.member_id for t in strict.allowed] == ["1", "2", "3"]
+    ok("allow_caution=false keeps the old, stricter plan")
 
     for target in plan.blocked:
         assert not target.eligibility.allowed
@@ -154,11 +163,11 @@ def test_planning():
         assert "rotector.com" in target.reason.lower(), target.reason
     ok("every reason carries the appeal link, as Rotector's terms require")
 
-    ungated = plan_bulk(rows, "block", gated=False)
+    ungated = plan_bulk(rows, "block", gated=False, past="blocked")
     assert len(ungated.allowed) == len(rows) and not ungated.blocked
     ok("blocking is not gated on a finding -- your boundaries are your own")
 
-    override = plan_bulk(rows, "ban", require_threat=False)
+    override = plan_bulk(rows, "ban", require_threat=False, past="banned")
     assert len(override.allowed) == len(rows)
     ok("require_threat=False lets the rest through, as configured")
 
@@ -331,11 +340,13 @@ async def test_confirmation_cannot_be_clicked_past(app, pilot):
     dialog.query_one("#scope-filtered", RadioButton).value = True
     await pilot.pause(0.3)
     assert dialog.scope == "filtered", dialog.scope
-    assert len(dialog.plan.blocked) == 3, dialog.plan.blocked
+    assert len(dialog.plan.blocked) == 2, dialog.plan.blocked
     ok(f"switching scope re-plans: {dialog.plan.describe()}")
 
     expected = len(dialog.plan.allowed)
     dialog.query_one("#confirm-count", Input).value = str(expected)
+    # this scope now includes a CAUTION member, which has its own gate
+    dialog.query_one("#caution-ack", Checkbox).value = True
     dialog.query_one("#confirm", Button).press()
     await pilot.pause(0.4)
     assert result and result[0] is not None, result
@@ -343,7 +354,7 @@ async def test_confirmation_cannot_be_clicked_past(app, pilot):
 
     plan = resolve(result[0].scope, result[0].custom)
     assert len(plan.allowed) == expected
-    assert {t.member_id for t in plan.blocked} == {"4", "5", "6"}
+    assert {t.member_id for t in plan.blocked} == {"4", "6"}
     ok("and the confirmed plan still excludes the ineligible members")
 
 
@@ -367,7 +378,8 @@ async def test_run(app, pilot):
     app.current_source = source_of(app)
     app.config.moderation.bulk_delay = 0.0
     rows = list(app.rows.values())
-    plan = plan_bulk(rows, "ban", require_threat=True)
+    # allow_caution off here, so this stays a clean THREAT-only run
+    plan = plan_bulk(rows, "ban", require_threat=True, allow_caution=False)
 
     app.run_bulk("ban", plan, BulkChoice(scope="threat"))
     await wait_for(lambda: len(app.http.banned) >= 3, pilot, "the bans")
@@ -396,7 +408,8 @@ async def test_one_failure_does_not_strand_the_run(app, pilot):
     app.http.kicked.clear()
     app.http.refuse = {"2"}
 
-    plan = plan_bulk(list(app.rows.values()), "kick", require_threat=True)
+    plan = plan_bulk(list(app.rows.values()), "kick", require_threat=True,
+                     allow_caution=False)
     app.run_bulk("kick", plan, BulkChoice(scope="threat"))
     await wait_for(lambda: len(app.http.kicked) >= 2, pilot, "the kicks")
     await pilot.pause(0.4)

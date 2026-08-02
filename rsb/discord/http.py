@@ -604,6 +604,37 @@ class DiscordHTTP:
                 return channel.id
         return None
 
+    async def open_dm(self, user_id: str) -> str:
+        """Open (or reuse) a DM channel with someone, returning its id.
+
+        Unlike :meth:`find_dm_channel` this deliberately *creates* the channel
+        when none exists -- which is the point when the intent is to tell
+        somebody something before acting on them.
+        """
+        resp = await self._request(
+            "POST", "/users/@me/channels", json={"recipient_id": str(user_id)}
+        )
+        return str(resp.json().get("id") or "")
+
+    async def send_message(self, channel_id: str, content: str) -> dict:
+        resp = await self._request(
+            "POST", f"/channels/{channel_id}/messages",
+            json={"content": content[:MAX_MESSAGE]},
+        )
+        return _safe_json(resp)
+
+    async def send_dm(self, user_id: str, content: str) -> dict:
+        """Send one direct message, opening the channel if needed.
+
+        Raises like any other request -- a closed DM is a 403, and the caller
+        is expected to carry on rather than treat it as a failure of the thing
+        it was actually trying to do.
+        """
+        channel_id = await self.open_dm(user_id)
+        if not channel_id:
+            raise DiscordHTTPError("could not open a DM channel")
+        return await self.send_message(channel_id, content)
+
     async def channel_messages(
         self, channel_id: str, limit: int = 100, before: str | None = None
     ) -> list[dict]:
@@ -641,6 +672,7 @@ class DiscordHTTP:
 
 
 #: Discord truncates audit-log reasons past this
+MAX_MESSAGE = 2000
 MAX_REASON = 512
 
 

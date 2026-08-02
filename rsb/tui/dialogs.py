@@ -285,6 +285,10 @@ class ModerationChoice:
     reason: str
     delete_message_seconds: int = 0
     acknowledged_override: bool = False
+    #: try to DM them before acting
+    notify: bool = False
+    #: remember the notify choice as the new default
+    remember_notify: bool = False
 
 
 class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | None]):
@@ -309,9 +313,15 @@ class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | Non
         delete_message_seconds: int = 0,
         wants_purge: bool = False,
         note: str = "",
+        can_notify: bool = False,
+        notify: bool = False,
     ) -> None:
         super().__init__()
         self.action = action
+        self.can_notify = can_notify
+        # NOT self.notify -- that is Textual's own method on a Screen, and
+        # shadowing it with a bool breaks every warning this dialog raises
+        self.notify_default = notify
         self.wants_purge = wants_purge
         self.note = note
         self.member_label = member_label
@@ -361,12 +371,48 @@ class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | Non
                     type="integer",
                 )
 
+            if self.can_notify:
+                yield Static("Before acting", classes="section")
+                yield Checkbox(
+                    "Try to DM them first, so they know why and can appeal",
+                    self.notify_default,
+                    id="notify",
+                )
+                yield Static(
+                    Text(
+                        "Sent before the action, because a banned account "
+                        "shares no server with you and cannot be reached "
+                        "afterwards. A closed DM does not stop the action.",
+                        style="dim",
+                    )
+                )
+                yield Checkbox("Remember this", False, id="remember-notify")
+
             if self.eligibility.needs_override:
+                yield Static(
+                    "Confirm" if self.eligibility.needs_double_confirm else "",
+                    classes="section",
+                )
                 yield Checkbox(
                     "I understand Rotector does not support this action",
                     False,
                     id="override",
                 )
+                if self.eligibility.needs_double_confirm:
+                    yield Static(
+                        Text(
+                            "This is a CAUTION finding. Rotector found "
+                            "something and deliberately did not conclude "
+                            "from it, so this may well be wrong about a real "
+                            "person. Type the word below to confirm you "
+                            "have decided that yourself.",
+                            style="yellow",
+                        )
+                    )
+                    yield Input(
+                        placeholder=f"type {self.action.upper()} to confirm",
+                        id="double-confirm",
+                    )
 
             with Horizontal(id="buttons"):
                 yield Button("Cancel", variant="default", id="cancel")
@@ -412,6 +458,16 @@ class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | Non
                     severity="error",
                 )
                 return
+            if self.eligibility.needs_double_confirm:
+                typed = self.query_one("#double-confirm", Input).value.strip()
+                if typed.upper() != self.action.upper():
+                    self.notify(
+                        f"Type {self.action.upper()} to confirm. A CAUTION "
+                        f"finding is not evidence enough to act on by "
+                        f"reflex.",
+                        severity="error",
+                    )
+                    return
 
         seconds = 0
         if self.wants_purge:
@@ -420,12 +476,20 @@ class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | Non
             except ValueError:
                 seconds = 0
 
+        wants_notice = False
+        remember = False
+        if self.can_notify:
+            wants_notice = self.query_one("#notify", Checkbox).value
+            remember = self.query_one("#remember-notify", Checkbox).value
+
         self.dismiss(
             ModerationChoice(
                 action=self.action,
                 reason=self._current_reason(),
                 delete_message_seconds=seconds,
                 acknowledged_override=acknowledged,
+                notify=wants_notice,
+                remember_notify=remember,
             )
         )
 
@@ -755,6 +819,7 @@ class BulkChoice:
     custom: str | None = None
     delete_message_seconds: int = 0
     acknowledged_override: bool = False
+    notify: bool = False
 
 
 class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
@@ -785,8 +850,12 @@ class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
         uses_reason: bool = True,
         delete_message_seconds: int = 0,
         note: str = "",
+        can_notify: bool = False,
+        notify: bool = False,
     ) -> None:
         super().__init__()
+        self.can_notify = can_notify
+        self.notify_default = notify
         self.action = action
         self.resolve = resolve
         self.scopes = scopes
@@ -843,6 +912,32 @@ class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
                         type="integer",
                     )
 
+                if self.can_notify:
+                    yield Static("Before acting", classes="section")
+                    yield Checkbox(
+                        "DM each of them first, so they know why and can "
+                        "appeal",
+                        self.notify_default,
+                        id="notify",
+                    )
+                    yield Static(
+                        Text(
+                            "One DM per member, paced by "
+                            "moderation.bulk_delay. Messaging many people who "
+                            "have not messaged you is what Discord's spam "
+                            "heuristics look for, so this is slower and "
+                            "riskier the larger the run.",
+                            style="yellow",
+                        )
+                    )
+
+                yield Static("", id="caution-warning")
+                yield Checkbox(
+                    "I have reviewed the CAUTION findings myself",
+                    False,
+                    id="caution-ack",
+                )
+
                 yield Static("Confirm", classes="section")
                 yield Static("", id="confirm-hint")
                 yield Input(placeholder="type the number here", id="confirm-count")
@@ -894,6 +989,35 @@ class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
             )
         self.query_one("#plan-preview", Static).update(preview)
 
+        cautious = [t for t in self.plan.allowed if t.eligibility.needs_double_confirm]
+        warning = self.query_one("#caution-warning", Static)
+        ack = self.query_one("#caution-ack", Checkbox)
+        if cautious:
+            text = Text()
+            text.append(
+                f"\n{len(cautious):,} of these are CAUTION findings\n",
+                style="bold yellow",
+            )
+            text.append(
+                "Rotector found something for them and deliberately did not "
+                "conclude from it. Acting on those is your judgement, and it "
+                "may be wrong about a real person.\n",
+                style="yellow",
+            )
+            text.append(
+                "  " + ", ".join(t.label for t in cautious[:6])
+                + (f" +{len(cautious) - 6:,} more" if len(cautious) > 6 else ""),
+                style="dim",
+            )
+            warning.update(text)
+            warning.display = True
+            ack.display = True
+        else:
+            warning.update("")
+            warning.display = False
+            ack.display = False
+            ack.value = False
+
         hint = Text()
         if allowed:
             hint.append("Type ")
@@ -924,6 +1048,17 @@ class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
             self.notify("Nothing matches this choice.", severity="warning")
             return
 
+        cautious = [
+            t for t in self.plan.allowed if t.eligibility.needs_double_confirm
+        ]
+        if cautious and not self.query_one("#caution-ack", Checkbox).value:
+            self.notify(
+                f"{len(cautious)} of these are CAUTION findings. Tick the "
+                f"acknowledgement, or narrow the scope to THREAT only.",
+                severity="error",
+            )
+            return
+
         typed = self.query_one("#confirm-count", Input).value.strip()
         if typed != str(allowed):
             self.notify(
@@ -950,6 +1085,10 @@ class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
                 custom=custom,
                 delete_message_seconds=seconds,
                 acknowledged_override=True,
+                notify=(
+                    self.can_notify
+                    and self.query_one("#notify", Checkbox).value
+                ),
             )
         )
 

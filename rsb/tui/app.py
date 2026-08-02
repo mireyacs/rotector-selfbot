@@ -40,6 +40,8 @@ from ..eta import RateEstimator, estimate_scan_seconds, format_duration
 from ..export import DEFAULT_COLUMNS, export as render_export, ExportRow
 from ..moderation import (
     BULK_SCOPES,
+    DEFAULT_NOTICE,
+    build_notice,
     BulkPlan,
     Eligibility,
     build_reason,
@@ -160,6 +162,14 @@ class ActionSpec:
     #: there, not a precondition, and requiring Rotector's endorsement to
     #: block someone would be absurd.
     gated: bool = True
+    #: whether to offer DMing the person before acting.
+    #: Kicks, bans and group removals cut somebody off from a community, so
+    #: telling them why -- and where to appeal -- is the decent thing, and it
+    #: has to happen *before* the door closes: once banned they share no
+    #: server with you and a DM can no longer reach them. Unfriending and
+    #: blocking are the opposite -- messaging someone in the act of setting a
+    #: boundary against them would be worse than saying nothing.
+    notifies: bool = False
 
 
 async def _do_kick(app, source, row, choice):
@@ -187,11 +197,13 @@ async def _do_group_remove(app, source, row, choice):
 _KICK = ActionSpec(
     "kick", "Kicking", "kicked", _do_kick,
     "this account lacks the permission, or the target outranks it.",
+    notifies=True,
 )
 _BAN = ActionSpec(
     "ban", "Banning", "banned", _do_ban,
     "this account lacks the permission, or the target outranks it.",
     wants_purge=True,
+    notifies=True,
 )
 _UNFRIEND = ActionSpec(
     "remove friend", "Removing", "unfriended", _do_unfriend,
@@ -222,6 +234,7 @@ _GROUP_REMOVE = ActionSpec(
     uses_reason=False,
     gated=False,
     note="Removes them from this group DM. Only the group owner may do this.",
+    notifies=True,
 )
 
 #: which two member actions each source kind offers, keyed by binding
@@ -2604,6 +2617,7 @@ class ScannerApp(App):
                 rows,
                 resolved.name,
                 require_threat=require_threat,
+                allow_caution=self.config.moderation.allow_caution,
                 gated=resolved.gated,
                 template=self.config.moderation.default_reason,
                 custom=custom,
@@ -2622,6 +2636,8 @@ class ScannerApp(App):
                     self.config.moderation.delete_message_seconds
                 ),
                 note=resolved.note,
+                can_notify=resolved.notifies and self.is_bot,
+                notify=self.config.moderation.notify_before_action,
             )
         )
         if choice is None:
@@ -2654,6 +2670,13 @@ class ScannerApp(App):
         self._bulk_running = True
         done: list[str] = []
         failed: list[tuple[str, str]] = []
+        notified = 0
+        unreachable = 0
+        notify = (
+            bool(getattr(choice, "notify", False))
+            and resolved.notifies
+            and self.is_bot
+        )
         self.log_debug(
             f"bulk {resolved.name}: starting on {total} member(s), "
             f"{delay}s apart"
@@ -2670,6 +2693,30 @@ class ScannerApp(App):
                 row = self.rows.get(target.member_id)
                 if row is None:
                     continue
+
+                if notify:
+                    self._set_activity(
+                        f"Notifying {target.label} ({index}/{total})..."
+                    )
+                    delivered, detail = await self._send_notice(resolved, row)
+                    if delivered:
+                        notified += 1
+                    else:
+                        unreachable += 1
+                        self.log_debug(
+                            f"no notice to {target.label}: {detail}", "warn"
+                        )
+                    # the notice is a message to a stranger, so it is paced
+                    # like the action itself rather than fired back to back
+                    if delay:
+                        await asyncio.sleep(delay)
+                    if self._bulk_stop:
+                        self._set_status(
+                            f"Stopped after {len(done):,} of {total:,}.",
+                            "yellow",
+                        )
+                        break
+
                 self._set_activity(
                     f"{resolved.gerund} {target.label} ({index}/{total})..."
                 )
@@ -2702,10 +2749,13 @@ class ScannerApp(App):
             self._bulk_running = False
 
         self._set_activity("")
-        self._report_bulk(resolved, plan, done, failed)
+        self._report_bulk(
+            resolved, plan, done, failed, (notified, unreachable) if notify
+            else None
+        )
         self._update_summary()
 
-    def _report_bulk(self, resolved, plan, done, failed) -> None:
+    def _report_bulk(self, resolved, plan, done, failed, notices=None) -> None:
         """Say exactly what happened, including what did not."""
         if failed:
             self._set_status(
@@ -2728,6 +2778,16 @@ class ScannerApp(App):
                 f"   {len(plan.blocked):,} not eligible", style="yellow"
             )
         text.append("\n")
+
+        if notices:
+            delivered, missed = notices
+            text.append(f"\n{delivered:,} were told first", style="green")
+            if missed:
+                text.append(
+                    f", {missed:,} could not be reached (DMs closed)",
+                    style="dim",
+                )
+            text.append("\n")
 
         if failed:
             text.append("\nFailed\n", style="bold red")
@@ -2770,7 +2830,9 @@ class ScannerApp(App):
             return
         resolved = _ACTIONS[source.kind][action]
         eligibility = check_eligibility(
-            row.report, require_threat=self.config.moderation.require_threat
+            row.report,
+            require_threat=self.config.moderation.require_threat,
+            allow_caution=self.config.moderation.allow_caution,
         )
         if not resolved.gated:
             eligibility = Eligibility(
@@ -2790,11 +2852,37 @@ class ScannerApp(App):
                 delete_message_seconds=self.config.moderation.delete_message_seconds,
                 wants_purge=resolved.wants_purge,
                 note=resolved.note,
+                can_notify=resolved.notifies and self.is_bot,
+                notify=self.config.moderation.notify_before_action,
             )
         )
         if choice is None:
             self._set_status(f"{resolved.name.capitalize()} cancelled.")
             return
+
+        if choice.remember_notify:
+            self.config.moderation.notify_before_action = choice.notify
+            try:
+                self.config.save_moderation_settings()
+                self.log_debug(
+                    f"saved notify_before_action="
+                    f"{str(choice.notify).lower()}"
+                )
+            except OSError as exc:
+                self.log_debug(f"could not save the notify default: {exc}",
+                               "warn")
+
+        notice = ""
+        if choice.notify and resolved.notifies and self.is_bot:
+            self._set_activity(f"Notifying {row.member.display_name}...")
+            delivered, detail = await self._send_notice(resolved, row)
+            notice = (
+                "  DM sent." if delivered else f"  No DM sent ({detail})."
+            )
+            self.log_debug(
+                f"notice to {row.member.display_name}: {detail}",
+                "info" if delivered else "warn",
+            )
 
         self._set_activity(f"{resolved.gerund} {row.member.display_name}...")
         try:
@@ -2825,9 +2913,42 @@ class ScannerApp(App):
 
         self._set_status(
             f"{resolved.past.capitalize()} {row.member.display_name}."
+            + notice
             + (f" Reason: {choice.reason}" if resolved.uses_reason else "")
         )
         self._mark_actioned(row, resolved.past)
+
+    async def _send_notice(self, resolved, row: Row) -> tuple[bool, str]:
+        """Try to tell somebody what is about to happen to them.
+
+        Returns (delivered, detail). Never raises: a closed DM is the normal
+        case, not a failure, and it must not stop the action the operator
+        actually asked for.
+        """
+        if not self.is_bot:
+            # Bots message people as a matter of course; a user account doing
+            # it to strangers is precisely the pattern Discord's spam
+            # heuristics act on, and the cost lands on the operator's own
+            # account. Not offered, and not possible.
+            return False, "notices are only sent when running as a bot"
+
+        source = self.current_source
+        place = source.name if source else "this server"
+        text = build_notice(
+            row.report,
+            f"{resolved.past}",
+            place,
+            self.config.moderation.notify_message or DEFAULT_NOTICE,
+        )
+        try:
+            await self.http.send_dm(row.member.id, text)
+        except DiscordForbidden:
+            return False, "their DMs are closed"
+        except DiscordNotFound:
+            return False, "the account no longer exists"
+        except Exception as exc:  # noqa: BLE001 - never fatal to the action
+            return False, f"{type(exc).__name__}"
+        return True, "delivered"
 
     def _mark_actioned(self, row: Row, what: str) -> None:
         """Note the action on the row so it is obvious what has been handled."""

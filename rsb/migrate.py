@@ -193,6 +193,38 @@ SCHEMA: list[Section] = [
                 'Leave group DMs without posting "left the group".',
             ),
             Setting(
+                "allow_caution",
+                True,
+                (
+                    "Allow acting on CAUTION findings.\n"
+                    "Never routine: Rotector asks that Provisional/Mixed be\n"
+                    "reviewed by a person, so a second separate confirmation\n"
+                    "is always required."
+                ),
+            ),
+            Setting(
+                "notify_before_action",
+                True,
+                (
+                    "BOT TOKENS ONLY. Try to DM someone before kicking or\n"
+                    "banning them, so they know why and can appeal.\n"
+                    "Sent first because a banned account shares no server\n"
+                    "with you and can no longer be reached. A closed DM is\n"
+                    "not a failure -- the action still proceeds.\n"
+                    "Ignored for user tokens: messaging strangers in bulk is\n"
+                    "what gets a user account flagged for spam."
+                ),
+            ),
+            Setting(
+                "notify_message",
+                "",
+                (
+                    "The notice text. Blank uses the built-in wording.\n"
+                    "{action}, {place} and {reason} are filled in; the\n"
+                    "appeal link is appended if you leave it out."
+                ),
+            ),
+            Setting(
                 "bulk_delay",
                 1.0,
                 (

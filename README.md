@@ -612,17 +612,46 @@ judgement:
   every reason including your own — and the appeal link is never what gets
   trimmed when a reason is too long for Discord's 512-character limit.
 - **Non-actionable findings are refused — for kicks and bans.** Rotector
-  documents only *Flagged* and *Confirmed* as safe to action. Anything else,
-  including `NO DETECTIONS` and `UNKNOWN`, is blocked by
+  documents only *Flagged* and *Confirmed* as safe to action. Anything weaker
+  than `CAUTION` — including `NO DETECTIONS` and `UNKNOWN` — is blocked by
   `moderation.require_threat`. Turning that off still shows what is wrong with
   the action and still requires an explicit per-action acknowledgement; it
   never becomes routine.
+- **`CAUTION` is the one middle case, and it takes two confirmations.**
+  *Provisional* and *Mixed* mean Rotector found something and deliberately
+  declined to conclude from it, asking that a person review it. So acting is
+  permitted — that judgement is yours to make — but never by the same click
+  that would action a *Confirmed* finding. You must tick the acknowledgement
+  **and** type the action word (`BAN`, `KICK`) before it will go through.
+  `moderation.allow_caution = false` removes the option entirely.
 
   The gate deliberately does **not** apply to unfriending, blocking, declining
   a request or removing someone from your own group DM. Those restrict nobody's
   access to a community — they are your own boundaries to set, and requiring a
   database's endorsement before you may block someone would be absurd. The
   verdict is still shown as context.
+
+### Telling them first — bot tokens only
+
+With a bot token, kicks, bans and group removals offer to **DM the person
+before acting**. The order matters and is not configurable: once someone is
+banned they share no server with the bot and cannot be messaged at all, so a
+notice sent afterwards is not a notice.
+
+The message states what is happening, the finding behind it, and that the
+appeal goes to Rotector rather than to the server — which is what Rotector's
+terms require anyone actioned on their data be able to do. Customise it with
+`moderation.notify_message` (`{action}`, `{place}` and `{reason}` are filled
+in; the appeal link is appended if you leave it out).
+
+A closed DM is the ordinary case, not a failure: the action proceeds either
+way, and the result says how many were reached.
+
+**This is deliberately unavailable with a user token.** A bot messaging members
+is ordinary; a user account messaging strangers — especially several in a row —
+is precisely the pattern Discord's spam detection is built to catch, and the
+penalty lands on your own account. The option is not shown, and the worker
+refuses it even if asked directly.
 
 Actioned rows are struck through and tagged `[kicked]` / `[banned]`.
 
@@ -650,6 +679,10 @@ confirmation is deliberately harder to get through than the single-member one:
 - **Ineligible members are excluded, not swept along.** The same
   `require_threat` rule applies per member, and the dialog names who is being
   left out and why before you commit. They are never sent to Discord at all.
+- **`CAUTION` members in the plan get their own acknowledgement.** If any are
+  included, the dialog counts them, names them, and will not proceed until you
+  confirm you have reviewed those findings yourself — separately from the typed
+  count. A `THREAT`-only scope is never asked for it.
 - **You must type the exact number of targets.** Not a button, not a checkbox —
   the count, by hand, and it resets whenever the scope changes. Clicking
   through a bulk ban without reading it is not possible.
@@ -905,6 +938,17 @@ The client is built to honour them, but they bind *you*:
   *resumed* rather than re-identified, that a server which never acknowledges
   heartbeats is detected as dead, that `op 7` and an invalid session are
   routine, and that a `4004` stops after one attempt.
+- `test_caution_notice.py` — no network: the `CAUTION` tier and the pre-action
+  notice. Asserts that a `CAUTION` finding cannot be actioned by the same click
+  a `THREAT` one can — neither the button alone nor the acknowledgement alone
+  gets through, only both plus the typed word — that a `THREAT` finding is
+  *not* made harder, that weaker findings stay blocked (the second confirmation
+  is not a route around `require_threat`), that a bulk plan containing
+  `CAUTION` members demands its own acknowledgement while a `THREAT`-only scope
+  does not, that the DM provably goes out **before** the ban in both the single
+  and bulk paths, that closed DMs do not stop the action, and that a user token
+  is never offered the notice and the worker refuses to send one even when
+  handed a choice asking for it.
 - `test_bot_token.py` — no network: running as a bot application. Asserts a
   user token wins when both are set, that a bot sends `Bot <token>` without the
   web-client impersonation headers and a user token still sends them, that

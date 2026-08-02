@@ -112,6 +112,20 @@ class ModerationConfig:
     delete_message_seconds: int = 0
     #: leave group DMs without posting a "left the group" message
     silent_leave: bool = False
+    #: whether CAUTION findings may be actioned at all. They are never routine:
+    #: Rotector asks that Provisional/Mixed be reviewed by a person, so the UI
+    #: requires a second, separate confirmation every time.
+    allow_caution: bool = True
+    #: try to DM someone before kicking or banning them. Sent first because a
+    #: banned account shares no server with you and can no longer be reached.
+    #: **Bot tokens only.** A bot messaging members is ordinary; a user
+    #: account messaging strangers in bulk is what Discord's spam heuristics
+    #: are built to catch, and the penalty lands on the operator's own
+    #: account. With a user token the option is not offered at all.
+    notify_before_action: bool = True
+    #: the notice itself. {action}, {place} and {reason} are filled in; the
+    #: appeal link is appended if the text does not already carry one.
+    notify_message: str = ""
     #: seconds between members in a bulk action. Bulk kicks and bans are the
     #: fastest way to trip Discord's abuse heuristics on a user account, and
     #: the pause costs nothing next to having the account flagged.
@@ -275,6 +289,10 @@ class Config:
                 "default_reason": self.moderation.default_reason,
                 "delete_message_seconds": self.moderation.delete_message_seconds,
                 "silent_leave": self.moderation.silent_leave,
+                "allow_caution": self.moderation.allow_caution,
+                "notify_before_action": self.moderation.notify_before_action,
+                "notify_message": self.moderation.notify_message,
+                "bulk_delay": self.moderation.bulk_delay,
             },
         )
         self.source = path
