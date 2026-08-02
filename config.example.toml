@@ -145,6 +145,27 @@ max_age_days = 0
 
 
 # Acting on members from the results table.
+# Your own appeal route, offered alongside Rotector's -- never instead of it.
+# Rotector's terms require that anyone actioned on their data can appeal to
+# Rotector, so this is always added to that link, not substituted for it.
+#
+# Useful when Rotector's own queue is not the right place: their backlog, or a
+# CAUTION finding you applied your own judgement to.
+[appeal]
+# Invite to a server where appeals are handled.
+invite = ""
+
+# An email, moderator handle or form URL.
+contact = ""
+
+# An extra line, e.g. "Include your Roblox username".
+note = ""
+
+# Also mention it in the audit-log reason. Only if it fits: Discord caps
+# reasons at 512 characters and the Rotector link is never what gets trimmed.
+include_in_reason = false
+
+
 [moderation]
 # Only Flagged/Confirmed may be kicked or banned.
 # Does not apply to unfriending, blocking or leaving a group.

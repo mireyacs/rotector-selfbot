@@ -943,18 +943,86 @@ class ScannerApp(App):
 
     @work(exclusive=True, group="settings")
     async def open_settings(self) -> None:
+        before = (self.config.active_token, self.config.is_bot)
         changed = await self.push_screen_wait(SettingsScreen(self.config))
-        if changed:
-            self._set_status(
-                "Settings saved. Some changes need a restart to take effect."
+        if not changed:
+            return
+
+        # anything that only affects display can be applied at once
+        self.hidden_verdicts = set()
+        if self.config.scan.hide_no_detections:
+            self.hidden_verdicts.add(Verdict.NO_DETECTIONS)
+        if self.config.scan.hide_unknown:
+            self.hidden_verdicts.add(Verdict.UNKNOWN)
+        self._rebuild_table()
+
+        if (self.config.active_token, self.config.is_bot) != before:
+            # Credentials are the one setting where "restart to apply" is
+            # indistinguishable from "did nothing": you edit the box, press
+            # save, and the app carries on as whoever it already was. So it
+            # reconnects instead.
+            self.reauthenticate()
+            return
+
+        overrides = self.config.env_overrides()
+        note = ""
+        if overrides:
+            note = (
+                f"  Note: {' and '.join(overrides)} is set in your "
+                f"environment and overrides the file."
             )
-            # anything that only affects display can be applied at once
-            self.hidden_verdicts = set()
-            if self.config.scan.hide_no_detections:
-                self.hidden_verdicts.add(Verdict.NO_DETECTIONS)
-            if self.config.scan.hide_unknown:
-                self.hidden_verdicts.add(Verdict.UNKNOWN)
-            self._rebuild_table()
+        self._set_status(
+            f"Settings saved. Some changes need a restart to take effect.{note}",
+            "yellow" if overrides else "",
+        )
+
+    # deliberately NOT the "connect" group: this worker *starts* a connect
+    # worker, and sharing the group would have it cancel itself doing so
+    @work(exclusive=True, group="reauth")
+    async def reauthenticate(self) -> None:
+        """Drop the current connection and sign in again with new credentials.
+
+        Results belong to the account that fetched them -- a different token
+        sees different servers, and possibly a different set of members within
+        them -- so they are cleared rather than left to look current.
+        """
+        overrides = self.config.env_overrides()
+        if overrides:
+            self._set_status(
+                f"{' and '.join(overrides)} is set in your environment, which "
+                f"overrides config.toml. Unset it and restart for the saved "
+                f"token to be used.",
+                "bold yellow",
+            )
+            return
+
+        self._set_activity("Signing in again with the new credentials...")
+        self.log_debug("credentials changed; reconnecting")
+
+        self.workers.cancel_group(self, "scan")
+        if self._scan_task is not None and not self._scan_task.done():
+            self._scan_task.cancel()
+        self._end_run()
+
+        for closer in (self.gateway, self.http, self.rotector):
+            try:
+                if closer is not None:
+                    await (
+                        closer.close() if hasattr(closer, "close")
+                        else closer.aclose()
+                    )
+            except Exception:  # noqa: BLE001 - it is going away regardless
+                pass
+        self.gateway = self.http = self.rotector = None
+
+        self.rows.clear()
+        self.selected.clear()
+        self.sources = []
+        self.current_source = None
+        self._rebuild_table()
+        await self._refresh_source_table(focus_key="")
+
+        self.connect()
 
     @work(exclusive=True, group="connect")
     async def connect(self) -> None:
@@ -2622,6 +2690,7 @@ class ScannerApp(App):
                 template=self.config.moderation.default_reason,
                 custom=custom,
                 past=resolved.past,
+                appeal=self.config.appeal,
             )
 
         choice = await self.push_screen_wait(
@@ -2854,6 +2923,7 @@ class ScannerApp(App):
                 note=resolved.note,
                 can_notify=resolved.notifies and self.is_bot,
                 notify=self.config.moderation.notify_before_action,
+                appeal=self.config.appeal,
             )
         )
         if choice is None:
@@ -2939,6 +3009,7 @@ class ScannerApp(App):
             f"{resolved.past}",
             place,
             self.config.moderation.notify_message or DEFAULT_NOTICE,
+            appeal=self.config.appeal,
         )
         try:
             await self.http.send_dm(row.member.id, text)

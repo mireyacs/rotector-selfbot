@@ -152,6 +152,42 @@ SCHEMA: list[Section] = [
         ],
     ),
     Section(
+        "appeal",
+        "Your own appeal route, offered alongside Rotector's (never instead).",
+        [
+            Setting(
+                "invite",
+                "",
+                (
+                    "Invite to a server where appeals are handled.\n"
+                    "For when Rotector's own queue is not the right\n"
+                    "place: their backlog, or a CAUTION finding you\n"
+                    "applied your own judgement to."
+                ),
+            ),
+            Setting(
+                "contact",
+                "",
+                "An email, moderator handle or form URL.",
+            ),
+            Setting(
+                "note",
+                "",
+                'An extra line, e.g. "Include your Roblox username".',
+            ),
+            Setting(
+                "include_in_reason",
+                False,
+                (
+                    "Also mention it in the audit-log reason.\n"
+                    "Only if it fits: Discord caps reasons at 512\n"
+                    "characters and the Rotector link is never the\n"
+                    "part that gets trimmed."
+                ),
+            ),
+        ],
+    ),
+    Section(
         "purge",
         (
             "Deleting your own messages from a conversation with a flagged\n"

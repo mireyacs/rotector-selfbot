@@ -315,8 +315,10 @@ class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | Non
         note: str = "",
         can_notify: bool = False,
         notify: bool = False,
+        appeal=None,
     ) -> None:
         super().__init__()
+        self.appeal = appeal
         self.action = action
         self.can_notify = can_notify
         # NOT self.notify -- that is Textual's own method on a Screen, and
@@ -425,7 +427,7 @@ class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | Non
         custom = None
         if self.query_one("#reason-custom", RadioButton).value:
             custom = self.query_one("#reason-text", Input).value
-        return build_reason(self.report, self.template, custom)
+        return build_reason(self.report, self.template, custom, appeal=self.appeal)
 
     def _refresh_preview(self) -> None:
         preview = Text()

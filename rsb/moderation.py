@@ -48,6 +48,7 @@ def build_reason(
     report: MemberReport,
     template: str = "Flagged by Rotector: {reason}",
     custom: str | None = None,
+    appeal=None,
 ) -> str:
     """Compose an audit-log reason, always carrying the appeal link."""
     if custom and custom.strip():
@@ -62,6 +63,16 @@ def build_reason(
 
     if "rotector.com" not in text.lower():
         text = f"{text} | {APPEAL_NOTE}"
+
+    own = ""
+    if appeal is not None and getattr(appeal, "include_in_reason", False):
+        own = (appeal.invite or appeal.contact or "").strip()
+        if own:
+            candidate = " ".join(f"{text} | Also: {own}".split())
+            # same rule as the notice: an optional route never displaces the
+            # required one, and never costs the finding its detail
+            if len(candidate) <= MAX_REASON:
+                text = candidate
 
     text = " ".join(text.split())
     if len(text) > MAX_REASON:
@@ -150,11 +161,32 @@ DEFAULT_NOTICE = (
 MAX_NOTICE = 2000
 
 
+def appeal_lines(appeal) -> list[str]:
+    """Your own appeal route, rendered for a message.
+
+    Always *additional*. Rotector's terms require that anyone actioned on their
+    data can appeal to Rotector, so a second route is offered alongside rather
+    than instead -- somebody told only to contact you would have lost the
+    ability to correct the database that flagged them.
+    """
+    if appeal is None or not getattr(appeal, "configured", False):
+        return []
+    lines = ["", "", "You can also appeal directly to us:"]
+    if appeal.invite.strip():
+        lines.append(f"  {appeal.invite.strip()}")
+    if appeal.contact.strip():
+        lines.append(f"  {appeal.contact.strip()}")
+    if appeal.note.strip():
+        lines.append(appeal.note.strip())
+    return lines
+
+
 def build_notice(
     report: MemberReport,
     action: str,
     place: str,
     template: str = DEFAULT_NOTICE,
+    appeal=None,
 ) -> str:
     """Compose the message sent to someone *before* they are actioned.
 
@@ -172,6 +204,14 @@ def build_notice(
 
     if "rotector.com" not in text.lower():
         text = f"{text}\n\nYou can appeal at https://rotector.com"
+
+    extra = appeal_lines(appeal)
+    if extra:
+        candidate = text + "\n".join(extra)
+        # only if it fits: the Rotector route is required and must never be
+        # the thing that gets trimmed to make room for the optional one
+        if len(candidate) <= MAX_NOTICE:
+            text = candidate
     return text[:MAX_NOTICE]
 
 
@@ -229,6 +269,7 @@ def plan_bulk(
     template: str = "Flagged by Rotector: {reason}",
     custom: str | None = None,
     past: str = "",
+    appeal=None,
 ) -> BulkPlan:
     """Work out who a bulk action may touch, before anything happens.
 
@@ -256,7 +297,7 @@ def plan_bulk(
             label=row.member.display_name,
             verdict=report.verdict,
             eligibility=eligibility,
-            reason=build_reason(report, template, custom),
+            reason=build_reason(report, template, custom, appeal=appeal),
         )
         (plan.allowed if eligibility.allowed else plan.blocked).append(target)
     return plan

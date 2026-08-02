@@ -174,6 +174,19 @@ many are hidden (`filter: Findings  (43 hidden)`), `f` cycles to `Everything`,
 and exports always contain every scanned member. Either group can be brought
 back permanently with `hide_no_detections` / `hide_unknown` in `config.toml`.
 
+### Changing credentials takes effect at once
+
+Most settings note that a restart applies them. Credentials do not wait: change
+the token — or clear it and fill in `bot_token` — and the app signs out, signs
+back in, and reloads the source list under the new identity. Results are
+cleared with it, because a different token sees different servers and a
+different set of members within them, and leaving the old ones on screen would
+present them as current.
+
+If `DISCORD_TOKEN` or `DISCORD_BOT_TOKEN` is set in your environment it beats
+whatever is in the file, so editing the file appears to do nothing. The app
+says so by name rather than silently ignoring you.
+
 ### Settings, setup and diagnostics
 
 `ctrl+s` opens an editor for every setting, generated from the same schema the
@@ -631,6 +644,29 @@ judgement:
   database's endorsement before you may block someone would be absurd. The
   verdict is still shown as context.
 
+### Your own appeal route
+
+Rotector's terms require that anyone actioned on their data can appeal **to
+Rotector**, so that link is always present and is never what gets trimmed. The
+`[appeal]` section adds a second route alongside it — for the cases Rotector's
+own queue does not cover: their backlog, a `CAUTION` finding you applied your
+own judgement to, or simply wanting the person able to reach *you* rather than
+only the database that flagged them.
+
+```toml
+[appeal]
+invite = "https://discord.gg/..."   # a server where appeals are handled
+contact = "mods@example.com"        # or a handle, or a form URL
+note = "Include your Roblox username."
+include_in_reason = false           # also put it in the audit-log reason
+```
+
+It appears in the pre-action DM, and in the audit-log reason when
+`include_in_reason` is on. Both are size-capped (2000 and 512 characters), and
+if your route will not fit, **it is dropped rather than Rotector's** — the
+optional link never displaces the required one. Leaving the section empty
+changes nothing anywhere.
+
 ### Telling them first — bot tokens only
 
 With a bot token, kicks, bans and group removals offer to **DM the person
@@ -938,6 +974,16 @@ The client is built to honour them, but they bind *you*:
   *resumed* rather than re-identified, that a server which never acknowledges
   heartbeats is detected as dead, that `op 7` and an invalid session are
   routine, and that a `4004` stops after one attempt.
+- `test_settings_appeal.py` — no network: credential edits and the appeal
+  route. Asserts that clearing the user token and entering a bot token in the
+  settings screen writes the file *and* signs the app in again without a
+  restart, reloading sources under the new identity; that an environment
+  variable overriding the file is named rather than silently winning; that
+  every schema setting exists on the config object and round-trips through the
+  file (the check that would have caught `bulk_delay` being written but never
+  read); and that your own appeal route is always added to Rotector's, dropped
+  rather than displacing it when it will not fit, and absent entirely when
+  unconfigured.
 - `test_caution_notice.py` — no network: the `CAUTION` tier and the pre-action
   notice. Asserts that a `CAUTION` finding cannot be actioned by the same click
   a `THREAT` one can — neither the button alone nor the acknowledgement alone

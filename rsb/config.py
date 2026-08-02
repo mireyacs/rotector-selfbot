@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -133,6 +134,34 @@ class ModerationConfig:
 
 
 @dataclass
+class AppealConfig:
+    """An appeal route of your own, alongside Rotector's.
+
+    Rotector's Terms of Use require that anyone actioned on their data can
+    appeal *to Rotector*, so this never replaces that link -- it is added to
+    it. What it is for is the case Rotector's own queue does not cover: their
+    backlog, a finding you applied judgement to (a CAUTION one especially), or
+    simply wanting the person to be able to reach you directly rather than only
+    the database that flagged them.
+    """
+
+    #: an invite to a server where appeals are handled
+    invite: str = ""
+    #: free text: an email, a moderator handle, a form URL
+    contact: str = ""
+    #: an extra sentence appended after the routes
+    note: str = ""
+    #: also mention it in the audit-log reason, space permitting
+    include_in_reason: bool = False
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            self.invite.strip() or self.contact.strip() or self.note.strip()
+        )
+
+
+@dataclass
 class PurgeConfig:
     """Deleting your own messages from a conversation.
 
@@ -156,11 +185,17 @@ class Config:
     #: friends, no DMs, no group DMs -- but within those servers it can list
     #: every member outright, which a user account cannot.
     bot_token: str | None = None
+    #: set when the value came from the environment rather than the file.
+    #: Editing the file cannot override the environment, and a settings screen
+    #: that silently appears to do nothing is worse than one that says so.
+    token_from_env: bool = False
+    bot_token_from_env: bool = False
     rotector: RotectorConfig = field(default_factory=RotectorConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     moderation: ModerationConfig = field(default_factory=ModerationConfig)
+    appeal: AppealConfig = field(default_factory=AppealConfig)
     purge: PurgeConfig = field(default_factory=PurgeConfig)
     source: Path | None = None
 
@@ -200,9 +235,11 @@ class Config:
         env_token = os.environ.get("DISCORD_TOKEN")
         if env_token:
             cfg.token = env_token.strip()
+            cfg.token_from_env = True
         env_bot = os.environ.get("DISCORD_BOT_TOKEN")
         if env_bot:
             cfg.bot_token = env_bot.strip()
+            cfg.bot_token_from_env = True
         env_key = os.environ.get("ROTECTOR_API_KEY")
         if env_key:
             cfg.rotector.api_key = env_key.strip()
@@ -238,11 +275,17 @@ class Config:
             if key in export and export[key] is not None:
                 setattr(self.export, key, export[key])
 
-        moderation = data.get("moderation") or {}
-        for key in ("require_threat", "default_reason", "delete_message_seconds",
-                    "silent_leave"):
-            if key in moderation and moderation[key] is not None:
-                setattr(self.moderation, key, moderation[key])
+        # Driven off the dataclass rather than a hand-written key list: a
+        # setting added to the dataclass and to the schema but forgotten here
+        # is one that silently ignores whatever the user put in the file.
+        for name, holder in (
+            ("moderation", self.moderation),
+            ("appeal", self.appeal),
+        ):
+            section = data.get(name) or {}
+            for f in dataclasses.fields(holder):
+                if section.get(f.name) is not None:
+                    setattr(holder, f.name, section[f.name])
 
         purge = data.get("purge") or {}
         for key in ("delete_delay", "max_messages", "max_age_days"):
@@ -276,6 +319,25 @@ class Config:
         }
         write_section(path, "export", body)
         self.source = path
+        return path
+
+    def env_overrides(self) -> list[str]:
+        """Environment variables currently overriding the config file."""
+        names = []
+        if self.token_from_env:
+            names.append("DISCORD_TOKEN")
+        if self.bot_token_from_env:
+            names.append("DISCORD_BOT_TOKEN")
+        return names
+
+    def save_appeal_settings(self) -> Path:
+        path = self.config_path()
+        write_section(
+            path,
+            "appeal",
+            {f.name: getattr(self.appeal, f.name)
+             for f in dataclasses.fields(self.appeal)},
+        )
         return path
 
     def save_moderation_settings(self) -> Path:
