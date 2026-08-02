@@ -218,7 +218,7 @@ class FakeHTTP:
 
 
 class FakeGateway:
-    def __init__(self, token):
+    def __init__(self, token, bot=False):
         self.user = None
         self.calls = 0
     async def connect(self, timeout=45.0): return {}

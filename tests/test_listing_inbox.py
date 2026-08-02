@@ -48,7 +48,7 @@ class FakeHTTP:
 
 
 class FakeGateway:
-    def __init__(self, token):
+    def __init__(self, token, bot=False):
         self.user = None
         self.watch_calls = 0
         self.authors = []

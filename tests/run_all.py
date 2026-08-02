@@ -5,7 +5,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 OFFLINE = {"test_units.py", "test_progress.py", "test_gateway_scrape.py",
            "test_proxy_speedup.py", "test_export.py",
-           "test_purge.py", "test_png_export.py", "test_member_coverage.py"}
+           "test_purge.py", "test_png_export.py", "test_member_coverage.py",
+           "test_gateway_resilience.py", "test_bulk_actions.py",
+           "test_cards_html.py", "test_bot_token.py"}
 NETWORK = {"test_live_api.py", "test_tui.py", "test_routing.py",
            "test_proxy_tui.py", "test_streaming.py",
            "test_moderation_tui.py", "test_sources.py",

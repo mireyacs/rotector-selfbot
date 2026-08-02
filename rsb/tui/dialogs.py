@@ -59,7 +59,7 @@ _DIALOG_CSS = """
     .section { padding-top: 1; color: $text-muted; text-style: bold; }
     /* the fields scroll; the buttons are docked so they cannot be pushed
        off the bottom by a long form */
-    #fields { height: 1fr; overflow-y: auto; overflow-x: hidden; }
+    #fields, #body { height: 1fr; overflow-y: auto; overflow-x: hidden; }
     #buttons {
         height: auto;
         padding-top: 1;
@@ -745,3 +745,249 @@ class RescanDialog(DismissOnOutsideClick, ModalScreen[ScanChoice | None]):
 
 
 _MODES = ("replace", "merge_skip", "merge_recheck")
+
+
+@dataclass
+class BulkChoice:
+    """What a confirmed bulk action should do."""
+
+    scope: str
+    custom: str | None = None
+    delete_message_seconds: int = 0
+    acknowledged_override: bool = False
+
+
+class BulkActionDialog(DismissOnOutsideClick, ModalScreen[BulkChoice | None]):
+    """Confirm an action against many members at once.
+
+    Bulk moderation is the least recoverable thing this program does, so the
+    dialog is deliberately harder to get through than the single-member one:
+    it names everyone who would be affected, it separates out those the finding
+    does not support instead of quietly including them, and it will not act
+    until the exact number of targets has been typed by hand. Clicking through
+    without reading should not be possible.
+    """
+
+    CSS = "BulkActionDialog { align: center middle; }" + _DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    #: how many names to list before summarising the rest
+    PREVIEW = 12
+
+    def __init__(
+        self,
+        action: str,
+        resolve,
+        scopes,
+        *,
+        has_selection: bool,
+        wants_purge: bool = False,
+        uses_reason: bool = True,
+        delete_message_seconds: int = 0,
+        note: str = "",
+    ) -> None:
+        super().__init__()
+        self.action = action
+        self.resolve = resolve
+        self.scopes = scopes
+        self.has_selection = has_selection
+        self.wants_purge = wants_purge
+        self.uses_reason = uses_reason
+        self.delete_message_seconds = delete_message_seconds
+        self.note = note
+        self.scope = scopes[0][0] if scopes else "selected"
+        self.plan = None
+
+    def compose(self) -> ComposeResult:
+        verb = self.action.capitalize()
+        with Vertical(id="panel"):
+            yield Static(f"{verb} in bulk", classes="title")
+            with VerticalScroll(id="body"):
+                yield Static(
+                    Text(
+                        "This acts on many people at once and cannot be undone.",
+                        style="bold yellow",
+                    )
+                )
+                if self.note:
+                    yield Static(Text(f"{self.note}\n", style="dim"))
+
+                yield Static("Who", classes="section")
+                with RadioSet(id="scope"):
+                    for index, (key, label) in enumerate(self.scopes):
+                        disabled = key == "selected" and not self.has_selection
+                        yield RadioButton(
+                            label + (" - none selected" if disabled else ""),
+                            value=index == 0 and not disabled,
+                            id=f"scope-{key}",
+                            disabled=disabled,
+                        )
+
+                yield Static("", id="plan-summary")
+                yield Static("", id="plan-preview")
+
+                if self.uses_reason:
+                    yield Static("Reason", classes="section")
+                    with RadioSet(id="reason-mode"):
+                        yield RadioButton("Automatic", value=True, id="reason-auto")
+                        yield RadioButton("Custom", id="reason-custom")
+                    yield Input(placeholder="Your own reason...", id="reason-text")
+
+                if self.wants_purge:
+                    yield Static(
+                        "Delete recent messages (seconds)", classes="section"
+                    )
+                    yield Input(
+                        value=str(self.delete_message_seconds),
+                        id="delete-seconds",
+                        type="integer",
+                    )
+
+                yield Static("Confirm", classes="section")
+                yield Static("", id="confirm-hint")
+                yield Input(placeholder="type the number here", id="confirm-count")
+
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button(verb, variant="error", id="confirm")
+
+    def on_mount(self) -> None:
+        # a disabled first option means the initial scope is not the one shown
+        for key, _ in self.scopes:
+            if key == "selected" and not self.has_selection:
+                continue
+            self.scope = key
+            break
+        self._refresh()
+
+    # -- plan ---------------------------------------------------------------
+
+    def _refresh(self) -> None:
+        self.plan = self.resolve(self.scope)
+        allowed = len(self.plan.allowed)
+
+        summary = Text()
+        summary.append(self.plan.describe() + "\n", style="bold")
+        if self.plan.blocked:
+            summary.append(
+                "Blocked members are left alone, not acted on.\n", style="dim"
+            )
+        self.query_one("#plan-summary", Static).update(summary)
+
+        preview = Text()
+        for target in self.plan.allowed[: self.PREVIEW]:
+            preview.append("  " + verdict_label(target.verdict) + "  ",
+                           style=verdict_style(target.verdict))
+            preview.append(target.label + "\n")
+        if allowed > self.PREVIEW:
+            preview.append(
+                f"  ... and {allowed - self.PREVIEW:,} more\n", style="dim"
+            )
+        if self.plan.blocked:
+            preview.append(
+                f"\n  not acted on: "
+                f"{', '.join(t.label for t in self.plan.blocked[:5])}"
+                + (f" +{len(self.plan.blocked) - 5:,} more"
+                   if len(self.plan.blocked) > 5 else "")
+                + "\n",
+                style="dim",
+            )
+        self.query_one("#plan-preview", Static).update(preview)
+
+        hint = Text()
+        if allowed:
+            hint.append("Type ")
+            hint.append(str(allowed), style="bold")
+            hint.append(f" to confirm {self.action} on {allowed:,} ")
+            hint.append("member" if allowed == 1 else "members")
+        else:
+            hint.append("Nothing to act on with this choice.", style="yellow")
+        self.query_one("#confirm-hint", Static).update(hint)
+
+    @on(RadioSet.Changed, "#scope")
+    def _scope_changed(self, event: RadioSet.Changed) -> None:
+        pressed = event.pressed.id or ""
+        self.scope = pressed.removeprefix("scope-")
+        self.query_one("#confirm-count", Input).value = ""
+        self._refresh()
+
+    # -- confirm ------------------------------------------------------------
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#confirm")
+    def _confirm(self) -> None:
+        allowed = len(self.plan.allowed) if self.plan else 0
+        if not allowed:
+            self.notify("Nothing matches this choice.", severity="warning")
+            return
+
+        typed = self.query_one("#confirm-count", Input).value.strip()
+        if typed != str(allowed):
+            self.notify(
+                f"Type {allowed} to confirm. This is the last check before "
+                f"{allowed:,} irreversible actions.",
+                severity="error",
+            )
+            return
+
+        custom = None
+        if self.uses_reason and self.query_one("#reason-custom", RadioButton).value:
+            custom = self.query_one("#reason-text", Input).value
+
+        seconds = 0
+        if self.wants_purge:
+            try:
+                seconds = int(self.query_one("#delete-seconds", Input).value or 0)
+            except ValueError:
+                seconds = 0
+
+        self.dismiss(
+            BulkChoice(
+                scope=self.scope,
+                custom=custom,
+                delete_message_seconds=seconds,
+                acknowledged_override=True,
+            )
+        )
+
+
+class BulkPickDialog(DismissOnOutsideClick, ModalScreen[str | None]):
+    """Which action a bulk run should perform, in this source's terms."""
+
+    CSS = "BulkPickDialog { align: center middle; }" + _DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, choices: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self.choices = choices
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="panel"):
+            yield Static("Bulk action", classes="title")
+            yield Static(
+                Text("Which action should be applied to many members?",
+                     style="dim")
+            )
+            with RadioSet(id="action"):
+                for index, (key, label) in enumerate(self.choices):
+                    yield RadioButton(
+                        label.capitalize(), value=index == 0, id=f"act-{key}"
+                    )
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button("Continue", variant="primary", id="confirm")
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#confirm")
+    def _confirm(self) -> None:
+        for key, _ in self.choices:
+            if self.query_one(f"#act-{key}", RadioButton).value:
+                self.dismiss(key)
+                return
+        self.dismiss(None)

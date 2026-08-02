@@ -14,11 +14,17 @@ Two rules are enforced here rather than left to the operator.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .discord.http import MAX_REASON
 from .rotector import MemberReport
-from .verdict import Verdict, category_name, flag_is_actionable, flag_name
+from .verdict import (
+    Verdict,
+    category_name,
+    flag_is_actionable,
+    flag_name,
+    verdict_label,
+)
 
 APPEAL_NOTE = "Appeal at rotector.com"
 
@@ -104,3 +110,105 @@ def check_eligibility(report: MemberReport, require_threat: bool = True) -> Elig
         )
 
     return Eligibility(not require_threat, True, detail)
+
+
+# --------------------------------------------------------------------------
+# bulk
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class BulkTarget:
+    """One member in a bulk plan, and whether it may proceed."""
+
+    member_id: str
+    label: str
+    verdict: Verdict
+    eligibility: Eligibility
+    reason: str
+
+
+@dataclass
+class BulkPlan:
+    """What a bulk action would do, split into what may and may not proceed."""
+
+    action: str
+    allowed: list[BulkTarget] = field(default_factory=list)
+    blocked: list[BulkTarget] = field(default_factory=list)
+    #: past tense of the action, e.g. "banned" -- supplied rather than derived
+    #: because English does not let you get there from "ban" by adding "ed"
+    past: str = ""
+
+    @property
+    def total(self) -> int:
+        return len(self.allowed) + len(self.blocked)
+
+    def describe(self) -> str:
+        if not self.total:
+            return "Nothing matches."
+        text = (f"{len(self.allowed):,} of {self.total:,} may be "
+                f"{self.past or 'actioned'}")
+        if self.blocked:
+            text += (
+                f"; {len(self.blocked):,} blocked because the finding does not "
+                f"support it"
+            )
+        return text
+
+
+def plan_bulk(
+    rows,
+    action: str,
+    *,
+    require_threat: bool = True,
+    gated: bool = True,
+    template: str = "Flagged by Rotector: {reason}",
+    custom: str | None = None,
+    past: str = "",
+) -> BulkPlan:
+    """Work out who a bulk action may touch, before anything happens.
+
+    Splitting the set up front is the point: acting on fifty people at once is
+    exactly where a mistake is least recoverable, so the ineligible ones are
+    identified and set aside rather than discovered halfway through.
+    """
+    plan = BulkPlan(action=action, past=past)
+    for row in rows:
+        report = row.report
+        if gated:
+            eligibility = check_eligibility(report, require_threat=require_threat)
+        else:
+            eligibility = Eligibility(
+                True,
+                False,
+                f"{verdict_label(report.verdict)}. This one is your call.",
+            )
+        target = BulkTarget(
+            member_id=row.member.id,
+            label=row.member.display_name,
+            verdict=report.verdict,
+            eligibility=eligibility,
+            reason=build_reason(report, template, custom),
+        )
+        (plan.allowed if eligibility.allowed else plan.blocked).append(target)
+    return plan
+
+
+#: verdict filters a bulk action can be aimed at, worst first
+BULK_SCOPES: list[tuple[str, str]] = [
+    ("selected", "Only the members I selected"),
+    ("threat", "Everyone with a THREAT verdict"),
+    ("caution", "Everyone at CAUTION or worse"),
+    ("filtered", "Everyone the current filter shows"),
+]
+
+
+def rows_for_scope(scope: str, selected_rows, filtered_rows):
+    """Resolve a bulk scope to the rows it covers."""
+    if scope == "selected":
+        return list(selected_rows)
+    if scope == "threat":
+        return [r for r in filtered_rows if r.report.verdict is Verdict.THREAT]
+    if scope == "caution":
+        return [r for r in filtered_rows if r.report.verdict >= Verdict.CAUTION]
+    return list(filtered_rows)

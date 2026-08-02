@@ -57,7 +57,7 @@ def wave(index: int) -> list[GuildMember]:
 class StreamingGateway:
     """Reveals members in waves, like a real member-list scrape."""
 
-    def __init__(self, token):
+    def __init__(self, token, bot=False):
         self.user = None
         self.emitted_at: list[float] = []
         self.finished_at: float | None = None

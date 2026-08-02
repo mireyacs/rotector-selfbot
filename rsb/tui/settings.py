@@ -70,8 +70,8 @@ def _coerce(raw: str, default):
 
 def current_value(config: Config, section: str, setting: str, default):
     """Read a live value off the Config, falling back to the schema default."""
-    if section == "discord" and setting == "token":
-        return config.token or ""
+    if section == "discord" and setting in ("token", "bot_token"):
+        return getattr(config, setting) or ""
     holder = getattr(config, section, None)
     if holder is None:
         return default
@@ -79,8 +79,8 @@ def current_value(config: Config, section: str, setting: str, default):
 
 
 def apply_value(config: Config, section: str, setting: str, value) -> None:
-    if section == "discord" and setting == "token":
-        config.token = value or None
+    if section == "discord" and setting in ("token", "bot_token"):
+        setattr(config, setting, value or None)
         return
     holder = getattr(config, section, None)
     if holder is not None and hasattr(holder, setting):
@@ -134,7 +134,7 @@ class SettingsScreen(DismissOnOutsideClick, ModalScreen[bool]):
             if isinstance(setting.default, bool):
                 yield Checkbox("enabled", bool(value), id=widget_id)
             else:
-                secret = setting.name in ("token", "api_key")
+                secret = setting.name in ("token", "bot_token", "api_key")
                 yield Input(
                     value=_as_text(value),
                     id=widget_id,
@@ -279,12 +279,19 @@ class SetupWizard(DismissOnOutsideClick, ModalScreen[bool]):
             yield Static(
                 Text(
                     "Required. Stored in config.toml, which is gitignored. "
-                    "Treat it like a password.",
+                    "Treat it like a password.\n"
+                    "A bot application's token works too -- tick below. A bot "
+                    "reaches only servers it was invited to, with no friends "
+                    "or DMs, but can list every member of those servers, "
+                    "which a user account cannot.",
                     style="dim",
                 ),
                 classes="field-help",
             )
             yield Input(password=True, id="wiz-token", placeholder="paste your token")
+            yield Checkbox(
+                "This is a bot application token", False, id="wiz-bot"
+            )
 
             yield Static("Rotector API key", classes="field-label")
             yield Static(
@@ -318,15 +325,24 @@ class SetupWizard(DismissOnOutsideClick, ModalScreen[bool]):
             return
         key = self.query_one("#wiz-key", Input).value.strip()
         hide = self.query_one("#wiz-hide", Checkbox).value
+        as_bot = self.query_one("#wiz-bot", Checkbox).value
 
-        self.config.token = token
+        if as_bot:
+            self.config.bot_token = token
+            self.config.token = None
+        else:
+            self.config.token = token
         self.config.rotector.api_key = key or None
         self.config.scan.hide_no_detections = hide
         self.config.scan.hide_unknown = hide
 
         path = self.config.config_path()
         try:
-            write_section(path, "discord", {"token": token})
+            write_section(
+                path,
+                "discord",
+                {"bot_token": token} if as_bot else {"token": token},
+            )
             write_section(
                 path,
                 "rotector",
@@ -372,24 +388,54 @@ def run_checks(config: Config) -> list[Check]:
     checks: list[Check] = []
 
     token = (config.token or "").strip()
+    bot_token = (config.bot_token or "").strip()
+    active = token or bot_token
+    as_bot = config.is_bot
     checks.append(
         Check(
             "Discord token",
-            bool(token),
-            f"{len(token)} characters" if token else "not set",
-            "Add it in Settings, or set DISCORD_TOKEN.",
+            bool(active),
+            (
+                f"{len(active)} characters"
+                + (" (bot application)" if as_bot else " (user account)")
+            ) if active else "not set",
+            "Add it in Settings, or set DISCORD_TOKEN / DISCORD_BOT_TOKEN.",
             blocking=True,
         )
     )
-    if token:
+    if token and bot_token:
+        checks.append(
+            Check(
+                "Both tokens set",
+                True,
+                "using the user token; the bot token is ignored",
+                "A user account can do strictly more -- friends, DMs and "
+                "group DMs are invisible to a bot. Clear the user token to "
+                "run as the bot instead.",
+            )
+        )
+    if active:
         checks.append(
             Check(
                 "Token shape",
-                token.count(".") >= 2,
-                "looks like a user token"
-                if token.count(".") >= 2
+                active.count(".") >= 2,
+                "looks like a Discord token"
+                if active.count(".") >= 2
                 else "does not look like a Discord token",
-                "User tokens have two dots. A bot token will not work here.",
+                "Both user and bot tokens have two dots. Which one this is "
+                "gets confirmed against Discord on connect.",
+            )
+        )
+    if as_bot:
+        checks.append(
+            Check(
+                "Bot scope",
+                True,
+                "servers only, but every member of them",
+                "A bot sees only servers it was invited to -- no friends, no "
+                "DMs, no group DMs. In those servers it can list every "
+                "member, offline included, which a user account cannot. This "
+                "needs SERVER MEMBERS INTENT enabled in the Developer Portal.",
             )
         )
 

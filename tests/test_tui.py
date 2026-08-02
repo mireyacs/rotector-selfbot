@@ -37,7 +37,7 @@ class FakeHTTP:
 
 
 class FakeGateway:
-    def __init__(self, token): self.user = None
+    def __init__(self, token, bot=False): self.user = None
     async def connect(self, timeout=45.0):
         self.user = {"username": "tester"}; return self.user
     async def fetch_members(self, gid, channels, expected=None, on_progress=None,

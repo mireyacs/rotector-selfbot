@@ -15,10 +15,21 @@
 # and the previous file is kept as config.toml.bak.
 
 
-# Your Discord user token. DISCORD_TOKEN overrides this.
+# Your Discord credentials. DISCORD_TOKEN / DISCORD_BOT_TOKEN override these.
 [discord]
-# Treat this like a password.
+# Your user token. Treat this like a password.
 token = ""
+
+# Optional bot application token, used ONLY when no user token is set above --
+# a user account can do strictly more, so it always wins.
+#
+# A bot reaches only servers it has been invited to: no friends, no DMs, no
+# group DMs. In exchange it can list EVERY member of those servers, offline
+# included, without needing kick/ban/manage-roles -- which a user account
+# cannot. Requires SERVER MEMBERS INTENT to be enabled for the application at
+# https://discord.com/developers/applications -> Bot -> Privileged Gateway
+# Intents, or Discord refuses the connection with close code 4014.
+bot_token = ""
 
 
 # Rotector API access. ROTECTOR_API_KEY overrides api_key.

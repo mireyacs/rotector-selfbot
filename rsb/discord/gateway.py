@@ -31,7 +31,16 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
 from ..ratelimit import RateLimiter
-from .http import BROWSER_UA, Channel, super_properties
+from .http import BOT_UA, BROWSER_UA, Channel, super_properties
+
+#: Gateway intents. A bot must declare up front what it wants to receive, and
+#: GUILD_MEMBERS is *privileged*: it has to be switched on for the application
+#: in the Developer Portal, or Discord closes the socket with 4014 rather than
+#: quietly sending less. These two are all a member scan needs -- asking for
+#: message content or presences would be requesting far more than the job.
+INTENT_GUILDS = 1 << 0
+INTENT_GUILD_MEMBERS = 1 << 1
+BOT_INTENTS = INTENT_GUILDS | INTENT_GUILD_MEMBERS
 
 GATEWAY_URL = "wss://gateway.discord.gg/?v=9&encoding=json"
 
@@ -62,6 +71,33 @@ PREFIX_ALPHABET = string.ascii_lowercase + string.digits + "_."
 PREFIX_MAX_DEPTH = 2
 #: cap on widget names resolved one at a time; the widget returns 100 at most
 WIDGET_NAME_LIMIT = 100
+
+#: reconnect backoff, in seconds
+RECONNECT_BASE = 1.0
+RECONNECT_MAX = 60.0
+#: give up only after this many consecutive failures
+MAX_RECONNECTS = 12
+#: how long a send will wait for a reconnect before giving up
+RECONNECT_WAIT = 90.0
+
+#: close codes that mean retrying is pointless
+FATAL_CLOSE_CODES = {
+    4004: "authentication failed - the token was rejected",
+    4010: "invalid shard",
+    4011: "sharding required",
+    4012: "unsupported API version",
+    4013: "invalid intents",
+    4014: "disallowed intents",
+}
+
+#: 4014 has one overwhelmingly likely cause for this program, and a generic
+#: "disallowed intents" leaves the user with nothing to do about it
+INTENT_HELP = (
+    "The bot is not approved for the Server Members Intent. Open the Discord "
+    "Developer Portal -> your application -> Bot -> Privileged Gateway "
+    "Intents, switch on SERVER MEMBERS INTENT, and save. Without it Discord "
+    "will not hand over a member list to a bot at all."
+)
 #: how long to wait for chunks after an OP 8 query (they arrive promptly)
 CHUNK_TIMEOUT = 1.5
 
@@ -120,8 +156,9 @@ class GuildMember:
 
 
 class DiscordGateway:
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, bot: bool = False) -> None:
         self.token = token
+        self.is_bot = bot
         self.user: dict | None = None
         self._ws = None
         self._seq: int | None = None
@@ -130,8 +167,23 @@ class DiscordGateway:
         self._beater: asyncio.Task | None = None
         self._listeners: dict[asyncio.Queue, frozenset[str] | None] = {}
         self._ready = asyncio.Event()
-        self._closed = False
+        self._closing = False
         self._fatal: Exception | None = None
+        #: READY/RESUMED received -- the session is usable
+        self._connected = asyncio.Event()
+        #: a socket is open. Distinct from _connected because IDENTIFY has to
+        #: be sent *before* READY arrives; gating sends on the handshake would
+        #: deadlock the handshake itself.
+        self._socket_ready = asyncio.Event()
+        self._supervisor: asyncio.Task | None = None
+        self._session_id: str | None = None
+        self._resume_url: str | None = None
+        self._awaiting_ack = False
+        self._last_error: str | None = None
+        #: how many times the socket has been re-established
+        self.reconnects = 0
+        #: called as (attempt, delay, reason) when a reconnect is scheduled
+        self.on_reconnect: Callable[[int, float, str], None] | None = None
         # gateway budget: ~120 events / 60s, kept well under
         self._send_limit = RateLimiter(limit=110, window=60.0, reserve=15)
         #: filled in by fetch_members, for the UI to report coverage
@@ -141,14 +193,9 @@ class DiscordGateway:
     # -- lifecycle ---------------------------------------------------------
 
     async def connect(self, timeout: float = 45.0) -> dict:
-        self._ws = await ws_connect(
-            GATEWAY_URL,
-            max_size=None,
-            user_agent_header=BROWSER_UA,
-            open_timeout=timeout,
-            ping_interval=None,
-        )
-        self._reader = asyncio.create_task(self._read_loop())
+        """Connect and stay connected, reconnecting on its own if dropped."""
+        self._closing = False
+        self._supervisor = asyncio.create_task(self._supervise())
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=timeout)
         except TimeoutError:
@@ -158,17 +205,82 @@ class DiscordGateway:
             raise self._fatal
         return self.user or {}
 
+    async def _supervise(self) -> None:
+        """Keep a socket open, resuming where possible.
+
+        A dropped gateway used to end a scan outright. Discord drops
+        connections routinely -- for maintenance, on op 7, or simply because a
+        heartbeat went unanswered -- so treating that as fatal threw away work
+        for something entirely ordinary.
+        """
+        attempt = 0
+        while not self._closing:
+            try:
+                await self._open_socket()
+                attempt = 0  # a clean session resets the backoff
+                await self._read_loop()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reported through _fatal
+                self._last_error = f"{type(exc).__name__}: {exc}"
+
+            if self._closing or self._fatal:
+                break
+
+            self._connected.clear()
+            self._socket_ready.clear()
+            self._stop_heartbeat()
+            attempt += 1
+            if attempt > MAX_RECONNECTS:
+                self._fail(
+                    GatewayError(
+                        f"gateway would not stay connected after "
+                        f"{MAX_RECONNECTS} attempts ({self._last_error})"
+                    )
+                )
+                break
+
+            delay = min(RECONNECT_BASE * (2 ** (attempt - 1)), RECONNECT_MAX)
+            self.reconnects += 1
+            if self.on_reconnect:
+                self.on_reconnect(attempt, delay, self._last_error or "closed")
+            await asyncio.sleep(delay)
+
+    async def _open_socket(self) -> None:
+        url = self._resume_url if self._can_resume() else GATEWAY_URL
+        if "?" not in url:
+            url = f"{url}/?v=9&encoding=json"
+        self._ws = await ws_connect(
+            url,
+            max_size=None,
+            user_agent_header=BROWSER_UA,
+            open_timeout=30,
+            ping_interval=None,
+            close_timeout=5,
+        )
+        self._socket_ready.set()
+
+    def _can_resume(self) -> bool:
+        return bool(self._session_id and self._resume_url and self._seq is not None)
+
     async def close(self) -> None:
-        self._closed = True
-        for task in (self._beater, self._reader):
-            if task and not task.done():
-                task.cancel()
+        self._closing = True
+        self._connected.clear()
+        self._socket_ready.clear()
+        self._stop_heartbeat()
+        if self._supervisor and not self._supervisor.done():
+            self._supervisor.cancel()
         if self._ws is not None:
             try:
                 await self._ws.close()
             except Exception:
                 pass
         self._ws = None
+
+    def _stop_heartbeat(self) -> None:
+        if self._beater and not self._beater.done():
+            self._beater.cancel()
+        self._beater = None
 
     async def __aenter__(self) -> "DiscordGateway":
         await self.connect()
@@ -180,11 +292,27 @@ class DiscordGateway:
     # -- plumbing ----------------------------------------------------------
 
     async def _send(self, payload: dict, *, metered: bool = True) -> None:
+        """Send once connected, waiting through a reconnect rather than failing."""
+        # Wait only when there is genuinely no socket. The read loop clears
+        # _ws when it ends, so "None" means a reconnect is in progress rather
+        # than merely that the handshake has not finished -- gating on the
+        # handshake would deadlock IDENTIFY, which is part of it.
+        if self._ws is None and not self._closing:
+            try:
+                await asyncio.wait_for(
+                    self._socket_ready.wait(), timeout=RECONNECT_WAIT
+                )
+            except TimeoutError:
+                raise GatewayError("gateway is not connected") from None
         if self._ws is None:
             raise GatewayError("gateway is not connected")
         if metered:
             await self._send_limit.acquire(1)
-        await self._ws.send(json.dumps(payload))
+        try:
+            await self._ws.send(json.dumps(payload))
+        except ConnectionClosed as exc:
+            # the supervisor will bring it back; the caller can retry
+            raise GatewayError(f"send failed, reconnecting: {exc}") from None
 
     async def _read_loop(self) -> None:
         try:
@@ -196,54 +324,153 @@ class DiscordGateway:
 
                 if op == 10:  # HELLO
                     self._heartbeat_interval = msg["d"]["heartbeat_interval"] / 1000
+                    self._awaiting_ack = False
                     self._beater = asyncio.create_task(self._heartbeat_loop())
-                    await self._identify()
+                    if self._can_resume():
+                        await self._resume()
+                    else:
+                        await self._identify()
                 elif op == 0:  # DISPATCH
                     await self._dispatch(msg.get("t"), msg.get("d") or {})
-                elif op == 1:  # heartbeat request
+                elif op == 1:  # heartbeat requested
                     await self._send({"op": 1, "d": self._seq}, metered=False)
-                elif op == 7:  # reconnect
-                    self._fail(GatewayError("gateway asked us to reconnect"))
+                elif op == 11:  # heartbeat ACK
+                    self._awaiting_ack = False
+                elif op == 7:  # server asked us to reconnect -- routine
+                    self._last_error = "server requested a reconnect"
+                    await self._drop_socket()
+                    return
                 elif op == 9:  # invalid session
-                    self._fail(
-                        GatewayError(
-                            "invalid session - the token was rejected by the gateway"
-                        )
-                    )
+                    resumable = bool(msg.get("d"))
+                    self._last_error = "session invalidated"
+                    if not resumable:
+                        self._session_id = None
+                        self._resume_url = None
+                        self._seq = None
+                    await asyncio.sleep(1 + random.random() * 4)
+                    await self._drop_socket()
+                    return
         except ConnectionClosed as exc:
-            self._fail(GatewayError(f"gateway connection closed: {exc}"))
+            code = getattr(exc, "code", None) or getattr(
+                getattr(exc, "rcvd", None), "code", None
+            )
+            self._last_error = f"connection closed ({code or 'no close frame'})"
+            if code in FATAL_CLOSE_CODES:
+                detail = FATAL_CLOSE_CODES[code]
+                if code in (4013, 4014) and self.is_bot:
+                    detail = f"{detail}. {INTENT_HELP}"
+                elif code == 4004 and self.is_bot:
+                    detail = (
+                        f"{detail}. Check the bot token is the current one "
+                        f"from the Developer Portal -- regenerating it "
+                        f"invalidates the old one immediately."
+                    )
+                self._fail(
+                    GatewayError(
+                        f"gateway refused the connection ({code}): {detail}"
+                    )
+                )
+            return
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - surfaced to the UI
-            self._fail(exc)
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = f"{type(exc).__name__}: {exc}"
+            return
+        finally:
+            self._connected.clear()
+            self._socket_ready.clear()
+            self._ws = None
+            self._stop_heartbeat()
+
+    async def _drop_socket(self) -> None:
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
 
     def _fail(self, exc: Exception) -> None:
-        if not self._closed:
+        """Record an unrecoverable failure and wake everyone waiting."""
+        if not self._closing:
             self._fatal = exc
         self._ready.set()
-        # bypasses the per-queue filter: everyone must wake up and re-check
         for queue in list(self._listeners):
             queue.put_nowait(None)
 
     async def _dispatch(self, event: str | None, data: dict) -> None:
         if event == "READY":
             self.user = data.get("user")
+            self._session_id = data.get("session_id")
+            resume_url = data.get("resume_gateway_url")
+            if resume_url:
+                self._resume_url = resume_url
+            self._connected.set()
+            self._ready.set()
+        elif event == "RESUMED":
+            self._connected.set()
             self._ready.set()
         for queue, wanted in list(self._listeners.items()):
             if wanted is None or event in wanted:
                 queue.put_nowait((event, data))
 
     async def _heartbeat_loop(self) -> None:
-        # first beat is jittered, as the real client does
+        """Beat, and treat a missing ACK as a dead connection.
+
+        A socket that stops answering heartbeats is not detectably closed --
+        it simply stops carrying traffic, which is what "no close frame
+        received" looks like from the other end. Without this the connection
+        appeared alive and nothing arrived.
+        """
         await asyncio.sleep(self._heartbeat_interval * random.random())
-        while not self._closed:
+        while not self._closing:
+            if self._awaiting_ack:
+                self._last_error = "heartbeat went unacknowledged"
+                await self._drop_socket()
+                return
             try:
+                self._awaiting_ack = True
                 await self._send({"op": 1, "d": self._seq}, metered=False)
             except Exception:
                 return
             await asyncio.sleep(self._heartbeat_interval)
 
+    async def _resume(self) -> None:
+        await self._send(
+            {
+                "op": 6,
+                "d": {
+                    "token": self.token,
+                    "session_id": self._session_id,
+                    "seq": self._seq,
+                },
+            },
+            metered=False,
+        )
+
     async def _identify(self) -> None:
+        if self.is_bot:
+            # A bot identifies as itself and declares its intents. It must not
+            # imitate the web client: the fake super-properties a user token
+            # needs are exactly what an application should not be sending.
+            await self._send(
+                {
+                    "op": 2,
+                    "d": {
+                        "token": self.token,
+                        "intents": BOT_INTENTS,
+                        "properties": {
+                            "os": "linux",
+                            "browser": BOT_UA,
+                            "device": BOT_UA,
+                        },
+                        "compress": False,
+                        "large_threshold": 250,
+                    },
+                },
+                metered=False,
+            )
+            return
+
         await self._send(
             {
                 "op": 2,
@@ -295,6 +522,11 @@ class DiscordGateway:
         self._listeners.pop(queue, None)
 
     def _check_alive(self) -> None:
+        """Raise only for unrecoverable failures.
+
+        A dropped socket is not one: the supervisor is already bringing it
+        back, and callers wait on the send rather than giving up.
+        """
         if self._fatal:
             raise self._fatal
 
@@ -317,7 +549,7 @@ class DiscordGateway:
         seen: set[str] = set()
         count = 0
         try:
-            while not should_stop() and not self._closed:
+            while not should_stop() and not self._closing:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=poll)
                 except TimeoutError:
@@ -405,13 +637,20 @@ class DiscordGateway:
         def covered() -> bool:
             return bool(expected) and len(members) >= expected * coverage_target
 
+        # A bot never has to negotiate for this: with the GUILD_MEMBERS intent
+        # the whole list is simply available, offline members and all.
+        if self.is_bot:
+            can_chunk = True
+
         # The privileged path: one request, everyone, offline included.
         if can_chunk:
             if on_progress:
                 on_progress(
                     0,
                     expected,
-                    "Requesting the full member list (permitted for this account)",
+                    "Requesting the full member list"
+                    + (" (bot, Server Members Intent)" if self.is_bot
+                       else " (permitted for this account)"),
                 )
             await self._request_members(
                 guild_id, expected, on_progress, members, emit,
@@ -429,6 +668,30 @@ class DiscordGateway:
                     )
                 if covered():
                     return members
+
+        if self.is_bot:
+            # The sidebar paths below are OP 14 guild subscriptions, which is a
+            # client feature -- a bot has no member sidebar to subscribe to.
+            # There is nothing further to try, so say so rather than silently
+            # returning a short list as though it were complete.
+            self.last_coverage = (
+                min(1.0, len(members) / expected) if expected else None
+            )
+            self.last_scrape_channels = ["full member list"]
+            if on_progress:
+                if members:
+                    on_progress(
+                        len(members), expected,
+                        f"Received {len(members):,} member(s) from the "
+                        f"bot member list",
+                    )
+                else:
+                    on_progress(
+                        0, expected,
+                        "Discord returned no members. The Server Members "
+                        "Intent is most likely not enabled for this bot.",
+                    )
+            return members
 
         open_channels = [c for c in channels if c.everyone_can_view]
         restricted = [c for c in channels if not c.everyone_can_view]
@@ -636,7 +899,7 @@ class DiscordGateway:
                 next_start += RANGE_SIZE
 
         try:
-            while not self._closed:
+            while not self._closing:
                 self._check_alive()
 
                 requests: dict[str, list[list[int]]] = {}
@@ -657,19 +920,40 @@ class DiscordGateway:
                     if not requests:
                         break
 
-                await self._send(
-                    {
-                        "op": 14,
-                        "d": {
-                            "guild_id": guild_id,
-                            "channels": requests,
-                            "members": [],
-                            "activities": True,
-                            "typing": True,
-                            "threads": False,
-                        },
-                    }
-                )
+                try:
+                    await self._send(
+                        {
+                            "op": 14,
+                            "d": {
+                                "guild_id": guild_id,
+                                "channels": requests,
+                                "members": [],
+                                "activities": True,
+                                "typing": True,
+                                "threads": False,
+                            },
+                        }
+                    )
+                except GatewayError:
+                    # the socket went away mid-round; put the windows back and
+                    # wait for the supervisor rather than losing the scrape
+                    self._check_alive()
+                    for window in reversed(
+                        [tuple(r) for rs in requests.values() for r in rs[1:]]
+                    ):
+                        windows.appendleft(window)
+                    if on_progress:
+                        on_progress(
+                            len(members), total,
+                            "Reconnecting to the gateway, the scan will continue",
+                        )
+                    try:
+                        await asyncio.wait_for(
+                            self._connected.wait(), timeout=RECONNECT_WAIT
+                        )
+                    except TimeoutError:
+                        break
+                    continue
 
                 before = len(members)
                 got_event = False
@@ -702,6 +986,9 @@ class DiscordGateway:
                     except TimeoutError:
                         break
                     if item is None:
+                        # a wake-up: fatal if something really broke, else the
+                        # socket is being re-established and the round is
+                        # simply retried
                         self._check_alive()
                         break
                     event, data = item

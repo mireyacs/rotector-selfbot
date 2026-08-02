@@ -20,6 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-c", "--config", type=Path, help="path to config.toml")
     parser.add_argument("--token", help="Discord user token (overrides config and env)")
+    parser.add_argument(
+        "--bot-token",
+        help="Discord bot token; used only when no user token is set. "
+             "Servers only, but every member of them.",
+    )
     parser.add_argument("--api-key", help="Rotector API key (overrides config and env)")
     parser.add_argument(
         "--rate-limit", type=int, help="requests allowed per window (default 50)"
@@ -79,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.token:
         config.token = args.token.strip()
+    if args.bot_token:
+        config.bot_token = args.bot_token.strip()
     if args.api_key:
         config.rotector.api_key = args.api_key.strip()
     if args.rate_limit is not None:

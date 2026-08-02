@@ -38,7 +38,15 @@ from ..discord import (
 from ..discord.http import DiscordForbidden, DiscordHTTPError, DiscordNotFound
 from ..eta import RateEstimator, estimate_scan_seconds, format_duration
 from ..export import DEFAULT_COLUMNS, export as render_export, ExportRow
-from ..moderation import Eligibility, build_reason, check_eligibility
+from ..moderation import (
+    BULK_SCOPES,
+    BulkPlan,
+    Eligibility,
+    build_reason,
+    check_eligibility,
+    plan_bulk,
+    rows_for_scope,
+)
 from ..profiles import fetch_profiles
 from ..sources import (
     GROUPS,
@@ -74,6 +82,9 @@ from .dialogs import (
     ExportDialog,
     RescanDialog,
     LeaveGroupDialog,
+    BulkActionDialog,
+    BulkPickDialog,
+    ModerationChoice,
     ModerationDialog,
     PurgeConfirmDialog,
     PurgePlanDialog,
@@ -487,6 +498,10 @@ class ScannerApp(App):
         ("p", "purge", "Purge my messages"),
         ("k", "kick", "Kick / unfriend"),
         ("b", "ban", "Ban / block"),
+        ("space", "toggle_select", "Select member"),
+        ("A", "select_all", "Select all shown"),
+        ("X", "clear_selection", "Clear selection"),
+        ("B", "bulk_action", "Bulk action"),
         ("ctrl+r", "reload_guilds", "Reload sources"),
         ("ctrl+s", "settings", "Settings"),
         ("ctrl+shift+r", "reload_code", "Reload code"),
@@ -513,7 +528,15 @@ class ScannerApp(App):
         self.rotector: RotectorClient | None = None
 
         self.sources: list[ScanSource] = []
+        #: True when authenticated as a bot application: servers only
+        self.is_bot = False
         self.rows: dict[str, Row] = {}
+        #: member ids ticked for a bulk action, kept across pages and
+        #: filter changes so a selection is not silently lost
+        self.selected: set[str] = set()
+        #: set by the stop key to interrupt a bulk run mid-way
+        self._bulk_stop = False
+        self._bulk_running = False
         self.current_source: ScanSource | None = None
         self.filter_mode = FilterMode.FINDINGS
         # verdicts treated as noise; never dropped from the data, only hidden
@@ -924,7 +947,7 @@ class ScannerApp(App):
     async def connect(self) -> None:
         # First run, or a config that cannot work: say so up front rather than
         # failing with a stack trace three steps later.
-        if not (self.config.token or "").strip():
+        if not self.config.active_token:
             if not await self.push_screen_wait(SetupWizard(self.config)):
                 self.exit()
                 return
@@ -950,8 +973,31 @@ class ScannerApp(App):
 
         self._set_activity("Authenticating with Discord...")
         try:
-            self.http = DiscordHTTP(self.config.token or "")
+            self.is_bot = self.config.is_bot
+            self.http = DiscordHTTP(self.config.active_token, bot=self.is_bot)
             me = await self.http.me()
+
+            # A token pasted into the wrong field is a confusing failure three
+            # steps later, so check what Discord says this actually is.
+            says_bot = bool(me.get("bot"))
+            if says_bot != self.is_bot:
+                actual, field = (
+                    ("a bot application", "bot_token") if says_bot
+                    else ("a user account", "token")
+                )
+                await self.http.aclose()
+                self.is_bot = says_bot
+                self.http = DiscordHTTP(self.config.active_token, bot=says_bot)
+                me = await self.http.me()
+                self._set_status(
+                    f"That token is {actual}; it belongs under "
+                    f"[discord] {field}. Continuing as {actual}.",
+                    "yellow",
+                )
+                self.log_debug(
+                    f"token type corrected: running as "
+                    f"{'bot' if says_bot else 'user'}", "warn"
+                )
 
             limiter = RateLimiter(
                 limit=self.config.rotector.rate_limit,
@@ -969,14 +1015,30 @@ class ScannerApp(App):
             )
 
             self._set_activity("Opening gateway connection...")
-            self.gateway = DiscordGateway(self.config.token or "")
+            self.gateway = DiscordGateway(
+                self.config.active_token, bot=self.is_bot
+            )
+
+            def on_reconnect(attempt: int, delay: float, reason: str) -> None:
+                self.log_debug(
+                    f"gateway {reason}; reconnecting in {delay:.0f}s "
+                    f"(attempt {attempt})",
+                    "warn",
+                )
+                self._set_activity(
+                    f"Gateway {reason} - reconnecting in {delay:.0f}s "
+                    f"(attempt {attempt}); the scan will continue"
+                )
+
+            self.gateway.on_reconnect = on_reconnect
             await self.gateway.connect()
 
             self.my_id = str(me.get("id") or "")
             name = me.get("global_name") or me.get("username") or "?"
             keyed = "API key" if self.config.rotector.api_key else "no API key"
             routing = f" - {len(proxies)} proxies" if proxies else ""
-            self.sub_title = f"{name} - {keyed}{routing}"
+            kind = " [bot]" if self.is_bot else ""
+            self.sub_title = f"{name}{kind} - {keyed}{routing}"
             if advisories:
                 self._advisories = advisories
             await self._load_sources()
@@ -986,6 +1048,12 @@ class ScannerApp(App):
         except GatewayError as exc:
             self._fatal(f"Gateway: {exc}")
         except Exception as exc:  # noqa: BLE001
+            # the status bar gets one line; the log gets enough to diagnose it
+            import traceback
+            self.log_debug(
+                "connect failed: " + traceback.format_exc().strip().replace("\n", " | "),
+                "error",
+            )
             self._fatal(f"{type(exc).__name__}: {exc}")
 
     @work(exclusive=True, group="diagnose")
@@ -1006,22 +1074,29 @@ class ScannerApp(App):
 
     async def _load_sources(self) -> None:
         assert self.http is not None
-        self._set_activity("Loading your servers, friends and group DMs...")
+        self._set_activity(
+            "Loading the servers this bot is in..." if self.is_bot
+            else "Loading your servers, friends and group DMs..."
+        )
         guilds = await self.http.guilds()
 
         # Relationships and private channels are optional extras: a token
-        # without access to them should not cost you the server list.
+        # without access to them should not cost you the server list. A bot
+        # has none of them by definition, so it is not even asked.
         relationships, private_channels = [], []
-        try:
-            relationships = await self.http.relationships()
-        except Exception:  # noqa: BLE001 - an optional extra, never fatal
-            pass
-        try:
-            private_channels = await self.http.private_channels()
-        except Exception:  # noqa: BLE001
-            pass
+        if not self.is_bot:
+            try:
+                relationships = await self.http.relationships()
+            except Exception:  # noqa: BLE001 - an optional extra, never fatal
+                pass
+            try:
+                private_channels = await self.http.private_channels()
+            except Exception:  # noqa: BLE001
+                pass
 
-        self.sources = build_sources(guilds, relationships, private_channels)
+        self.sources = build_sources(
+            guilds, relationships, private_channels, is_bot=self.is_bot
+        )
 
         await self._refresh_source_table(focus_key="")
         self.query_one("#guilds", DataTable).focus()
@@ -1031,6 +1106,11 @@ class ScannerApp(App):
             counts[source.label] = counts.get(source.label, 0) + 1
         summary = ", ".join(f"{n} {label}" for label, n in counts.items())
         note = ""
+        if self.is_bot:
+            note = (
+                "  [bot: servers only, but every member of them - "
+                "friends and DMs need a user token]"
+            )
         if self._advisories:
             names = ", ".join(c.name for c in self._advisories)
             note = f"  [{len(self._advisories)} config warning(s): {names} - ctrl+s]"
@@ -1045,8 +1125,14 @@ class ScannerApp(App):
         body.append("Connection failed\n\n", style="bold red")
         body.append(f"{message}\n\n")
         body.append(
-            "Check that the token is a current user token and that you are not "
-            "behind a proxy Discord blocks.",
+            (
+                "Check that the bot token is current, that the bot is still "
+                "in at least one server, and that SERVER MEMBERS INTENT is "
+                "enabled for it in the Developer Portal."
+                if self.is_bot else
+                "Check that the token is a current user token and that you "
+                "are not behind a proxy Discord blocks."
+            ),
             style="dim",
         )
         self.query_one("#detail-body", Static).update(body)
@@ -1179,6 +1265,13 @@ class ScannerApp(App):
         pipeline keeps reporting progress, which restarts the spinner and the
         per-task clock the user just stopped.
         """
+        if self._bulk_running:
+            # a bulk run is the more urgent thing to stop, and stopping it
+            # cleanly between members beats cancelling mid-request
+            self._bulk_stop = True
+            self._set_status("Stopping the bulk action...", "yellow")
+            return
+
         cancelled = self.workers.cancel_group(self, "scan")
         task = self._scan_task
         if task is not None and not task.done():
@@ -1211,6 +1304,7 @@ class ScannerApp(App):
         carried = len(self.rows) if merging else 0
         if not merging:
             self.rows.clear()
+            self.selected.clear()
         self._shown.clear()
         self._matching = 0
         self._page = 0
@@ -1329,19 +1423,31 @@ class ScannerApp(App):
                         include_bots=not self.config.scan.skip_bots,
                     )
                 elif source.needs_gateway:
-                    self._set_activity(f"Reading channels of {source.name}...")
-                    channels = await self.http.channels(source.id)
-                    if not channels:
-                        self._set_status(
-                            "No readable text channels in this server.", "yellow"
+                    # A bot asks for the member list directly; it has no
+                    # member sidebar, so which channels exist is irrelevant to
+                    # it and the round trip would only be a way to fail.
+                    if self.is_bot:
+                        channels = []
+                    else:
+                        self._set_activity(
+                            f"Reading channels of {source.name}..."
                         )
-                        progress.remove_class("visible")
-                        queue.put_nowait(None)
-                        scan_task.cancel()
-                        return
+                        channels = await self.http.channels(source.id)
+                        if not channels:
+                            self._set_status(
+                                "No readable text channels in this server.",
+                                "yellow",
+                            )
+                            progress.remove_class("visible")
+                            queue.put_nowait(None)
+                            scan_task.cancel()
+                            return
                     open_channels = sum(1 for c in channels if c.everyone_can_view)
                     guild = source.guild
-                    can_chunk = bool(guild and guild.can_chunk)
+                    # A bot with the Server Members Intent is handed the whole
+                    # list regardless of what permissions it holds -- the
+                    # permission gate below is a user-account limitation.
+                    can_chunk = self.is_bot or bool(guild and guild.can_chunk)
 
                     # The public widget, if this guild publishes one. It needs
                     # no permissions, but gives names rather than ids, so it is
@@ -1364,11 +1470,13 @@ class ScannerApp(App):
                                 f"names to cross-check"
                             )
                     self._set_activity(
-                        f"{len(channels)} text channels, {open_channels} visible to "
-                        f"@everyone"
+                        "Requesting every member (bot, Server Members Intent)"
+                        if self.is_bot else
+                        f"{len(channels)} text channels, {open_channels} visible "
+                        f"to @everyone"
                         + ("  (full member list permitted)" if can_chunk else "")
                     )
-                    await self.gateway.fetch_members(
+                    found = await self.gateway.fetch_members(
                         source.id,
                         channels,
                         expected=source.member_count,
@@ -1377,6 +1485,36 @@ class ScannerApp(App):
                         can_chunk=can_chunk,
                         widget_names=widget_names,
                     )
+
+                    # The gateway path is one socket that can be dropped
+                    # mid-list. For a bot there is a second, wholly separate
+                    # route to the same members -- stateless, resumable pages
+                    # -- so a short list is worth finishing rather than
+                    # reporting as the best available.
+                    expect = source.member_count or 0
+                    if self.is_bot and expect and len(found) < expect * 0.99:
+                        self.log_debug(
+                            f"gateway gave {len(found)}/{expect}; "
+                            f"finishing over REST", "warn"
+                        )
+                        member_progress(
+                            len(found), expect,
+                            "Gateway list was short - listing members directly",
+                        )
+                        try:
+                            await self.http.all_guild_members(
+                                source.id,
+                                on_progress=member_progress,
+                                on_members=lambda page: on_members(
+                                    [m for m in (GuildMember.parse(r)
+                                                 for r in page) if m]
+                                ),
+                                expected=expect,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - a fallback
+                            self.log_debug(
+                                f"REST member listing failed: {exc}", "warn"
+                            )
                 else:
                     # friends, requests and group DMs arrive complete from one
                     # REST call -- no sidebar, no coverage question
@@ -1453,7 +1591,13 @@ class ScannerApp(App):
             if source.needs_gateway and expected and held < expected * 0.99:
                 pct = 100.0 * held / expected
                 guild = source.guild
-                if guild is not None and not guild.can_chunk:
+                if self.is_bot:
+                    why = (
+                        "Discord returned fewer members than it reports. If "
+                        "this is far short, the Server Members Intent is "
+                        "probably not enabled for this bot"
+                    )
+                elif guild is not None and not guild.can_chunk:
                     why = (
                         "Discord only exposes the full member list to accounts "
                         "with kick, ban or manage-roles here; without those, "
@@ -1545,6 +1689,18 @@ class ScannerApp(App):
                 return False
         return True
 
+    def _name_cell(self, row: Row) -> Text:
+        """The member column: selection tick, name, and any action taken."""
+        name = Text()
+        if row.member.id in self.selected:
+            name.append("\u2713 ", style="bold cyan")
+        name.append(row.member.display_name)
+        name.overflow = "ellipsis"
+        if row.actioned:
+            name.stylize("strike dim")
+            name.append(f" [{row.actioned}]", style="bold green")
+        return name
+
     def _cells(self, row: Row) -> list[Text]:
         report = row.report
         verdict = report.verdict
@@ -1559,7 +1715,7 @@ class ScannerApp(App):
 
         if not row.checked:
             return [
-                Text(row.member.display_name, overflow="ellipsis"),
+                self._name_cell(row),
                 Text("not checked", style="dim"),
                 Text("-", style="dim"),
                 Text("-", style="dim"),
@@ -1567,13 +1723,8 @@ class ScannerApp(App):
                 Text("-", style="dim", justify="right"),
             ]
 
-        name = Text(f"{row.member.display_name}", overflow="ellipsis")
-        if row.actioned:
-            name.stylize("strike dim")
-            name.append(f" [{row.actioned}]", style="bold green")
-
         return [
-            name,
+            self._name_cell(row),
             Text(verdict_label(verdict), style=verdict_style(verdict)),
             Text(flag_name(worst.flag_type if worst else None)),
             Text(category_name(worst.category if worst else None) or "-"),
@@ -1665,6 +1816,10 @@ class ScannerApp(App):
 
         listed = len(self._shown)
         hidden = len(self.rows) - self._matching
+        if self.selected:
+            text.append(f"\u2713 {len(self.selected):,} selected  ",
+                        style="bold cyan")
+
         tail = f"   filter: {self.filter_mode.value}"
         if hidden > 0:
             tail += f"  ({hidden:,} hidden)"
@@ -2037,6 +2192,7 @@ class ScannerApp(App):
         if self.current_source is source:
             self.current_source = None
             self.rows.clear()
+            self.selected.clear()
             self._shown.clear()
             self.query_one("#results", DataTable).clear()
             self._update_summary()
@@ -2217,6 +2373,14 @@ class ScannerApp(App):
             return
         if self.current_source is None or self.http is None:
             return
+        if self.is_bot:
+            # Purging works through the DM channel with that person, and a bot
+            # cannot open one on its own initiative.
+            self._set_status(
+                "A bot has no DM history to purge - this needs a user token.",
+                "yellow",
+            )
+            return
         self.purge_messages(row)
 
     @work(exclusive=True, group="purge")
@@ -2324,6 +2488,265 @@ class ScannerApp(App):
             f"Their messages are untouched - Discord allows no other way.",
             "bold red" if result.failed else "",
         )
+
+    # -- selection ---------------------------------------------------------
+
+    def _refresh_row(self, member_id: str) -> None:
+        """Redraw one row in place, without disturbing the cursor."""
+        row = self.rows.get(member_id)
+        if row is None:
+            return
+        try:
+            table = self.query_one("#results", DataTable)
+            for column, cell in zip(table.columns, self._cells(row)):
+                table.update_cell(member_id, column, cell)
+        except Exception:
+            pass
+
+    def action_toggle_select(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            self._set_status("No member highlighted.", "yellow")
+            return
+        member_id = row.member.id
+        if member_id in self.selected:
+            self.selected.discard(member_id)
+        else:
+            self.selected.add(member_id)
+        self._refresh_row(member_id)
+        self._update_summary()
+        self.log_debug(
+            f"selection: {len(self.selected)} member(s) "
+            f"({'+' if member_id in self.selected else '-'}"
+            f"{row.member.display_name})"
+        )
+
+    def action_select_all(self) -> None:
+        """Tick everything the current filter and search show, every page.
+
+        Deliberately all pages rather than the visible one: the alternative is
+        a selection that silently means something different depending on where
+        you happened to be scrolled to.
+        """
+        matching = self._matching_rows()
+        if not matching:
+            self._set_status("Nothing to select.", "yellow")
+            return
+        ids = {row.member.id for row in matching}
+        if ids <= self.selected:
+            # already all selected -- treat a second press as "unselect these"
+            self.selected -= ids
+            self._set_status(f"Cleared {len(ids):,} from the selection.")
+        else:
+            self.selected |= ids
+            self._set_status(
+                f"Selected {len(ids):,} member(s) matching the current filter"
+                + (f" across {self.page_count} pages." if self.page_count > 1
+                   else ".")
+            )
+        self._rebuild_table()
+
+    def action_clear_selection(self) -> None:
+        if not self.selected:
+            self._set_status("Nothing was selected.")
+            return
+        count = len(self.selected)
+        self.selected.clear()
+        self._rebuild_table()
+        self._set_status(f"Cleared the selection ({count:,}).")
+
+    def _selected_rows(self) -> list[Row]:
+        """Selected rows in the order the table shows them."""
+        ordered = self._matching_rows()
+        seen = {row.member.id for row in ordered}
+        rows = [row for row in ordered if row.member.id in self.selected]
+        # a selection can outlive the filter that made it; keep those too
+        rows += [
+            self.rows[i] for i in self.selected
+            if i not in seen and i in self.rows
+        ]
+        return rows
+
+    # -- bulk --------------------------------------------------------------
+
+    def action_bulk_action(self) -> None:
+        if self.current_source is None or self.http is None:
+            self._set_status("Pick a source first.", "yellow")
+            return
+        if not self.rows:
+            self._set_status("Nothing has been scanned yet.", "yellow")
+            return
+        self.choose_bulk()
+
+    @work(exclusive=True, group="moderate")
+    async def choose_bulk(self) -> None:
+        source = self.current_source
+        if source is None:
+            return
+
+        options = _ACTIONS[source.kind]
+        pick = await self.push_screen_wait(
+            BulkPickDialog([(key, spec.name) for key, spec in options.items()])
+        )
+        if pick is None:
+            self._set_status("Bulk action cancelled.")
+            return
+
+        resolved = options[pick]
+        require_threat = self.config.moderation.require_threat
+
+        def resolve(scope: str, custom: str | None = None) -> BulkPlan:
+            rows = rows_for_scope(
+                scope, self._selected_rows(), self._matching_rows()
+            )
+            rows = [r for r in rows if not r.actioned]
+            return plan_bulk(
+                rows,
+                resolved.name,
+                require_threat=require_threat,
+                gated=resolved.gated,
+                template=self.config.moderation.default_reason,
+                custom=custom,
+                past=resolved.past,
+            )
+
+        choice = await self.push_screen_wait(
+            BulkActionDialog(
+                action=resolved.name,
+                resolve=resolve,
+                scopes=BULK_SCOPES,
+                has_selection=bool(self.selected),
+                wants_purge=resolved.wants_purge,
+                uses_reason=resolved.uses_reason,
+                delete_message_seconds=(
+                    self.config.moderation.delete_message_seconds
+                ),
+                note=resolved.note,
+            )
+        )
+        if choice is None:
+            self._set_status(f"Bulk {resolved.name} cancelled.")
+            return
+
+        plan = resolve(choice.scope, choice.custom)
+        if not plan.allowed:
+            self._set_status("Nothing left to act on.", "yellow")
+            return
+        self.run_bulk(pick, plan, choice)
+
+    @work(exclusive=True, group="bulk")
+    async def run_bulk(self, action: str, plan: BulkPlan, choice) -> None:
+        """Work through a confirmed plan one member at a time.
+
+        Paced rather than parallel, and interruptible: this is a lot of
+        irreversible requests, and being able to stop halfway through matters
+        more than finishing quickly. Failures are recorded and the run
+        continues -- one member Discord refuses should not strand the rest.
+        """
+        source = self.current_source
+        if source is None:
+            return
+        resolved = _ACTIONS[source.kind][action]
+        delay = max(0.0, self.config.moderation.bulk_delay)
+        total = len(plan.allowed)
+
+        self._bulk_stop = False
+        self._bulk_running = True
+        done: list[str] = []
+        failed: list[tuple[str, str]] = []
+        self.log_debug(
+            f"bulk {resolved.name}: starting on {total} member(s), "
+            f"{delay}s apart"
+        )
+
+        try:
+            for index, target in enumerate(plan.allowed, start=1):
+                if self._bulk_stop:
+                    self._set_status(
+                        f"Stopped after {len(done):,} of {total:,}.", "yellow"
+                    )
+                    break
+
+                row = self.rows.get(target.member_id)
+                if row is None:
+                    continue
+                self._set_activity(
+                    f"{resolved.gerund} {target.label} ({index}/{total})..."
+                )
+
+                pick = ModerationChoice(
+                    action=resolved.name,
+                    reason=target.reason,
+                    delete_message_seconds=choice.delete_message_seconds,
+                    acknowledged_override=True,
+                )
+                try:
+                    await resolved.run(self, source, row, pick)
+                except DiscordForbidden:
+                    failed.append((target.label, resolved.forbidden_hint))
+                    self.log_debug(f"bulk {resolved.name}: {target.label} forbidden")
+                except DiscordNotFound:
+                    failed.append((target.label, "no longer here"))
+                except Exception as exc:  # noqa: BLE001 - one failure is not the run
+                    failed.append((target.label, f"{type(exc).__name__}: {exc}"))
+                    self.log_debug(f"bulk {resolved.name}: {target.label} failed: {exc}")
+                else:
+                    done.append(target.label)
+                    self.selected.discard(target.member_id)
+                    self._mark_actioned(row, resolved.past)
+                    self.log_debug(f"bulk {resolved.name}: {target.label} ok")
+
+                if delay and index < total:
+                    await asyncio.sleep(delay)
+        finally:
+            self._bulk_running = False
+
+        self._set_activity("")
+        self._report_bulk(resolved, plan, done, failed)
+        self._update_summary()
+
+    def _report_bulk(self, resolved, plan, done, failed) -> None:
+        """Say exactly what happened, including what did not."""
+        if failed:
+            self._set_status(
+                f"{resolved.past.capitalize()} {len(done):,}; "
+                f"{len(failed):,} failed - see the detail pane.",
+                "bold yellow" if done else "bold red",
+            )
+        else:
+            self._set_status(
+                f"{resolved.past.capitalize()} {len(done):,} member(s)."
+            )
+
+        text = Text()
+        text.append(f"Bulk {resolved.name}\n\n", style="bold")
+        text.append(f"{len(done):,} {resolved.past}", style="green")
+        if failed:
+            text.append(f"   {len(failed):,} failed", style="bold red")
+        if plan.blocked:
+            text.append(
+                f"   {len(plan.blocked):,} not eligible", style="yellow"
+            )
+        text.append("\n")
+
+        if failed:
+            text.append("\nFailed\n", style="bold red")
+            for label, why in failed[:20]:
+                text.append(f"  {label}: ", style="bold")
+                text.append(f"{why}\n", style="dim")
+            if len(failed) > 20:
+                text.append(f"  ... {len(failed) - 20:,} more\n", style="dim")
+
+        if plan.blocked:
+            text.append("\nNot eligible, so left alone\n", style="bold yellow")
+            for target in plan.blocked[:10]:
+                text.append(f"  {target.label}: ", style="bold")
+                text.append(f"{target.eligibility.explanation}\n", style="dim")
+            if len(plan.blocked) > 10:
+                text.append(
+                    f"  ... {len(plan.blocked) - 10:,} more\n", style="dim"
+                )
+        self.query_one("#detail-body", Static).update(text)
 
     def action_kick(self) -> None:
         self._moderate("kick")

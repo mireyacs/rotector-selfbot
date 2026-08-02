@@ -76,6 +76,46 @@ export ROTECTOR_API_KEY='...'        # optional
 `config.toml` is gitignored. The token is a full-access credential — treat it
 like a password.
 
+### Using a bot token instead
+
+A bot application's token works too, under `[discord] bot_token` (or
+`DISCORD_BOT_TOKEN`, or `--bot-token`). **A user token always wins when both
+are set** — it can do strictly more, and quietly dropping to the narrower
+credential because it happened to be configured would be a downgrade nobody
+asked for. The diagnostics say plainly when a bot token is being ignored.
+
+The trade is narrower reach for complete reach:
+
+| | User token | Bot token |
+|---|---|---|
+| Servers | yes | only those it was invited to |
+| Friends, DMs, group DMs, live inbox | yes | **no** — not offered at all |
+| Every member of a server, offline included | only with kick/ban/manage-roles | **always** |
+| Profile bio, pronouns, linked accounts, badges | yes | no |
+
+That third row is the reason to bother. For a user account, Discord only hands
+over a full member list to someone holding **kick members**, **ban members** or
+**manage roles** — without those, offline members of a large guild are simply
+unreachable, and a scan reports honest partial coverage. A bot has no such
+gate: with the **Server Members Intent** it is given the whole list outright,
+whatever permissions it holds. In a 4,000-member server where a user account
+might see the few hundred currently online, a bot sees all 4,000.
+
+Two things are needed:
+
+1. **Invite the bot to the server.** It can only see servers it is a member of.
+2. **Enable the Server Members Intent** — Developer Portal → your application →
+   Bot → Privileged Gateway Intents → *Server Members Intent*. Without it
+   Discord refuses the connection with close code `4014`, and the error says
+   exactly this rather than "disallowed intents".
+
+To kick or ban, the bot also needs those permissions in the server, the same as
+anyone else.
+
+Sources it cannot reach are not listed rather than listed-and-broken, and
+nothing personal is even requested — no request that could only ever come back
+403 is sent.
+
 An API key is optional: without one you get the standard tier, which is enough
 for normal use. Request one at [panel.rotector.com](https://panel.rotector.com)
 for elevated limits.
@@ -100,7 +140,10 @@ for elevated limits.
 | `p` | Purge your own messages in the conversation with them |
 | `o` / `O` | Sort by next column / reverse — or click a header |
 | `k` / `b` | Act on the selected member (meaning depends on the source) |
-| `x` | Stop a running scan |
+| `space` | Tick the highlighted member for a bulk action |
+| `A` / `X` | Tick everything the filter shows, across all pages / clear |
+| `B` | Run one action against many members at once |
+| `x` | Stop a running scan, or a bulk action |
 | `L` | Leave the selected group DM |
 | `[` `]` | Narrow / widen the sources pane (or drag the divider) |
 | `ctrl+s` | Settings — edit config.toml in-app |
@@ -304,6 +347,32 @@ Members themselves come from the gateway, the same way the real client reads
 them: **OP 14** subscribes to slices of the member sidebar and the server
 answers with `GUILD_MEMBER_LIST_UPDATE`.
 
+### Staying connected
+
+Discord drops gateway connections routinely — for maintenance, with an `op 7`,
+or by simply going quiet, which is what *"no close frame received"* looks like
+from this end. A scan of a large server takes minutes, so treating that as
+fatal threw away real work for something entirely ordinary.
+
+The connection is now supervised:
+
+- **Reconnects automatically**, with backoff, and **resumes** the session where
+  it can rather than starting over.
+- **Tracks heartbeat acknowledgements.** A socket that stops answering is not
+  detectably closed — it just stops carrying traffic. Without this the link
+  looked alive while nothing arrived, which is the failure that prompted all
+  this.
+- **A scan in progress survives.** Sends wait through a reconnect instead of
+  failing, and a member-list round interrupted mid-flight puts its windows back
+  and retries once the socket returns.
+- **Only genuinely fatal codes stop it.** `4004` means the token was rejected
+  and retrying is pointless, so it stops immediately rather than hammering the
+  endpoint; `op 7` and an invalidated session are treated as the routine events
+  they are.
+
+Reconnects are reported in the status bar and the debug log, so a pause is
+explained rather than mysterious.
+
 ### Reading *all* the members
 
 A member the sidebar never shows is a member never checked, so coverage is
@@ -320,6 +389,14 @@ treated as the priority:
   included — for a single request. This is tried first, and when it works
   nothing else is needed. It is by far the best outcome, and the only one that
   is genuinely complete.
+- **A bot token skips this problem entirely.** With the Server Members Intent
+  the full list is simply given, permissions or not, and none of the sidebar
+  machinery below is used — a bot has no member sidebar to subscribe to. There
+  is a second, independent route as well: `GET /guilds/{id}/members` pages
+  through every member by ascending id. The two fail differently — the gateway
+  is one long-lived socket that can be dropped mid-list, the REST route is
+  small resumable requests — so if the socket comes up short, the pages finish
+  the job.
 - **The public widget is used as a name source**, where a guild publishes one.
   `GET /guilds/{id}/widget.json` needs no permissions and no membership — but
   it returns at most 100 members, only ones currently online, and it
@@ -548,6 +625,47 @@ judgement:
   verdict is still shown as context.
 
 Actioned rows are struck through and tagged `[kicked]` / `[banned]`.
+
+### Acting on many at once
+
+`space` ticks the highlighted member, `A` ticks everyone the current filter and
+search show — **across every page**, not just the one on screen — and `X` clears
+the selection. Ticked rows carry a `✓` and the count sits in the summary bar. A
+selection survives filter changes, sorting and paging, so it never quietly means
+something different from what you built it to mean.
+
+`B` then runs one action against many members. You pick the action in this
+source's terms (the same table as above), then who it applies to:
+
+| Scope | Who |
+|-------|-----|
+| Selected | only the members you ticked |
+| Threats | everyone with a `THREAT` verdict |
+| Caution and above | everyone at `CAUTION` or worse |
+| Filtered | everyone the current filter and search show |
+
+Bulk actions are the least recoverable thing this program does, so the
+confirmation is deliberately harder to get through than the single-member one:
+
+- **Ineligible members are excluded, not swept along.** The same
+  `require_threat` rule applies per member, and the dialog names who is being
+  left out and why before you commit. They are never sent to Discord at all.
+- **You must type the exact number of targets.** Not a button, not a checkbox —
+  the count, by hand, and it resets whenever the scope changes. Clicking
+  through a bulk ban without reading it is not possible.
+- **Everyone affected is named up front**, with their verdicts, before anything
+  runs.
+- **It is paced, not parallel.** `moderation.bulk_delay` (default 1s) sits
+  between each member. Acting on many people in a burst is the fastest way to
+  get a user account flagged for abuse, and the wait costs nothing next to that.
+- **`x` stops it**, cleanly, between members — and what was already done is
+  reported rather than lost.
+- **One failure does not strand the run.** If Discord refuses a member, that is
+  recorded and the rest continue; the detail pane afterwards lists what
+  succeeded, what failed and why, and who was never eligible.
+
+Each reason is still built per member from that member's own finding, with the
+appeal link appended, exactly as the single-member flow does.
 
 ## Purging your messages
 
@@ -781,6 +899,29 @@ The client is built to honour them, but they bind *you*:
   unrelated dispatches stream in, that a silent channel still gives up, and that
   filtered subscriptions drop irrelevant events. Reverting either fix makes this
   suite hang, which is the bug it exists to catch.
+- `test_gateway_resilience.py` — no network: a real local websocket server that
+  is cut off in each of the ways Discord cuts one off. Asserts the socket is
+  rebuilt after an abrupt drop with no close frame, that the session is
+  *resumed* rather than re-identified, that a server which never acknowledges
+  heartbeats is detected as dead, that `op 7` and an invalid session are
+  routine, and that a `4004` stops after one attempt.
+- `test_bot_token.py` — no network: running as a bot application. Asserts a
+  user token wins when both are set, that a bot sends `Bot <token>` without the
+  web-client impersonation headers and a user token still sends them, that
+  user-only routes refuse a bot up front rather than issuing a doomed request
+  (and the bot-only member route refuses a user token), that IDENTIFY declares
+  `GUILDS | GUILD_MEMBERS` and nothing more, that REST member pagination
+  advances by highest id without gaps or repeats, that a bot never attempts the
+  member sidebar or sends OP 14, that it requests the full member list even
+  with zero permissions, and that a token pasted into the wrong config field is
+  detected and corrected rather than failing three steps later.
+- `test_bulk_actions.py` — no network: selecting many members and acting on
+  them. Asserts that ineligible members are excluded from a plan rather than
+  swept along and never reach Discord, that the confirmation cannot be passed
+  without typing the exact count, that `A` means every page rather than the one
+  on screen, that binding `space` did not make it impossible to type one, that
+  the run is paced rather than bursted, that `x` stops it and it stays stopped,
+  and that one refused member does not strand the rest.
 - `test_member_coverage.py` — no network: the fetch paths against a fake
   guild where only some members are online. Asserts the privileged path returns
   everyone including offline without touching the sidebar, that the

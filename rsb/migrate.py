@@ -38,8 +38,22 @@ class Section:
 SCHEMA: list[Section] = [
     Section(
         "discord",
-        "Your Discord user token. DISCORD_TOKEN overrides this.",
-        [Setting("token", "", "Treat this like a password.")],
+        "Your Discord credentials. DISCORD_TOKEN / DISCORD_BOT_TOKEN "
+        "override these.",
+        [
+            Setting("token", "", "User token. Treat this like a password."),
+            Setting(
+                "bot_token",
+                "",
+                (
+                    "Optional bot application token, used only when no user\n"
+                    "token is set. A bot reaches servers it was invited to and\n"
+                    "nothing else -- no friends, no DMs -- but can list every\n"
+                    "member of them, which a user account cannot. Needs the\n"
+                    "SERVER MEMBERS INTENT enabled in the Developer Portal."
+                ),
+            ),
+        ],
     ),
     Section(
         "rotector",
@@ -177,6 +191,15 @@ SCHEMA: list[Section] = [
                 "silent_leave",
                 False,
                 'Leave group DMs without posting "left the group".',
+            ),
+            Setting(
+                "bulk_delay",
+                1.0,
+                (
+                    "Seconds between members in a bulk action.\n"
+                    "Acting fast on many people is what trips Discord's\n"
+                    "abuse heuristics on a user account."
+                ),
             ),
         ],
     ),

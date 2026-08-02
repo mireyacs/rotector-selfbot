@@ -42,7 +42,7 @@ GAP = 0.4
 class SlowGateway:
     """Keeps feeding members for a while, so there is something to stop."""
 
-    def __init__(self, token):
+    def __init__(self, token, bot=False):
         self.user = None
         self.waves_sent = 0
         self.finished = False

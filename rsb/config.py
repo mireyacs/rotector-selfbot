@@ -112,6 +112,10 @@ class ModerationConfig:
     delete_message_seconds: int = 0
     #: leave group DMs without posting a "left the group" message
     silent_leave: bool = False
+    #: seconds between members in a bulk action. Bulk kicks and bans are the
+    #: fastest way to trip Discord's abuse heuristics on a user account, and
+    #: the pause costs nothing next to having the account flagged.
+    bulk_delay: float = 1.0
 
 
 @dataclass
@@ -133,6 +137,11 @@ class PurgeConfig:
 @dataclass
 class Config:
     token: str | None = None
+    #: a bot application's token, used only when no user token is set.
+    #: A bot can reach servers it has been invited to and nothing else -- no
+    #: friends, no DMs, no group DMs -- but within those servers it can list
+    #: every member outright, which a user account cannot.
+    bot_token: str | None = None
     rotector: RotectorConfig = field(default_factory=RotectorConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
@@ -177,6 +186,9 @@ class Config:
         env_token = os.environ.get("DISCORD_TOKEN")
         if env_token:
             cfg.token = env_token.strip()
+        env_bot = os.environ.get("DISCORD_BOT_TOKEN")
+        if env_bot:
+            cfg.bot_token = env_bot.strip()
         env_key = os.environ.get("ROTECTOR_API_KEY")
         if env_key:
             cfg.rotector.api_key = env_key.strip()
@@ -191,6 +203,9 @@ class Config:
         token = (discord.get("token") or "").strip()
         if token:
             self.token = token
+        bot_token = (discord.get("bot_token") or "").strip()
+        if bot_token:
+            self.bot_token = bot_token
 
         rot = data.get("rotector") or {}
         for key in ("api_key", "rate_limit", "window", "reserve", "cache_ttl", "concurrency"):
@@ -297,12 +312,33 @@ class Config:
         self.source = path
         return path
 
+    @property
+    def is_bot(self) -> bool:
+        """Whether this run will authenticate as a bot application.
+
+        A user token always wins when both are present. It can do strictly
+        more -- friends, DMs and group DMs are invisible to a bot -- so
+        silently dropping to the narrower one because it happens to be
+        configured too would be a downgrade nobody asked for.
+        """
+        return not (self.token or "").strip() and bool(
+            (self.bot_token or "").strip()
+        )
+
+    @property
+    def active_token(self) -> str:
+        """The token this run will use, user first."""
+        return (
+            (self.token or "").strip() or (self.bot_token or "").strip()
+        )
+
     def validate(self) -> list[str]:
         problems = []
-        if not self.token:
+        if not self.active_token:
             problems.append(
-                "No Discord token. Set DISCORD_TOKEN, or put one in "
-                f"{CONFIG_NAME} under [discord] token = \"...\"."
+                "No Discord token. Set DISCORD_TOKEN or DISCORD_BOT_TOKEN, or "
+                f"put one in {CONFIG_NAME} under [discord] token = \"...\" "
+                f"(or bot_token for a bot application)."
             )
         if self.rotector.reserve >= self.rotector.rate_limit:
             problems.append("rotector.reserve must be smaller than rotector.rate_limit")

@@ -85,6 +85,12 @@ MANAGE_ROLES = 1 << 28
 CHUNK_PERMISSIONS = KICK_MEMBERS | BAN_MEMBERS | MANAGE_ROLES | ADMINISTRATOR
 
 
+#: Discord asks bots to identify themselves with a URL and a version rather
+#: than to imitate a browser -- and a bot pretending to be Chrome is exactly
+#: the sort of thing that gets an application flagged.
+BOT_UA = "DiscordBot (https://github.com/rotector-selfbot, 1.0)"
+
+
 class DiscordAuthError(RuntimeError):
     pass
 
@@ -95,6 +101,10 @@ class DiscordHTTPError(RuntimeError):
 
 class DiscordForbidden(DiscordHTTPError):
     """The account lacks the permission for this action."""
+
+
+class BotUnsupported(DiscordHTTPError):
+    """Asked of a bot token something only a user account can do."""
 
 
 class DiscordNotFound(DiscordHTTPError):
@@ -222,12 +232,30 @@ class Channel:
 
 
 class DiscordHTTP:
-    def __init__(self, token: str, timeout: float = 30.0) -> None:
+    """Discord's HTTP API, as either a user account or a bot application.
+
+    The two differ in more than a header. A user token has to look like the
+    real client down to ``x-super-properties`` or several routes answer 403; a
+    bot token must *not* look like that, and Discord asks bots to identify
+    themselves honestly instead. Bots in exchange get routes a user account is
+    refused outright -- ``GET /guilds/{id}/members`` chief among them.
+    """
+
+    #: class-level default so a subclass that replaces __init__ (test stubs
+    #: do exactly this) still answers the user-vs-bot question sensibly
+    is_bot = False
+
+    def __init__(self, token: str, timeout: float = 30.0, bot: bool = False) -> None:
         self.token = token
-        self._http = httpx.AsyncClient(
-            base_url=API_BASE,
-            timeout=timeout,
-            headers={
+        self.is_bot = bot
+        if bot:
+            headers = {
+                "authorization": f"Bot {token}",
+                "user-agent": BOT_UA,
+                "accept": "*/*",
+            }
+        else:
+            headers = {
                 "authorization": token,
                 "user-agent": BROWSER_UA,
                 "accept": "*/*",
@@ -239,7 +267,18 @@ class DiscordHTTP:
                 # among them
                 "x-super-properties": super_properties_header(),
                 "referer": "https://discord.com/channels/@me",
-            },
+            }
+        self._http = httpx.AsyncClient(
+            base_url=API_BASE, timeout=timeout, headers=headers
+        )
+
+    def _bot_only(self, what: str) -> None:
+        if not self.is_bot:
+            return
+        raise BotUnsupported(
+            f"{what} is not something a bot application can do -- it has no "
+            f"friends, no DMs of its own and no profile to act from. Supply a "
+            f"user token for this."
         )
 
     async def aclose(self) -> None:
@@ -282,6 +321,76 @@ class DiscordHTTP:
         guilds = [Guild.parse(g) for g in raw]
         guilds.sort(key=lambda g: (-(g.member_count or 0), g.name.lower()))
         return guilds
+
+    async def list_guild_members(
+        self, guild_id: str, limit: int = 1000, after: str = "0"
+    ) -> list[dict]:
+        """One page of ``GET /guilds/{id}/members``, bot tokens only.
+
+        This is the route that makes a bot token worth having: it lists *every*
+        member, offline included, with no dependency on what a member sidebar
+        happens to show. It is paginated by ascending user id via ``after``,
+        at most 1000 per call, and Discord requires the GUILD_MEMBERS
+        privileged intent to be enabled for the application.
+        """
+        if not self.is_bot:
+            raise BotUnsupported(
+                "GET /guilds/{id}/members is refused for user accounts; "
+                "members have to be read from the member sidebar instead."
+            )
+        return await self._get(
+            f"/guilds/{guild_id}/members",
+            limit=str(max(1, min(1000, limit))),
+            after=str(after),
+        )
+
+    async def all_guild_members(
+        self,
+        guild_id: str,
+        on_progress=None,
+        on_members=None,
+        expected: int | None = None,
+        page_delay: float = 0.35,
+    ) -> list[dict]:
+        """Every member of a guild, page by page. Bot tokens only.
+
+        A second, independent way to get the same list the gateway chunks
+        give. It exists because the two fail differently: the gateway path is
+        one long-lived socket that can be dropped mid-list, while this is a
+        series of small stateless requests that can simply be resumed. When
+        the socket falls short, this finishes the job.
+
+        Pagination is by ascending user id, so ``after`` is the highest id
+        seen -- there is no page number to lose track of.
+        """
+        out: list[dict] = []
+        after = "0"
+        while True:
+            page = await self.list_guild_members(guild_id, 1000, after)
+            if not page:
+                break
+            out.extend(page)
+            if on_members:
+                on_members(page)
+            highest = after
+            for entry in page:
+                member_id = str((entry.get("user") or {}).get("id") or "")
+                if member_id and (highest == "0" or int(member_id) > int(highest)):
+                    highest = member_id
+            if on_progress:
+                on_progress(
+                    len(out), expected,
+                    f"Listing members directly ({len(out):,} so far)",
+                )
+            if highest == after or len(page) < 1000:
+                break
+            after = highest
+            await asyncio.sleep(page_delay)
+        return out
+
+    async def guild_member(self, guild_id: str, user_id: str) -> dict:
+        """One member of a guild, with their roles and join date."""
+        return await self._get(f"/guilds/{guild_id}/members/{user_id}")
 
     async def everyone_permissions(self, guild_id: str) -> int:
         """Base permissions of the @everyone role (its id equals the guild id)."""
@@ -334,12 +443,14 @@ class DiscordHTTP:
 
     async def relationships(self) -> list[Relationship]:
         """Friends, pending requests and blocks, in one call."""
+        self._bot_only("Reading the friend list")
         raw = await self._get("/users/@me/relationships")
         out = [Relationship.parse(entry) for entry in raw]
         return [r for r in out if r is not None]
 
     async def private_channels(self) -> list[PrivateChannel]:
         """Open DMs and group DMs."""
+        self._bot_only("Reading direct messages")
         raw = await self._get("/users/@me/channels")
         out = [PrivateChannel.parse(entry) for entry in raw]
         return [c for c in out if c is not None]
@@ -374,10 +485,12 @@ class DiscordHTTP:
 
     async def remove_friend(self, user_id: str) -> None:
         """Drop a relationship: unfriend, or withdraw/decline a request."""
+        self._bot_only("Removing a friend")
         await self._request("DELETE", f"/users/@me/relationships/{user_id}")
 
     async def block_user(self, user_id: str) -> None:
         """Block a user. Also removes any existing friendship."""
+        self._bot_only("Blocking someone")
         await self._request(
             "PUT", f"/users/@me/relationships/{user_id}", json={"type": BLOCKED}
         )
@@ -393,6 +506,9 @@ class DiscordHTTP:
         The response is flattened into one mapping: ``user``, then anything
         ``user_profile`` adds, plus badges, connections and mutual guilds.
         """
+        if self.is_bot:
+            return await self._bot_user(user_id, guild_id)
+
         params = {
             "type": "popout",
             "with_mutual_guilds": "true",
@@ -425,6 +541,35 @@ class DiscordHTTP:
             user["guild_joined_at"] = member.get("joined_at")
             user["guild_nick"] = member.get("nick")
             user["timed_out_until"] = member.get("communication_disabled_until")
+        return user
+
+    async def _bot_user(self, user_id: str, guild_id: str | None) -> dict:
+        """The same shape as the popout profile, from the bot routes.
+
+        A bot gets the plain user object -- which is where the banner and
+        accent colour live for it -- and, in a guild, the member record. What
+        it cannot see at all is the profile bio, pronouns, linked accounts and
+        badges: those are behind the user-only popout route. Missing is
+        reported as missing rather than faked.
+        """
+        user = dict(await self._get(f"/users/{user_id}"))
+        user.setdefault("badges", [])
+        user.setdefault("connected_accounts", [])
+        user.setdefault("mutual_guilds", [])
+        if guild_id:
+            try:
+                member = await self._get(f"/guilds/{guild_id}/members/{user_id}")
+            except (DiscordHTTPError, DiscordForbidden, DiscordNotFound):
+                member = {}
+            if member:
+                user["guild_roles"] = member.get("roles") or []
+                user["guild_joined_at"] = member.get("joined_at")
+                user["guild_nick"] = member.get("nick")
+                user["timed_out_until"] = member.get(
+                    "communication_disabled_until"
+                )
+                if member.get("banner"):
+                    user.setdefault("banner", member["banner"])
         return user
 
     async def widget(self, guild_id: str) -> dict | None:
@@ -483,11 +628,13 @@ class DiscordHTTP:
         ``silent`` suppresses the "left the group" system message the others
         would otherwise see -- the same option the official client offers.
         """
+        self._bot_only("Leaving a group DM")
         params = {"silent": "true"} if silent else None
         await self._request("DELETE", f"/channels/{channel_id}", params=params)
 
     async def remove_group_recipient(self, channel_id: str, user_id: str) -> None:
         """Remove someone from a group DM. Only the group owner may do this."""
+        self._bot_only("Removing someone from a group DM")
         await self._request(
             "DELETE", f"/channels/{channel_id}/recipients/{user_id}"
         )

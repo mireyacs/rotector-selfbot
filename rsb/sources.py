@@ -132,20 +132,29 @@ def build_sources(
     guilds: list[Guild],
     relationships: list[Relationship] | None = None,
     private_channels: list[PrivateChannel] | None = None,
+    is_bot: bool = False,
 ) -> list[ScanSource]:
     """Assemble every scannable source, newest-relevance first.
 
     Friend requests come first: someone who has just added you is precisely who
     you want checked before deciding, and the list is usually short.
+
+    ``is_bot`` drops everything a bot application has no access to. Servers are
+    all it can see; the live inbox additionally needs the message-content
+    intent, which is far more than a member scanner has any business asking
+    for. Listing sources that could only ever fail would be worse than not
+    offering them.
     """
-    sources: list[ScanSource] = [
-        ScanSource(
-            kind=KIND_INBOX,
-            id="inbox",
-            name="Incoming messages",
-            member_count=None,
+    sources: list[ScanSource] = []
+    if not is_bot:
+        sources.append(
+            ScanSource(
+                kind=KIND_INBOX,
+                id="inbox",
+                name="Incoming messages",
+                member_count=None,
+            )
         )
-    ]
 
     friends = [r for r in (relationships or []) if r.type == FRIEND]
     if friends:
