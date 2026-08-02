@@ -81,6 +81,7 @@ class FakeHTTP:
         return [Guild(id="111", name="Big", owner=False, permissions=0,
                       member_count=WAVES * PER_WAVE, presence_count=10)]
     async def relationships(self): return []
+    async def widget(self, gid): return None
     async def private_channels(self): return []
     async def channels(self, gid):
         return [Channel(id="c1", name="general", type=0, position=0,
@@ -94,6 +95,7 @@ async def main():
 
     cfg = Config()
     cfg.token = "fake"
+    cfg.scan.on_rescan = "replace"
     app = appmod.ScannerApp(cfg)
 
     async with app.run_test(size=(140, 40)) as pilot:

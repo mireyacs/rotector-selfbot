@@ -112,6 +112,7 @@ def _member_from_user(raw: dict, nickname: str | None = None) -> GuildMember | N
         discriminator=str(raw.get("discriminator") or "0"),
         nick=nickname,
         bot=bool(raw.get("bot")),
+        avatar=raw.get("avatar"),
     )
 
 
@@ -123,6 +124,7 @@ def _member_from_relationship(entry: Relationship) -> GuildMember:
         discriminator=entry.discriminator,
         nick=entry.nickname,
         bot=entry.bot,
+        avatar=entry.avatar,
     )
 
 

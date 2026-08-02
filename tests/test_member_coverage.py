@@ -241,8 +241,90 @@ async def main():
     print()
     await test_sidebar_stops_at_the_list_end()
     await test_protocol_limits_respected()
+    print()
+    await test_widget_names_resolve_to_real_members()
+    await test_widget_ids_are_useless_on_their_own()
+    await test_widget_absent_is_not_an_error()
     print("\nALL MEMBER COVERAGE TESTS PASSED")
 
+
+
+
+# --------------------------------------------------------------------------
+# the public widget
+# --------------------------------------------------------------------------
+
+async def test_widget_names_resolve_to_real_members():
+    """The widget supplies names; only the gateway can turn them into users."""
+    gw.PREFIX_QUERY_DELAY = 0.0
+    gw.CHUNK_TIMEOUT = 0.25
+
+    g = gw.DiscordGateway("fake")
+    ws = FakeWS(g, total=500, online=50, allow_chunk=False)
+    g._ws = ws
+
+    members = {}
+    # one already known, two not
+    known = gw.GuildMember(id="10", username="online0000")
+    members[known.id] = known
+
+    gained = await g._resolve_names(
+        GUILD,
+        ["online0000", "offline0001", "offline0002"],
+        members,
+        emit=lambda: None,
+        on_progress=None,
+        expected=500,
+    )
+    await g.close()
+
+    assert gained >= 2, gained
+    ok(f"resolved {gained} widget names into real members")
+
+    assert "online0000" not in ws.queries, ws.queries
+    ok("a name already held is not queried again")
+
+    resolved = [m for m in members.values() if m.username.startswith("offline")]
+    assert resolved, members
+    assert all(m.id.isdigit() and m.id != "0" for m in resolved)
+    ok(f"they arrive with real ids, not the widget's placeholders "
+       f"({[m.id for m in resolved][:3]})")
+
+
+async def test_widget_ids_are_useless_on_their_own():
+    """Guard the assumption this whole path is built on."""
+    sample = {
+        "id": "1507083894409793587",
+        "name": "Voltux",
+        "presence_count": 265,
+        "members": [
+            {"id": "0", "username": "SPwilot", "discriminator": "0000"},
+            {"id": "1", "username": "Terror", "discriminator": "0000"},
+            {"id": "2", "username": "0z0ns", "discriminator": "0000"},
+        ],
+    }
+    ids = [m["id"] for m in sample["members"]]
+    assert ids == ["0", "1", "2"], ids
+    # a real Discord id is a snowflake: 17+ digits, never a small counter
+    assert all(len(i) < 5 for i in ids)
+    ok("widget member ids are sequential placeholders, not snowflakes - which "
+       "is why names have to be resolved rather than used directly")
+
+    assert len(sample["members"]) < sample["presence_count"]
+    ok("and the widget lists at most 100, fewer than are even online")
+
+
+async def test_widget_absent_is_not_an_error():
+    gw.PREFIX_QUERY_DELAY = 0.0
+    g = gw.DiscordGateway("fake")
+    g._ws = FakeWS(g, total=100, online=20, allow_chunk=False)
+    members = {}
+    gained = await g._resolve_names(
+        GUILD, [], members, emit=lambda: None, on_progress=None, expected=100
+    )
+    await g.close()
+    assert gained == 0 and members == {}
+    ok("no widget, or no new names, costs nothing and raises nothing")
 
 if __name__ == "__main__":
     asyncio.run(main())

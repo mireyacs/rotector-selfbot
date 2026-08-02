@@ -204,6 +204,29 @@ Only the sender is looked at. Message content is never read, stored or sent
 anywhere; the question being answered is who is talking to you, not what was
 said.
 
+### Panes and the debug log
+
+| Key | Effect |
+|-----|--------|
+| `ctrl+b` | Fold the sources pane away |
+| `ctrl+d` | Fold the detail pane away |
+| `ctrl+up` / `ctrl+down` | Resize the detail pane |
+| `ctrl+l` | Show the debug log |
+
+Both panes work the same way: **drag the divider** to resize, click the header
+(`SOURCES <`, `DETAILS v`) to fold. The detail divider tells a drag from a
+click by whether the pointer moved, so one handle does both. Folding either
+pane hands its space to the others rather than leaving a gap, and unfolding
+restores the size you dragged to.
+
+The debug log keeps what the status bar overwrites. A scan emits dozens of
+messages, each replacing the last, and when something goes wrong the useful one
+has usually already gone; the log records them all, whether or not it is open,
+with timestamps and levels. Consecutive duplicates are collapsed, genuine
+recurrences are not.
+
+Dialogs close when you click outside them, as well as on `escape`.
+
 ### The status bar
 
 The bottom line always names the step currently in flight, with a spinner and
@@ -297,6 +320,15 @@ treated as the priority:
   included — for a single request. This is tried first, and when it works
   nothing else is needed. It is by far the best outcome, and the only one that
   is genuinely complete.
+- **The public widget is used as a name source**, where a guild publishes one.
+  `GET /guilds/{id}/widget.json` needs no permissions and no membership — but
+  it returns at most 100 members, only ones currently online, and it
+  **anonymises their ids** (they come back as `0`, `1`, `2`… rather than
+  snowflakes). So it cannot be looked up directly; each name is resolved to a
+  real account through the gateway first. What it contributes is knowing
+  *which* names to ask for instead of guessing prefixes. Names already held are
+  skipped, which in practice is most of them — the widget lists online members,
+  and those are exactly the ones the sidebar already showed.
 - **The name search deepens where it saturates.** Discord returns at most 100
   matches per query, so a flat pass over 38 single-letter prefixes can surface
   3,800 members however large the guild is. A prefix that comes back with a
@@ -368,10 +400,19 @@ a signal worth seeing, not a finding about the person.
 `e` opens a dialog: which formats, what scope, how to segment, and which of the
 17 columns to include.
 
-**Scope defaults to the current filter.** If you have narrowed the table to
-threats, that is what gets written — exporting everyone when you asked for a
-subset is both surprising and hands on far more personal data than you wanted.
-`Everything scanned` is one radio button away.
+**Scope defaults to the current filter, across every page.** Paging is a
+display concern; an export that quietly dropped the pages you were not looking
+at would be data loss dressed up as a feature. Three choices:
+
+| Scope | What it writes |
+|---|---|
+| Current filter | everything the filter matches, **all pages** (default) |
+| This page only | just the rows on screen |
+| Everything scanned | every member, filter ignored |
+
+Defaulting to the filter rather than to everything is deliberate: exporting the
+lot when you asked for a subset hands on far more personal data than you
+wanted.
 
 Each export lands in its own dated folder:
 
@@ -382,7 +423,12 @@ exports/My-Server-20260801T120000Z/
   My-Server-20260801T120000Z.part3-of-3.csv
   My-Server-20260801T120000Z.txt
   README.txt
+  png/     one file per card, or the segmented table
+  html/    the single page
 ```
+
+Images and pages get their own subfolders rather than sitting among the data
+files — forty cards beside three CSVs is not a folder anyone wants to open.
 
 - **CSV** — segmented at `segment_size` rows (default 1000). Every part is a
   complete CSV with its own header, so each opens on its own; a 40,000-member
@@ -391,8 +437,46 @@ exports/My-Server-20260801T120000Z/
 - **TXT** — a readable per-member report rather than a table, for reading or
   pasting into a ticket.
 - **JSON** — the full structured data.
+- **PNG** — in one of three styles. *Table* draws the results grid, segmented
+  like the CSV since one image of ten thousand rows is neither openable nor
+  readable. *Cards* draws one Discord-style profile per member — avatar,
+  banner, account age, linked Roblox accounts and the reasons — for when the
+  point is a single person rather than a list. *Both* writes the table and every
+  card, which is usually what is wanted: the grid to see the shape of it, and a
+  card to attach to whatever comes next. Verdict colours match the terminal
+  throughout.
+- **HTML** — one self-contained page holding **both** views, with a filter box,
+  a verdict dropdown and sortable columns. Deliberately never segmented: a
+  browser has no trouble with ten thousand rows, and splitting would only make
+  it harder to search. Images are inlined as data URIs and the CSS and JS are
+  inline too, so the file can be sent on its own with no folder of assets to
+  lose.
 - **README.txt** — what this is, the scope it was taken at, and the 24-hour
   expiry.
+
+![PNG table export](docs/screenshots/export-png.png)
+
+![PNG card export](docs/screenshots/export-card.png)
+
+Cards use the client's own **popout profile** route, scoped to the guild being
+scanned, which returns rather more than a name: pronouns, badges, linked Steam
+/ Spotify / Epic accounts and whether each is verified, mutual server count,
+Nitro tenure, when they joined *this* server, and whether they are currently
+timed out in it. Animated avatars and banners are requested as `.gif` rather
+than a `.png` that would come back broken.
+
+That route is refused for a request that does not identify itself as a client,
+which is what `x-super-properties` is for — the same descriptor the gateway
+sends on IDENTIFY, shared between the two so they cannot disagree. Its absence
+is what produced `DiscordForbidden`.
+
+Avatars come free regardless: the hash is already in the member payload, so
+cards render them even if the profile route fails, and a card with an avatar
+but no banner says exactly that rather than reporting a blanket failure.
+
+PNG needs Pillow (`pip install pillow`). It is genuinely optional: without it
+the format is simply not offered, and asking for it anyway drops the PNG and
+still writes everything else.
 
 Ticking *Remember these settings* writes them to `[export]` in `config.toml`.
 Only that section is rewritten — comments elsewhere in the file survive.
@@ -491,6 +575,50 @@ someone, this reports that rather than opening a conversation in order to
 delete one that never existed. In a group DM the dialog is explicit that this
 removes *everything* you sent to the group, not only messages aimed at one
 person.
+
+## Scanning again
+
+A member list is not the same twice. Without elevated permissions a scan only
+sees who was online, so running it again later reaches people the last pass
+could not — and wiping the results each time throws that accumulation away.
+
+So when results are already on screen, a scan asks what to do with them:
+
+| Choice | Effect |
+|---|---|
+| Start fresh | discard what is there and scan from scratch |
+| Add, skip known | keep them, and only look up members not already checked |
+| Add, re-check everyone | keep them, and look everyone up again — flags change |
+
+`scan.on_rescan` sets a default (`ask`, `replace`, `merge_skip`,
+`merge_recheck`) so it need only be answered once. "Skip known" is the one that
+accumulates coverage across runs while spending rate limit only on people it
+has not seen.
+
+## Recovering without restarting
+
+When something fails, an error screen shows what broke, what was being done at
+the time, and — importantly — that your results are still loaded. It offers
+three things: **try again**, **reload the code**, or dismiss.
+
+`ctrl+shift+r` reloads edited modules in place. The point is not novelty: a scan
+of a large server takes minutes, and having to throw that away to see a
+one-line change is the problem being solved. Scan results, the rate-limit
+budget and open connections all survive.
+
+It is honest about its limits, which are real:
+
+- **Functions and constants pick up changes; live objects do not.** An object
+  built before a reload keeps the class it was built from.
+- **The UI modules are never reloaded** — swapping the class of a running app
+  mid-frame does not end well — so changes there still need a restart.
+- **Re-binding is best effort.** `from x import y` copies a reference, so after
+  reloading `x` every importer still points at the old function; those are
+  hunted down and repointed, which covers ordinary imports but not names
+  captured in closures or defaults.
+
+A syntax error in an edit is reported and the previously working code stays
+loaded, rather than taking the app down with it.
 
 ## Time estimates
 
@@ -653,12 +781,13 @@ The client is built to honour them, but they bind *you*:
   unrelated dispatches stream in, that a silent channel still gives up, and that
   filtered subscriptions drop irrelevant events. Reverting either fix makes this
   suite hang, which is the bug it exists to catch.
-- `test_member_coverage.py` — no network: the three fetch paths against a fake
+- `test_member_coverage.py` — no network: the fetch paths against a fake
   guild where only some members are online. Asserts the privileged path returns
   everyone including offline without touching the sidebar, that the
   unprivileged path gets every online member and then recovers more by name
-  search, that saturated prefixes are deepened, and that the sidebar stops at
-  the end of the *list* rather than the member count.
+  search, that saturated prefixes are deepened, that the sidebar stops at the
+  end of the *list* rather than the member count, and that widget names resolve
+  to real snowflake ids rather than being trusted as they arrive.
 - `test_settings_ui.py` — the setup wizard writing a working config, the editor
   covering all 31 schema settings with the right widget per type, round-tripping
   edits, paging across 540 rows, search re-paging, and that every palette
@@ -683,6 +812,26 @@ The client is built to honour them, but they bind *you*:
   API: that blocked users and outgoing requests are excluded, 1:1 DMs are not
   listed as groups, scanning needs no gateway, and that `k`/`b` resolve to
   unfriend/block/remove-from-group and hit the right endpoint.
+- `test_reload_recovery.py` — reload against a **disposable** package rather
+  than the real source (an earlier version edited `rsb/verdict.py` and left the
+  tree corrupted when it failed part-way); that four same-length edits inside
+  one second each take effect rather than a stale `.pyc`; that a syntax error is
+  reported without unloading working code; the three merge modes; that exporting
+  from page 2 writes every page; and that the error screen's retry and reload
+  both leave results intact.
+- `test_cards_html.py` — card rendering with and without avatars, one file per
+  member, the HTML page being genuinely self-contained (no remote `src`, no
+  `<link>`, only appeal and profile links), that hostile member text is escaped
+  rather than injected, that PNG and HTML land in their own subfolders, and the
+  pane toggles, debug log and click-away dismissal. Also that a refused profile
+  still yields an avatar from the member list, that the export dialog's buttons
+  stay inside the panel in a 30-row terminal while its options overflow by 36
+  rows, and that folding the sources pane hands its columns to the results.
+- `test_png_export.py` — image dimensions tracking rows and columns,
+  segmentation, that a 4,000-character reason is truncated rather than
+  stretching the canvas, that a THREAT table contains the threat accent colour
+  and a clear one does not, and that dropping Pillow degrades to "no PNG"
+  rather than breaking the other formats.
 - `test_export.py` — no network: CSV segmentation (2,500 rows → 3 self-contained
   parts, all rows preserved), TXT/JSON/README contents, column selection, and
   config round-tripping that proves comments elsewhere in the file survive.
@@ -725,6 +874,10 @@ rsb/
   ratelimit.py     sliding window, header sync, Retry-After
   proxy.py         route pool, health, failover, proxy probing
   export.py        CSV/TXT/JSON renderers and segmentation
+  imagerender.py   the results table drawn to PNG
+  hotreload.py     reloading edited modules without losing a scan
+  htmlrender.py    the single self-contained HTML page
+  profiles.py      avatars, banners and account ages for cards
   moderation.py    reason construction and actionability rules
   sources.py       servers, friends, requests and group DMs as one type
   migrate.py       config schema and the upgrade path for older files

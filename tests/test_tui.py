@@ -29,6 +29,7 @@ class FakeHTTP:
                   member_count=3, presence_count=1),
         ]
     async def relationships(self): return []
+    async def widget(self, gid): return None
     async def private_channels(self): return []
     async def channels(self, gid):
         return [Channel(id="c1", name="general", type=0, position=0, everyone_can_view=True)]
@@ -216,7 +217,17 @@ async def main():
         )
         assert any(f.endswith(".txt") for f in files), files
         assert any(f.endswith(".json") for f in files), files
-        print(f"[ok] segmented into {len(csv_parts)} CSV parts, plus TXT and JSON")
+        # images and pages now live in their own subfolders
+        pngs = sorted((folders[0] / "png").glob("*.png"))
+        htmls = sorted((folders[0] / "html").glob("*.html"))
+        assert pngs, sorted(p.name for p in folders[0].rglob("*"))
+        assert htmls, sorted(p.name for p in folders[0].rglob("*"))
+        assert not [f for f in files if f.endswith((".png", ".html"))], files
+        from PIL import Image
+        image = Image.open(pngs[0])
+        assert image.format == "PNG" and image.width > 200
+        print(f"[ok] segmented into {len(csv_parts)} CSV parts, plus TXT, JSON, "
+              f"a {image.width}x{image.height} PNG in png/ and a page in html/")
 
         import json as _json
         payload = _json.loads(
@@ -233,7 +244,9 @@ async def main():
         import tomllib as _tomllib
         remembered = _tomllib.loads((workdir / "config.toml").read_text())
         assert remembered["export"]["segment_size"] == 1
-        assert set(remembered["export"]["formats"]) == {"csv", "txt", "json"}
+        assert set(remembered["export"]["formats"]) == {
+            "csv", "txt", "json", "png", "html"
+        }
         print(f"[ok] defaults remembered in config.toml: "
               f"{remembered['export']['formats']}, segment {remembered['export']['segment_size']}")
 

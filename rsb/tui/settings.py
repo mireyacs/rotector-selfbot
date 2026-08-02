@@ -18,6 +18,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Static, TabbedContent, TabPane
 
 from ..config import Config, write_section
+from .dialogs import DismissOnOutsideClick
 from ..migrate import SCHEMA, Section, Setting
 
 _CSS = """
@@ -86,11 +87,14 @@ def apply_value(config: Config, section: str, setting: str, value) -> None:
         setattr(holder, setting, value)
 
 
-class SettingsScreen(ModalScreen[bool]):
+class SettingsScreen(DismissOnOutsideClick, ModalScreen[bool]):
     """Edit every setting, then write them back section by section."""
 
     CSS = "SettingsScreen { align: center middle; }" + _CSS
     BINDINGS = [("escape", "cancel", "Close")]
+
+    def _dismiss_from_outside(self) -> None:
+        self.dismiss(False)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -193,7 +197,7 @@ class Check:
     blocking: bool = False
 
 
-class DiagnosticsScreen(ModalScreen[str | None]):
+class DiagnosticsScreen(DismissOnOutsideClick, ModalScreen[str | None]):
     """What is wrong and what to do about it.
 
     Shown when startup fails, so the answer is on screen instead of in a log
@@ -241,7 +245,7 @@ class DiagnosticsScreen(ModalScreen[str | None]):
         self.dismiss("retry")
 
 
-class SetupWizard(ModalScreen[bool]):
+class SetupWizard(DismissOnOutsideClick, ModalScreen[bool]):
     """First run: collect the minimum needed to get going."""
 
     CSS = "SetupWizard { align: center middle; }" + _CSS
@@ -429,3 +433,78 @@ def run_checks(config: Config) -> list[Check]:
         )
     )
     return checks
+
+
+class ErrorScreen(DismissOnOutsideClick, ModalScreen[str | None]):
+    """What went wrong, and what can be done about it without restarting.
+
+    A traceback in a log the user cannot see is not error handling. This shows
+    it, and offers the three things actually worth doing: try again, reload the
+    code after editing it, or carry on with what is already on screen.
+    """
+
+    CSS = "ErrorScreen { align: center middle; }" + _CSS
+    BINDINGS = [("escape", "cancel", "Dismiss")]
+
+    def __init__(
+        self,
+        summary: str,
+        detail: str,
+        *,
+        context: str = "",
+        can_retry: bool = True,
+        preserved: str = "",
+    ) -> None:
+        super().__init__()
+        self.summary = summary
+        self.detail = detail
+        self.context = context
+        self.can_retry = can_retry
+        self.preserved = preserved
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="panel"):
+            yield Static("Something went wrong", classes="title")
+
+            head = Text()
+            if self.context:
+                head.append(f"{self.context}\n", style="dim")
+            head.append(self.summary, style="bold red")
+            yield Static(head)
+
+            if self.preserved:
+                note = Text()
+                note.append("\nNothing was lost. ", style="bold green")
+                note.append(self.preserved)
+                yield Static(note)
+
+            yield Static("Detail", classes="section")
+            with VerticalScroll():
+                yield Static(Text(self.detail, style="dim"))
+
+            yield Static(
+                Text(
+                    "\nEdit the code and press Reload to pick the change up "
+                    "without restarting. Scan results stay as they are.",
+                    style="dim",
+                ),
+                classes="hint",
+            )
+
+            with Horizontal(id="buttons"):
+                yield Button("Dismiss", variant="default", id="cancel")
+                yield Button("Reload code", variant="warning", id="reload")
+                if self.can_retry:
+                    yield Button("Try again", variant="primary", id="retry")
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#reload")
+    def _reload(self) -> None:
+        self.dismiss("reload")
+
+    @on(Button.Pressed, "#retry")
+    def _retry(self) -> None:
+        self.dismiss("retry")

@@ -24,6 +24,29 @@ from ..export import ALL_COLUMNS, DEFAULT_COLUMNS
 from ..moderation import Eligibility, build_reason
 from ..verdict import verdict_label, verdict_style
 
+class DismissOnOutsideClick:
+    """Clicking the dimmed area around a dialog closes it.
+
+    Modals are meant to be easy to back out of. Escape already works, but
+    clicking away is what most people try first, and having nothing happen
+    reads as the app being stuck.
+    """
+
+    def on_click(self, event) -> None:
+        try:
+            panel = self.query_one("#panel")
+        except Exception:
+            return
+        if panel.region.contains(event.screen_x, event.screen_y):
+            return
+        event.stop()
+        self._dismiss_from_outside()
+
+    def _dismiss_from_outside(self) -> None:
+        # subclasses override when their result type is not Optional
+        self.dismiss(None)
+
+
 _DIALOG_CSS = """
     #panel {
         width: 78;
@@ -34,7 +57,16 @@ _DIALOG_CSS = """
     }
     #panel > .title { text-style: bold; padding-bottom: 1; }
     .section { padding-top: 1; color: $text-muted; text-style: bold; }
-    #buttons { height: auto; padding-top: 1; align-horizontal: right; }
+    /* the fields scroll; the buttons are docked so they cannot be pushed
+       off the bottom by a long form */
+    #fields { height: 1fr; overflow-y: auto; overflow-x: hidden; }
+    #buttons {
+        height: auto;
+        padding-top: 1;
+        align-horizontal: right;
+        dock: bottom;
+        background: $surface;
+    }
     Button { margin-left: 1; }
     SelectionList { height: auto; max-height: 10; border: round $panel-lighten-2; }
     RadioSet { height: auto; border: round $panel-lighten-2; }
@@ -49,9 +81,10 @@ class ExportChoice:
     columns: list[str]
     preserve: bool = False
     remember: bool = False
+    png_style: str = "table"
 
 
-class ExportDialog(ModalScreen[ExportChoice | None]):
+class ExportDialog(DismissOnOutsideClick, ModalScreen[ExportChoice | None]):
     """Pick formats, scope, segmentation and columns for one export."""
 
     CSS = "ExportDialog { align: center middle; }" + _DIALOG_CSS
@@ -67,26 +100,52 @@ class ExportDialog(ModalScreen[ExportChoice | None]):
         filtered_count: int,
         total_count: int,
         preserve: bool = False,
+        png_style: str = "table",
+        page_count: int = 0,
+        page_number: int = 1,
+        total_pages: int = 1,
     ) -> None:
         super().__init__()
         self._preserve = preserve
+        self._png_style = png_style
         self._formats = [f.lower() for f in formats] or ["csv"]
-        self._scope = scope if scope in ("filtered", "all") else "filtered"
+        self._scope = scope if scope in ("filtered", "page", "all") else "filtered"
         self._segment_size = segment_size
         self._columns = columns or list(DEFAULT_COLUMNS)
         self.filter_name = filter_name
         self.filtered_count = filtered_count
         self.total_count = total_count
+        self.page_count = page_count
+        self.page_number = page_number
+        self.total_pages = total_pages
 
     def compose(self) -> ComposeResult:
         with Vertical(id="panel"):
             yield Static("Export results", classes="title")
 
+            with VerticalScroll(id="fields"):
+                yield from self._fields()
+
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button("Export", variant="primary", id="confirm")
+
+    def _fields(self) -> ComposeResult:
             yield Static("Formats", classes="section")
             yield SelectionList[str](
                 ("CSV  - segmented spreadsheet", "csv", "csv" in self._formats),
                 ("TXT  - readable report", "txt", "txt" in self._formats),
                 ("JSON - full structured data", "json", "json" in self._formats),
+                (
+                    "PNG  - the table as an image, for pasting into a report",
+                    "png",
+                    "png" in self._formats,
+                ),
+                (
+                    "HTML - one searchable page, table and cards together",
+                    "html",
+                    "html" in self._formats,
+                ),
                 id="formats",
             )
 
@@ -94,15 +153,47 @@ class ExportDialog(ModalScreen[ExportChoice | None]):
             with RadioSet(id="scope"):
                 yield RadioButton(
                     f"Current filter: {self.filter_name} "
-                    f"({self.filtered_count:,} members)",
+                    f"({self.filtered_count:,} members, all pages)",
                     value=self._scope == "filtered",
                     id="scope-filtered",
+                )
+                yield RadioButton(
+                    f"This page only ({self.page_count:,} members, "
+                    f"page {self.page_number} of {self.total_pages})",
+                    value=self._scope == "page",
+                    id="scope-page",
                 )
                 yield RadioButton(
                     f"Everything scanned ({self.total_count:,} members)",
                     value=self._scope == "all",
                     id="scope-all",
                 )
+
+            yield Static("PNG style", classes="section")
+            with RadioSet(id="png-style"):
+                yield RadioButton(
+                    "Table - the results grid as one image",
+                    value=self._png_style != "cards",
+                    id="png-table",
+                )
+                yield RadioButton(
+                    "Cards - a Discord-style profile per member, with avatar "
+                    "and banner",
+                    value=self._png_style == "cards",
+                    id="png-cards",
+                )
+                yield RadioButton(
+                    "Both - the table and a card for every member",
+                    value=self._png_style == "both",
+                    id="png-both",
+                )
+            yield Static(
+                Text(
+                    "Cards fetch each member's avatar and banner from Discord, "
+                    "so they take longer and need network.",
+                    style="dim",
+                )
+            )
 
             yield Static("Rows per CSV segment (0 = one file)", classes="section")
             yield Input(
@@ -140,9 +231,12 @@ class ExportDialog(ModalScreen[ExportChoice | None]):
                 "Remember these settings in config.toml", False, id="remember"
             )
 
-            with Horizontal(id="buttons"):
-                yield Button("Cancel", variant="default", id="cancel")
-                yield Button("Export", variant="primary", id="confirm")
+    def _chosen_png_style(self) -> str:
+        if self.query_one("#png-both", RadioButton).value:
+            return "both"
+        if self.query_one("#png-cards", RadioButton).value:
+            return "cards"
+        return "table"
 
     @on(Button.Pressed, "#cancel")
     def action_cancel(self) -> None:
@@ -166,11 +260,12 @@ class ExportDialog(ModalScreen[ExportChoice | None]):
         except ValueError:
             segment = 0
 
-        scope = (
-            "all"
-            if self.query_one("#scope-all", RadioButton).value
-            else "filtered"
-        )
+        if self.query_one("#scope-all", RadioButton).value:
+            scope = "all"
+        elif self.query_one("#scope-page", RadioButton).value:
+            scope = "page"
+        else:
+            scope = "filtered"
         self.dismiss(
             ExportChoice(
                 formats=formats,
@@ -178,6 +273,7 @@ class ExportDialog(ModalScreen[ExportChoice | None]):
                 segment_size=segment,
                 columns=columns,
                 preserve=self.query_one("#preserve", Checkbox).value,
+                png_style=self._chosen_png_style(),
                 remember=self.query_one("#remember", Checkbox).value,
             )
         )
@@ -191,7 +287,7 @@ class ModerationChoice:
     acknowledged_override: bool = False
 
 
-class ModerationDialog(ModalScreen[ModerationChoice | None]):
+class ModerationDialog(DismissOnOutsideClick, ModalScreen[ModerationChoice | None]):
     """Confirm a kick or ban, with an automatic or hand-written reason.
 
     The dialog always shows the exact reason that will be written to the audit
@@ -340,7 +436,7 @@ class LeaveChoice:
     remember: bool = False
 
 
-class LeaveGroupDialog(ModalScreen[LeaveChoice | None]):
+class LeaveGroupDialog(DismissOnOutsideClick, ModalScreen[LeaveChoice | None]):
     """Confirm leaving a group DM, with the silent option."""
 
     CSS = "LeaveGroupDialog { align: center middle; }" + _DIALOG_CSS
@@ -405,7 +501,7 @@ class PurgeChoice:
     remember: bool = False
 
 
-class PurgePlanDialog(ModalScreen[PurgeChoice | None]):
+class PurgePlanDialog(DismissOnOutsideClick, ModalScreen[PurgeChoice | None]):
     """Choose how far back to look. Deletes nothing -- this only builds a plan."""
 
     CSS = "PurgePlanDialog { align: center middle; }" + _DIALOG_CSS
@@ -499,11 +595,15 @@ class PurgePlanDialog(ModalScreen[PurgeChoice | None]):
         )
 
 
-class PurgeConfirmDialog(ModalScreen[bool]):
+class PurgeConfirmDialog(DismissOnOutsideClick, ModalScreen[bool]):
+    """Clicking away means "no", which is the safe reading for a deletion."""
     """Show exactly what will be deleted, and require a typed confirmation."""
 
     CSS = "PurgeConfirmDialog { align: center middle; }" + _DIALOG_CSS
     BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def _dismiss_from_outside(self) -> None:
+        self.dismiss(False)
 
     def __init__(self, plan, estimated_seconds: float) -> None:
         super().__init__()
@@ -560,3 +660,88 @@ class PurgeConfirmDialog(ModalScreen[bool]):
             self.notify("Type DELETE to confirm.", severity="warning")
             return
         self.dismiss(True)
+
+
+@dataclass
+class ScanChoice:
+    """How a new scan relates to results already on screen."""
+
+    mode: str            # "replace" | "merge_skip" | "merge_recheck"
+    remember: bool = False
+
+
+class RescanDialog(DismissOnOutsideClick, ModalScreen[ScanChoice | None]):
+    """Asked when a scan starts and there are already results.
+
+    Merging is worth offering rather than always wiping, because a member list
+    is not the same twice: an unprivileged scan sees whoever was online, so
+    running it again later reaches people the first pass could not. Wiping
+    throws that accumulation away.
+    """
+
+    CSS = "RescanDialog { align: center middle; }" + _DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, source_name: str, existing: int, default: str) -> None:
+        super().__init__()
+        self.source_name = source_name
+        self.existing = existing
+        self._default = default if default in _MODES else "replace"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="panel"):
+            yield Static("Scan again", classes="title")
+
+            header = Text()
+            header.append(f"{self.existing:,} members", style="bold")
+            header.append(" are already on screen.\n", style="")
+            header.append(
+                "A member list is not the same twice -- without elevated "
+                "permissions a scan only sees who was online -- so scanning "
+                "again later reaches people the last pass could not.",
+                style="dim",
+            )
+            yield Static(header)
+
+            yield Static("What to do with them", classes="section")
+            with RadioSet(id="mode"):
+                yield RadioButton(
+                    "Start fresh - discard the current results",
+                    value=self._default == "replace",
+                    id="mode-replace",
+                )
+                yield RadioButton(
+                    "Add to them - only look up members not already checked",
+                    value=self._default == "merge_skip",
+                    id="mode-merge-skip",
+                )
+                yield RadioButton(
+                    "Add to them - re-check everyone (flags change over time)",
+                    value=self._default == "merge_recheck",
+                    id="mode-merge-recheck",
+                )
+
+            yield Checkbox("Remember this choice in config.toml", False, id="remember")
+
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button("Scan", variant="primary", id="confirm")
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#confirm")
+    def _confirm(self) -> None:
+        if self.query_one("#mode-replace", RadioButton).value:
+            mode = "replace"
+        elif self.query_one("#mode-merge-skip", RadioButton).value:
+            mode = "merge_skip"
+        else:
+            mode = "merge_recheck"
+        self.dismiss(
+            ScanChoice(mode=mode, remember=self.query_one("#remember", Checkbox).value)
+        )
+
+
+_MODES = ("replace", "merge_skip", "merge_recheck")

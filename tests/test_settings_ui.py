@@ -41,6 +41,7 @@ class FakeHTTP:
         return [Guild(id="111", name="Srv", owner=False, permissions=0,
                       member_count=5, presence_count=1)]
     async def relationships(self): return []
+    async def widget(self, gid): return None
     async def private_channels(self): return []
     async def channels(self, gid):
         return [Channel(id="c1", name="general", type=0, position=0,

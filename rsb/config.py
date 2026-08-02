@@ -73,6 +73,9 @@ class ScanConfig:
     hide_no_detections: bool = True
     #: hide members with no Rotector-known Roblox link -- the larger group still
     hide_unknown: bool = True
+    #: what a new scan does with results already on screen:
+    #: "ask", "replace", "merge_skip" or "merge_recheck"
+    on_rescan: str = "ask"
 
 
 @dataclass
@@ -85,6 +88,8 @@ class ExportConfig:
     segment_size: int = 1000
     columns: list[str] = field(default_factory=list)
     directory: str = "exports"
+    #: "table" for the results grid, "cards" for per-member profile images
+    png_style: str = "table"
     #: keep exports past the 24h retention window instead of clearing them.
     #: Rotector's terms forbid retaining their responses that long, so leaving
     #: this off means old export folders are swept up automatically.
@@ -194,12 +199,13 @@ class Config:
 
         scan = data.get("scan") or {}
         for key in ("skip_bots", "max_members", "hide_no_detections",
-                    "hide_unknown"):
+                    "hide_unknown", "on_rescan"):
             if key in scan and scan[key] is not None:
                 setattr(self.scan, key, scan[key])
 
         export = data.get("export") or {}
-        for key in ("formats", "scope", "segment_size", "columns", "directory"):
+        for key in ("formats", "scope", "segment_size", "columns", "directory",
+                    "png_style"):
             if key in export and export[key] is not None:
                 setattr(self.export, key, export[key])
 
@@ -237,6 +243,7 @@ class Config:
             "columns": self.export.columns,
             "directory": self.export.directory,
             "preserve": self.export.preserve,
+            "png_style": self.export.png_style,
         }
         write_section(path, "export", body)
         self.source = path
@@ -253,6 +260,23 @@ class Config:
                 "default_reason": self.moderation.default_reason,
                 "delete_message_seconds": self.moderation.delete_message_seconds,
                 "silent_leave": self.moderation.silent_leave,
+            },
+        )
+        self.source = path
+        return path
+
+    def save_scan_settings(self) -> Path:
+        """Persist the [scan] section."""
+        path = self.config_path()
+        write_section(
+            path,
+            "scan",
+            {
+                "skip_bots": self.scan.skip_bots,
+                "max_members": self.scan.max_members,
+                "hide_no_detections": self.scan.hide_no_detections,
+                "hide_unknown": self.scan.hide_unknown,
+                "on_rescan": self.scan.on_rescan,
             },
         )
         self.source = path

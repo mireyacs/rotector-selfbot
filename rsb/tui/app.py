@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import (
     DataTable,
+    RichLog,
     Footer,
     Header,
     Input,
@@ -37,6 +39,7 @@ from ..discord.http import DiscordForbidden, DiscordHTTPError, DiscordNotFound
 from ..eta import RateEstimator, estimate_scan_seconds, format_duration
 from ..export import DEFAULT_COLUMNS, export as render_export, ExportRow
 from ..moderation import Eligibility, build_reason, check_eligibility
+from ..profiles import fetch_profiles
 from ..sources import (
     GROUPS,
     KIND_FRIENDS,
@@ -56,8 +59,10 @@ from ..purge import (
     plan_purge,
 )
 from .commands import BindingCommands, ScrollableFooter, StatusStrip
+from ..hotreload import HotReloader
 from .settings import (
     Check as _Check,
+    ErrorScreen,
     advisory_problems,
     blocking_problems,
     DiagnosticsScreen,
@@ -67,6 +72,7 @@ from .settings import (
 )
 from .dialogs import (
     ExportDialog,
+    RescanDialog,
     LeaveGroupDialog,
     ModerationDialog,
     PurgeConfirmDialog,
@@ -259,6 +265,49 @@ GROUP_KEY = "grouphdr:"
 PAGE_SIZE = 250
 
 
+class DetailDivider(Static):
+    """Drag to resize the detail pane; click to fold it.
+
+    Same idea as the vertical divider between the panes, turned on its side.
+    A drag and a click are told apart by whether the pointer actually moved,
+    so one handle can do both without a modifier key.
+    """
+
+    MIN_HEIGHT = 3
+    MAX_HEIGHT = 40
+
+    def __init__(self) -> None:
+        super().__init__(id="detail-divider", markup=False)
+        self._dragging = False
+        self._moved = False
+
+    def on_mouse_down(self, event) -> None:
+        self._dragging = True
+        self._moved = False
+        self.capture_mouse()
+        self.add_class("dragging")
+        event.stop()
+
+    def on_mouse_move(self, event) -> None:
+        if not self._dragging:
+            return
+        if abs(event.delta_y) or abs(event.delta_x):
+            self._moved = True
+        # the pane runs from the pointer to the bottom of the screen
+        self.app.set_detail_height(self.app.size.height - int(event.screen_y) - 2)
+        event.stop()
+
+    def on_mouse_up(self, event) -> None:
+        if not self._dragging:
+            return
+        self._dragging = False
+        self.release_mouse()
+        self.remove_class("dragging")
+        if not self._moved:
+            self.app.action_toggle_detail()
+        event.stop()
+
+
 class SourceTable(DataTable):
     """The sources list, with group headers that fold on a single click.
 
@@ -354,6 +403,35 @@ class ScannerApp(App):
     #servers-pane {
         width: 56;
     }
+    #servers-pane.collapsed { width: 3; }
+    #servers-pane.collapsed #guilds { display: none; }
+    #servers-pane.collapsed .pane-title { width: 3; }
+    /* the results pane takes whatever the sources pane gives up, so folding
+       it away widens the table rather than leaving a gap */
+    #results-pane { width: 1fr; }
+
+    .pane-title { link-color: $text; }
+
+    #detail.collapsed { display: none; }
+    #detail-divider {
+        height: 1;
+        width: 100%;
+        background: $panel-lighten-1;
+        color: $panel-lighten-3;
+        text-align: center;
+    }
+    #detail-divider:hover, #detail-divider.dragging {
+        background: $primary;
+        color: $primary;
+    }
+
+    #logpanel {
+        height: 14;
+        display: none;
+        border-top: solid $panel-lighten-2;
+        background: $surface-darken-1;
+    }
+    #logpanel.visible { display: block; }
     #divider {
         width: 1;
         height: 100%;
@@ -411,6 +489,12 @@ class ScannerApp(App):
         ("b", "ban", "Ban / block"),
         ("ctrl+r", "reload_guilds", "Reload sources"),
         ("ctrl+s", "settings", "Settings"),
+        ("ctrl+shift+r", "reload_code", "Reload code"),
+        ("ctrl+b", "toggle_sources", "Sources pane"),
+        ("ctrl+d", "toggle_detail", "Detail pane"),
+        ("ctrl+up", "grow_detail", ""),
+        ("ctrl+down", "shrink_detail", ""),
+        ("ctrl+l", "toggle_log", "Debug log"),
         ("L", "leave_group", "Leave group DM"),
         ("[", "narrow_pane", ""),
         ("]", "widen_pane", ""),
@@ -442,6 +526,15 @@ class ScannerApp(App):
         self.source_search = ""
         self._search_target: str | None = None
         self._advisories: list = []
+        self._sources_hidden = False
+        self._detail_hidden = False
+        self._detail_height = 14
+        self._last_logged = ""
+        #: how many lines the debug log holds; RichLog exposes no count
+        self.log_lines = 0
+        self._reloader = HotReloader()
+        #: how to retry whatever last failed, if it can be retried
+        self._retry: Callable[[], None] | None = None
         #: rows rendered per page; a table of 10k rows is unusable otherwise
         self.page_size = PAGE_SIZE
         self._page = 0
@@ -478,7 +571,7 @@ class ScannerApp(App):
         yield Header(show_clock=True)
         with Horizontal(id="body"):
             with Vertical(id="servers-pane"):
-                yield Static("SOURCES", classes="pane-title")
+                yield Static("SOURCES  <", classes="pane-title", id="sources-title")
                 yield SourceTable(id="guilds", cursor_type="row", zebra_stripes=True)
             yield PaneDivider()
             with Vertical(id="results-pane"):
@@ -486,8 +579,11 @@ class ScannerApp(App):
                 yield Static("", id="summary")
                 yield Input(placeholder="Filter by name or ID...", id="search")
                 yield DataTable(id="results", cursor_type="row", zebra_stripes=True)
+                yield DetailDivider()
+                yield Static("DETAILS  v", classes="pane-title", id="detail-title")
                 with VerticalScroll(id="detail"):
                     yield Static(self._welcome_text(), id="detail-body")
+        yield RichLog(id="logpanel", markup=False, wrap=False, max_lines=2000)
         yield ProgressBar(id="progress", show_eta=False)
         yield StatusStrip()
         yield ScrollableFooter()
@@ -594,6 +690,103 @@ class ScannerApp(App):
     def _group_clicked(self, event: SourceTable.GroupClicked) -> None:
         self._toggle_group(event.title)
 
+    # -- collapsible panes -------------------------------------------------
+
+    def action_toggle_sources(self) -> None:
+        """Fold the sources pane away, leaving results and details the width."""
+        self._sources_hidden = not self._sources_hidden
+        pane = self.query_one("#servers-pane")
+        pane.set_class(self._sources_hidden, "collapsed")
+        self.query_one("#sources-title", Static).update(
+            ">" if self._sources_hidden else "SOURCES  <"
+        )
+        if self._sources_hidden:
+            self.query_one("#results", DataTable).focus()
+        else:
+            pane.styles.width = self._pane_width
+            self.query_one("#guilds", DataTable).focus()
+        self.log_debug(
+            f"sources pane {'hidden' if self._sources_hidden else 'shown'}"
+        )
+
+    def set_detail_height(self, height: int) -> None:
+        """Resize the detail pane, clamped so neither pane vanishes."""
+        detail = self.query_one("#detail")
+        if self._detail_hidden:
+            return
+        height = max(
+            DetailDivider.MIN_HEIGHT,
+            min(
+                DetailDivider.MAX_HEIGHT,
+                min(height, max(DetailDivider.MIN_HEIGHT, self.size.height - 12)),
+            ),
+        )
+        detail.styles.height = height
+        self._detail_height = height
+
+    def action_grow_detail(self) -> None:
+        self.set_detail_height(self._detail_height + 3)
+
+    def action_shrink_detail(self) -> None:
+        self.set_detail_height(self._detail_height - 3)
+
+    def action_toggle_detail(self) -> None:
+        """Fold the detail pane away, the same way the sources pane folds."""
+        self._detail_hidden = not self._detail_hidden
+        detail = self.query_one("#detail")
+        detail.set_class(self._detail_hidden, "collapsed")
+        self.query_one("#detail-title", Static).update(
+            "DETAILS  >" if self._detail_hidden else "DETAILS  v"
+        )
+        if not self._detail_hidden:
+            detail.styles.height = self._detail_height
+        self.log_debug(f"detail pane {'hidden' if self._detail_hidden else 'shown'}")
+
+    @on(events.Click, "#sources-title")
+    def _sources_title_clicked(self, event) -> None:
+        event.stop()
+        self.action_toggle_sources()
+
+    @on(events.Click, "#detail-title")
+    def _detail_title_clicked(self, event) -> None:
+        event.stop()
+        self.action_toggle_detail()
+
+    # -- debug log ---------------------------------------------------------
+
+    def action_toggle_log(self) -> None:
+        panel = self.query_one("#logpanel", RichLog)
+        showing = "visible" in panel.classes
+        panel.set_class(not showing, "visible")
+        if not showing:
+            self.log_debug("debug log opened")
+
+    def log_debug(self, message: str, level: str = "info") -> None:
+        """Append a line to the debug log, whether or not it is on screen.
+
+        The log keeps what the status bar overwrites: a scan emits dozens of
+        messages, each replacing the last, and when something goes wrong the
+        useful one has usually already gone.
+        """
+        if message == self._last_logged:
+            return
+        self._last_logged = message
+        self.log_lines += 1
+        stamp = time.strftime("%H:%M:%S")
+        style = {
+            "error": "bold red",
+            "warn": "yellow",
+            "net": "cyan",
+            "scan": "green",
+        }.get(level, "")
+        line = Text(f"{stamp}  ", style="dim")
+        line.append(f"{level:<5} ", style=style or "dim")
+        line.append(message)
+        try:
+            self.query_one("#logpanel", RichLog).write(line)
+        except Exception:
+            pass
+
     def set_pane_width(self, width: int) -> None:
         """Resize the sources pane, clamped to something usable."""
         pane = self.query_one("#servers-pane")
@@ -638,6 +831,76 @@ class ScannerApp(App):
         return text
 
     # -- connection --------------------------------------------------------
+
+    def action_reload_code(self) -> None:
+        self.reload_code()
+
+    @work(exclusive=True, group="reload")
+    async def reload_code(self, then: Callable[[], None] | None = None) -> None:
+        """Pick up edited modules without restarting or losing results."""
+        held = len(self.rows)
+        report = self._reloader.reload()
+        if report.failed:
+            self._set_status(report.describe(), "bold red")
+            return
+        if not report.reloaded:
+            self._set_status(report.describe())
+            return
+        kept = f" {held:,} scanned members kept." if held else ""
+        self._set_status(f"{report.describe()}.{kept}")
+        try:
+            self.query_one(ScrollableFooter).refresh_keys()
+        except Exception:
+            pass
+        if then is not None:
+            then()
+
+    def report_error(
+        self,
+        exc: BaseException,
+        context: str = "",
+        retry: Callable[[], None] | None = None,
+    ) -> None:
+        """Surface a failure with a way out, instead of a dead status line."""
+        self._retry = retry
+        held = len(self.rows)
+        self.log_debug(f"{context}: {type(exc).__name__}: {exc}", "error")
+        self.show_error(
+            summary=f"{type(exc).__name__}: {exc}",
+            detail="".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )[-4000:],
+            context=context,
+            can_retry=retry is not None,
+            preserved=(
+                f"{held:,} scanned members are still loaded."
+                if held
+                else "Nothing was in progress."
+            ),
+        )
+
+    @work(exclusive=True, group="error")
+    async def show_error(
+        self,
+        summary: str,
+        detail: str,
+        context: str,
+        can_retry: bool,
+        preserved: str,
+    ) -> None:
+        choice = await self.push_screen_wait(
+            ErrorScreen(
+                summary,
+                detail,
+                context=context,
+                can_retry=can_retry,
+                preserved=preserved,
+            )
+        )
+        if choice == "reload":
+            self.reload_code(then=self._retry if self._retry else None)
+        elif choice == "retry" and self._retry is not None:
+            self._retry()
 
     def action_settings(self) -> None:
         self.open_settings()
@@ -814,6 +1077,30 @@ class ScannerApp(App):
             return None
         return key[len(GROUP_KEY):] if key and key.startswith(GROUP_KEY) else None
 
+    @work(exclusive=True, group="scan-start")
+    async def start_scan(self, source: ScanSource, lookup: bool = True) -> None:
+        """Decide what happens to existing results, then scan."""
+        mode = "replace"
+        if self.rows and lookup:
+            configured = self.config.scan.on_rescan
+            if configured == "ask":
+                choice = await self.push_screen_wait(
+                    RescanDialog(source.name, len(self.rows), "replace")
+                )
+                if choice is None:
+                    self._set_status("Scan cancelled.")
+                    return
+                mode = choice.mode
+                if choice.remember:
+                    self.config.scan.on_rescan = mode
+                    try:
+                        self.config.save_scan_settings()
+                    except OSError:
+                        pass
+            else:
+                mode = configured
+        self.scan_source(source, lookup=lookup, mode=mode)
+
     def action_scan(self) -> None:
         group = self._selected_group()
         if group is not None:
@@ -825,7 +1112,7 @@ class ScannerApp(App):
         if self.gateway is None or self.rotector is None:
             self._set_status("Still connecting...", "yellow")
             return
-        self.scan_source(source)
+        self.start_scan(source)
 
     def action_list_members(self) -> None:
         """Enumerate members without looking any of them up."""
@@ -838,7 +1125,7 @@ class ScannerApp(App):
         if self.gateway is None:
             self._set_status("Still connecting...", "yellow")
             return
-        self.scan_source(source, lookup=False)
+        self.start_scan(source, lookup=False)
 
     def action_scan_member(self) -> None:
         """Look up just the highlighted member."""
@@ -861,6 +1148,11 @@ class ScannerApp(App):
             return
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"Lookup failed: {exc}", "bold red")
+            self.report_error(
+                exc,
+                context=f"while checking {member.display_name}",
+                retry=lambda: self.scan_one(row),
+            )
             return
 
         report = reports.get(member.id)
@@ -910,11 +1202,18 @@ class ScannerApp(App):
         self._paint_status()
 
     @work(exclusive=True, group="scan")
-    async def scan_source(self, source: ScanSource, lookup: bool = True) -> None:
+    async def scan_source(
+        self, source: ScanSource, lookup: bool = True, mode: str = "replace"
+    ) -> None:
         assert self.http and self.gateway and self.rotector
         self.current_source = source
-        self.rows.clear()
+        merging = mode.startswith("merge")
+        carried = len(self.rows) if merging else 0
+        if not merging:
+            self.rows.clear()
         self._shown.clear()
+        self._matching = 0
+        self._page = 0
         self.query_one("#results", DataTable).clear()
         self.query_one("#results-title", Static).update(
             f"RESULTS - {source.name} ({source.label})"
@@ -945,6 +1244,7 @@ class ScannerApp(App):
             reading_done = False
             listed_dirty = [False]
             seen = [0]
+            skipped = [0]
             self._eta.reset()
             self._eta_progress = None
             self._eta_ready = False
@@ -995,6 +1295,11 @@ class ScannerApp(App):
                     if cap and len(by_id) >= cap:
                         truncated += 1
                         continue
+                    if mode == "merge_skip" and member.id in self.rows:
+                        # already checked; the point of this mode is to spend
+                        # the rate limit only on people we have not seen
+                        skipped[0] += 1
+                        continue
                     by_id[member.id] = member
                     if lookup:
                         queue.put_nowait(member.id)
@@ -1037,6 +1342,27 @@ class ScannerApp(App):
                     open_channels = sum(1 for c in channels if c.everyone_can_view)
                     guild = source.guild
                     can_chunk = bool(guild and guild.can_chunk)
+
+                    # The public widget, if this guild publishes one. It needs
+                    # no permissions, but gives names rather than ids, so it is
+                    # only worth the round trip when we cannot get the whole
+                    # list outright.
+                    widget_names: list[str] = []
+                    if not can_chunk:
+                        self._set_activity("Checking for a public server widget...")
+                        try:
+                            widget = await self.http.widget(source.id)
+                        except Exception:  # noqa: BLE001 - an extra, never fatal
+                            widget = None
+                        if widget:
+                            widget_names = [
+                                str(m.get("username") or "")
+                                for m in (widget.get("members") or [])
+                            ]
+                            self._set_activity(
+                                f"Widget is enabled: {len(widget_names)} online "
+                                f"names to cross-check"
+                            )
                     self._set_activity(
                         f"{len(channels)} text channels, {open_channels} visible to "
                         f"@everyone"
@@ -1049,6 +1375,7 @@ class ScannerApp(App):
                         on_progress=member_progress,
                         on_members=on_members,
                         can_chunk=can_chunk,
+                        widget_names=widget_names,
                     )
                 else:
                     # friends, requests and group DMs arrive complete from one
@@ -1074,11 +1401,20 @@ class ScannerApp(App):
                     self._update_summary()
 
             if not by_id:
-                self._set_status(
-                    "No members could be read. The member list may be hidden "
-                    "for this account in this server.",
-                    "yellow",
-                )
+                if skipped[0]:
+                    # read fine, just nothing new -- a very different situation
+                    # from not being able to see the member list at all
+                    self._set_status(
+                        f"Nothing new: all {skipped[0]:,} members read were "
+                        f"already checked. Use 're-check everyone' to look "
+                        f"them up again."
+                    )
+                else:
+                    self._set_status(
+                        "No members could be read. The member list may be hidden "
+                        "for this account in this server.",
+                        "yellow",
+                    )
                 progress.remove_class("visible")
                 return
 
@@ -1113,8 +1449,9 @@ class ScannerApp(App):
             )
             coverage = ""
             expected = source.member_count or 0
-            if source.needs_gateway and expected and total < expected * 0.99:
-                pct = 100.0 * total / expected
+            held = len(self.rows)
+            if source.needs_gateway and expected and held < expected * 0.99:
+                pct = 100.0 * held / expected
                 guild = source.guild
                 if guild is not None and not guild.can_chunk:
                     why = (
@@ -1125,16 +1462,24 @@ class ScannerApp(App):
                 else:
                     why = "Discord did not return the rest"
                 coverage = (
-                    f"  [{pct:.0f}% coverage - {expected - total:,} not reached. {why}]"
+                    f"  [{pct:.0f}% coverage - {expected - held:,} not reached. {why}]"
                 )
-            plural = "" if total == 1 else "s"
+            scanned_now = len(by_id)
+            merged = ""
+            if merging:
+                bits = [f"added to {carried:,} already held"]
+                if skipped[0]:
+                    bits.append(f"{skipped[0]:,} already checked, skipped")
+                bits.append(f"{len(self.rows):,} in total now")
+                merged = "  (" + "; ".join(bits) + ")"
+            plural = "" if scanned_now == 1 else "s"
             took = (
                 format_duration(time.monotonic() - self._process_started)
                 if self._process_started
                 else "?"
             )
             self._set_status(
-                f"Scanned {total:,} member{plural}{note} in {took} - "
+                f"Scanned {scanned_now:,} member{plural}{note} in {took}{merged} - "
                 f"{verdict_note}.{coverage}",
                 "bold red" if threats else ("yellow" if coverage else ""),
             )
@@ -1149,6 +1494,11 @@ class ScannerApp(App):
             self._set_status(f"Gateway: {exc}", "bold red")
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"{type(exc).__name__}: {exc}", "bold red")
+            self.report_error(
+                exc,
+                context=f"while scanning {source.name}",
+                retry=lambda: self.scan_source(source, lookup=lookup, mode=mode),
+            )
         except asyncio.CancelledError:
             self._end_run()
             raise
@@ -1471,19 +1821,23 @@ class ScannerApp(App):
     # -- export ------------------------------------------------------------
 
     def _export_rows(self, scope: str) -> list[ExportRow]:
-        """Rows for an export, honouring the table's filter unless told not to.
+        """Rows for an export.
 
-        ``filtered`` exports exactly what is on screen, in the order shown --
-        exporting everyone when the operator has narrowed to threats is
-        surprising, and hands on far more personal data than was asked for.
+        ``filtered`` means everything the filter matches, across *every* page --
+        not just the page on screen. Paging is a display concern; an export
+        that silently dropped the other pages would be data loss dressed up as
+        a feature. ``page`` is there for when the visible page really is what
+        you want.
         """
         if scope == "all":
+            index, descending = self._result_sort
             source = sorted(
-                self.rows.values(),
-                key=lambda r: (-int(r.report.verdict), r.member.display_name.lower()),
+                self.rows.values(), key=RESULT_SORTS[index][1], reverse=descending
             )
-        else:
+        elif scope == "page":
             source = [self.rows[key] for key in self._shown if key in self.rows]
+        else:
+            source = self._matching_rows()
         return [
             ExportRow(
                 discord_id=row.member.id,
@@ -1509,8 +1863,12 @@ class ScannerApp(App):
                 scope=settings.scope,
                 segment_size=settings.segment_size,
                 columns=settings.columns or list(DEFAULT_COLUMNS),
+                png_style=settings.png_style,
                 filter_name=self.filter_mode.value,
-                filtered_count=len(self._shown),
+                filtered_count=self._matching,
+                page_count=len(self._shown),
+                page_number=self._page + 1,
+                total_pages=self.page_count,
                 total_count=len(self.rows),
                 preserve=settings.preserve,
             )
@@ -1527,6 +1885,50 @@ class ScannerApp(App):
             return
 
         source = self.current_source
+
+        # Cards need each member's avatar and banner, which are not in the
+        # member payload -- fetched here rather than inside the renderer so a
+        # slow CDN shows up as progress instead of a frozen export.
+        profiles: dict = {}
+        wants_profiles = (
+            choice.png_style in ("cards", "both") and "png" in choice.formats
+        )
+        if wants_profiles or "html" in choice.formats:
+            self._set_activity(f"Fetching {len(rows):,} Discord profiles...")
+            try:
+                profiles = await fetch_profiles(
+                    self.http,
+                    [r.discord_id for r in rows],
+                    with_images=True,
+                    # the member list already carried these, so avatars work
+                    # even where the profile route is refused
+                    seed_avatars={
+                        key: row.member.guild_avatar or row.member.avatar
+                        for key, row in self.rows.items()
+                        if row.member.guild_avatar or row.member.avatar
+                    },
+                    guild_id=(
+                        source.id
+                        if source is not None and source.kind == KIND_GUILD
+                        else None
+                    ),
+                    on_progress=lambda stage, done, of: self._set_activity(
+                        f"{stage} - {done:,} / {of:,}"
+                    ),
+                )
+                refused = sum(
+                    1 for p in profiles.values()
+                    if any("unavailable" in e for e in p.errors)
+                )
+                if refused:
+                    self.log_debug(
+                        f"{refused} profile(s) refused by Discord; avatars from "
+                        f"the member list used where available",
+                        "warn",
+                    )
+            except Exception as exc:  # noqa: BLE001 - cards degrade gracefully
+                self.log_debug(f"profile fetch failed: {exc}", "warn")
+
         try:
             manifest = render_export(
                 rows,
@@ -1535,16 +1937,19 @@ class ScannerApp(App):
                 base_directory=Path(settings.directory),
                 formats=choice.formats,
                 columns=choice.columns,
-                scope=(
-                    "everything scanned"
-                    if choice.scope == "all"
-                    else f"filter: {self.filter_mode.value}"
-                ),
+                scope={
+                    "all": "everything scanned",
+                    "page": f"page {self._page + 1} of {self.page_count}, "
+                            f"filter: {self.filter_mode.value}",
+                }.get(choice.scope, f"filter: {self.filter_mode.value}"),
                 segment_size=choice.segment_size,
                 preserve=choice.preserve,
+                png_style=choice.png_style,
+                profiles=profiles,
             )
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001
             self._set_status(f"Export failed: {exc}", "bold red")
+            self.report_error(exc, context="while exporting", retry=self.run_export)
             return
 
         if choice.remember:
@@ -1553,6 +1958,7 @@ class ScannerApp(App):
             settings.segment_size = choice.segment_size
             settings.columns = choice.columns
             settings.preserve = choice.preserve
+            settings.png_style = choice.png_style
             try:
                 saved = self.config.save_export_settings()
                 remembered = f" Saved defaults to {saved.name}."
@@ -1877,6 +2283,11 @@ class ScannerApp(App):
             )
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"Could not read history: {exc}", "bold red")
+            self.report_error(
+                exc,
+                context=f"while reading {target.label}",
+                retry=lambda: self.purge_messages(row),
+            )
             return
 
         if not plan.count:
@@ -1980,6 +2391,12 @@ class ScannerApp(App):
         except Exception as exc:  # noqa: BLE001
             self._set_status(
                 f"{resolved.name.capitalize()} failed: {exc}", "bold red"
+            )
+            self.report_error(
+                exc,
+                context=f"while trying to {resolved.name} "
+                        f"{row.member.display_name}",
+                retry=lambda: self.run_moderation(action, row),
             )
             return
 
@@ -2108,6 +2525,7 @@ class ScannerApp(App):
         self._activity = None
         self._status_text = text
         self._status_style = style
+        self.log_debug(text, "error" if "red" in style else "info")
         self._paint_status()
 
     def _set_activity(self, text: str) -> None:
@@ -2123,6 +2541,7 @@ class ScannerApp(App):
         if text != self._activity:
             self._activity = text
             self._activity_started = time.monotonic()
+            self.log_debug(text, "scan")
         self._paint_status()
 
     def _compose_status(self) -> Text:

@@ -31,7 +31,7 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
 from ..ratelimit import RateLimiter
-from .http import BROWSER_UA, Channel
+from .http import BROWSER_UA, Channel, super_properties
 
 GATEWAY_URL = "wss://gateway.discord.gg/?v=9&encoding=json"
 
@@ -60,6 +60,8 @@ QUERY_LIMIT = 100
 PREFIX_ALPHABET = string.ascii_lowercase + string.digits + "_."
 #: how many characters deep the prefix search may go
 PREFIX_MAX_DEPTH = 2
+#: cap on widget names resolved one at a time; the widget returns 100 at most
+WIDGET_NAME_LIMIT = 100
 #: how long to wait for chunks after an OP 8 query (they arrive promptly)
 CHUNK_TIMEOUT = 1.5
 
@@ -82,6 +84,10 @@ class GuildMember:
     bot: bool = False
     joined_at: str | None = None
     roles: list[str] = field(default_factory=list)
+    #: avatar hash, already present in the member payload -- no request needed
+    avatar: str | None = None
+    #: per-guild avatar, which overrides the account one where set
+    guild_avatar: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -108,6 +114,8 @@ class GuildMember:
             bot=bool(user.get("bot")),
             joined_at=raw.get("joined_at"),
             roles=[str(r) for r in (raw.get("roles") or [])],
+            avatar=user.get("avatar"),
+            guild_avatar=raw.get("avatar"),
         )
 
 
@@ -243,20 +251,14 @@ class DiscordGateway:
                     "token": self.token,
                     "capabilities": 30717,
                     "properties": {
-                        "os": "Windows",
-                        "browser": "Chrome",
-                        "device": "",
-                        "system_locale": "en-US",
-                        "browser_user_agent": BROWSER_UA,
-                        "browser_version": "128.0.0.0",
-                        "os_version": "10",
+                        # identical to the x-super-properties the HTTP client
+                        # sends; describing ourselves two different ways is
+                        # exactly what looks automated
+                        **super_properties(),
                         "referrer": "",
                         "referring_domain": "",
                         "referrer_current": "",
                         "referring_domain_current": "",
-                        "release_channel": "stable",
-                        "client_build_number": 335050,
-                        "client_event_source": None,
                     },
                     "presence": {
                         "status": "unknown",
@@ -358,6 +360,7 @@ class DiscordGateway:
         coverage_target: float = COVERAGE_TARGET,
         max_channels: int = 6,
         can_chunk: bool = False,
+        widget_names: Sequence[str] | None = None,
     ) -> dict[str, GuildMember]:
         """Enumerate members of ``guild_id``, as completely as possible.
 
@@ -376,6 +379,11 @@ class DiscordGateway:
           members visible only through one channel are still picked up.
         * If the union still falls short of the guild's member count, the OP 8
           search sweeps for the rest and is unioned in too.
+        * ``widget_names`` -- names lifted from the public widget, if the guild
+          publishes one -- are looked up by name at the end. The widget gives
+          no usable ids of its own, so each name has to be resolved into a real
+          account; what it contributes is knowing *which* names to ask for
+          instead of guessing prefixes.
 
         ``on_members`` receives each newly-seen member once, as they arrive.
         """
@@ -481,10 +489,113 @@ class DiscordGateway:
                 guild_id, expected, on_progress, members, emit
             )
 
+        if widget_names and not covered():
+            await self._resolve_names(
+                guild_id, widget_names, members, emit, on_progress, expected
+            )
+
         self.last_coverage = (
             min(1.0, len(members) / expected) if expected else None
         )
         return members
+
+    async def _resolve_names(
+        self,
+        guild_id: str,
+        names: Sequence[str],
+        members: dict[str, GuildMember],
+        emit: Callable[[], None],
+        on_progress: ScrapeProgress | None,
+        expected: int | None,
+        limit: int = WIDGET_NAME_LIMIT,
+    ) -> int:
+        """Turn display names into real members, skipping ones already known.
+
+        The widget hands back names with placeholder ids, so a name only
+        becomes useful once the gateway has matched it to an account. Names we
+        already hold are skipped, which in practice is most of them -- the
+        widget lists online members, and those are exactly the ones the sidebar
+        already showed.
+        """
+        seen = {m.username.lower() for m in members.values()}
+        seen |= {m.nick.lower() for m in members.values() if m.nick}
+
+        wanted: list[str] = []
+        for name in names:
+            cleaned = " ".join(str(name).split())
+            if len(cleaned) < 2 or cleaned.lower() in seen:
+                continue
+            if cleaned not in wanted:
+                wanted.append(cleaned)
+        if not wanted:
+            if on_progress:
+                on_progress(
+                    len(members),
+                    expected,
+                    "Widget names were all accounted for already",
+                )
+            return 0
+
+        wanted = wanted[:limit]
+        queue = self._subscribe({"GUILD_MEMBERS_CHUNK"})
+        gained = 0
+        try:
+            for index, name in enumerate(wanted, start=1):
+                self._check_alive()
+                if on_progress:
+                    on_progress(
+                        len(members),
+                        expected,
+                        f"Resolving widget name {index}/{len(wanted)}: {name[:24]}",
+                    )
+                await self._send(
+                    {
+                        "op": 8,
+                        "d": {
+                            "guild_id": [guild_id],
+                            "query": name[:32],
+                            "limit": QUERY_LIMIT,
+                            "presences": False,
+                        },
+                    }
+                )
+                before = len(members)
+                deadline = asyncio.get_running_loop().time() + CHUNK_TIMEOUT
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=remaining)
+                    except TimeoutError:
+                        break
+                    if item is None:
+                        self._check_alive()
+                        break
+                    event, data = item
+                    if event != "GUILD_MEMBERS_CHUNK":
+                        continue
+                    if str(data.get("guild_id")) != str(guild_id):
+                        continue
+                    for raw in data.get("members") or []:
+                        parsed = GuildMember.parse(raw)
+                        if parsed:
+                            members[parsed.id] = parsed
+                    break
+                if len(members) > before:
+                    gained += len(members) - before
+                    emit()
+                await asyncio.sleep(PREFIX_QUERY_DELAY)
+        finally:
+            self._unsubscribe(queue)
+
+        if on_progress:
+            on_progress(
+                len(members),
+                expected,
+                f"Widget names resolved {gained:,} additional member(s)",
+            )
+        return gained
 
     async def _scrape_sidebar(
         self,

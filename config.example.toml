@@ -56,6 +56,12 @@ hide_no_detections = true
 # Hide members with no Rotector-known Roblox account.
 hide_unknown = true
 
+# What a new scan does with results already on screen:
+# "ask", "replace", "merge_skip" or "merge_recheck".
+# Merging accumulates coverage across runs, because an
+# unprivileged scan only ever sees who was online.
+on_rescan = "ask"
+
 
 # Routing Rotector lookups over proxies.
 # Rotector's Terms of Use prohibit circumventing rate limits by
@@ -85,7 +91,9 @@ probe_concurrency = 10
 
 # Defaults for the export dialog. Saved here when you tick 'Remember'.
 [export]
-# Any of "csv", "txt", "json".
+# Any of "csv", "txt", "json", "png", "html".
+# "png" draws the table as an image and needs Pillow;
+# "html" writes one searchable page with both views.
 formats = ["csv", "txt"]
 
 # "filtered" honours the results filter; "all" exports everything.
@@ -99,6 +107,10 @@ columns = []
 
 # Parent folder for exports.
 directory = "exports"
+
+# "table" draws the results grid; "cards" draws a
+# Discord-style profile per member, with avatar and banner.
+png_style = "table"
 
 # Keep exports past the 24h retention window.
 # Off means old export folders are cleared automatically --

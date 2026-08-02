@@ -88,11 +88,16 @@ def test_export_preserve_flag():
     stale = _fake_export(base, f"Old-{old.strftime('%Y%m%dT%H%M%SZ')}")
 
     rows = [ExportRow("1", "u", "U", MemberReport(discord_id="1"))]
+    # stamps relative to now: a fixed one ages past the retention window and
+    # the test then only passes on the day it was written
+    now = datetime.now(timezone.utc)
+    stamp_a = now.strftime("%Y%m%dT%H%M%SZ")
+    stamp_b = (now + timedelta(seconds=1)).strftime("%Y%m%dT%H%M%SZ")
 
     manifest = export(
         rows, guild_name="G", guild_id="1", base_directory=base,
         formats=["csv"], columns=["discord_id"], preserve=True,
-        stamp="20260801T120000Z",
+        stamp=stamp_a,
     )
     assert stale.exists(), "preserve=True still cleaned up"
     assert manifest.purged == []
@@ -101,7 +106,7 @@ def test_export_preserve_flag():
     manifest = export(
         rows, guild_name="G", guild_id="1", base_directory=base,
         formats=["csv"], columns=["discord_id"], preserve=False,
-        stamp="20260801T120001Z",
+        stamp=stamp_b,
     )
     assert not stale.exists()
     assert [p.name for p in manifest.purged] == [stale.name]
@@ -192,6 +197,7 @@ class FakeHTTP:
         return [Guild(id="111", name="Srv", owner=False, permissions=0,
                       member_count=2, presence_count=1)]
     async def relationships(self): return []
+    async def widget(self, gid): return None
     async def private_channels(self): return [GROUP]
     async def channels(self, gid): return []
     async def leave_group_dm(self, channel_id, silent=False):

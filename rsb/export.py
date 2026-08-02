@@ -351,6 +351,8 @@ def export(
     segment_size: int = DEFAULT_SEGMENT_SIZE,
     stamp: str | None = None,
     preserve: bool = False,
+    png_style: str = "table",
+    profiles: dict | None = None,
 ) -> ExportManifest:
     """Render ``rows`` into a dedicated folder and describe what was written."""
     stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -379,7 +381,43 @@ def export(
         files += render_json(
             rows, directory, stem, columns, guild_name, guild_id, stamp, scope
         )
+    if "png" in formats:
+        from .imagerender import available as png_available, render_png
 
+        if png_available():
+            images = directory / "png"
+            images.mkdir(exist_ok=True)
+            files += render_png(
+                rows,
+                images,
+                stem,
+                columns,
+                title=guild_name,
+                subtitle=f"{scope}  -  generated {stamp}",
+                style=png_style,
+                profiles=profiles,
+            )
+        else:
+            formats = [f for f in formats if f != "png"]
+    if "html" in formats:
+        from .htmlrender import render_html
+
+        pages = directory / "html"
+        pages.mkdir(exist_ok=True)
+        files += render_html(
+            rows,
+            pages,
+            stem,
+            columns,
+            guild_name=guild_name,
+            stamp=stamp,
+            scope=scope,
+            profiles=profiles,
+        )
+
+    relative = [
+        f.relative_to(directory) if f.is_relative_to(directory) else f for f in files
+    ]
     readme = directory / "README.txt"
     readme.write_text(
         "\n".join(
@@ -387,7 +425,7 @@ def export(
                 *_header_lines(guild_name, stamp, scope, len(rows)),
                 "",
                 "Files:",
-                *(f"  {f.name}" for f in files),
+                *(f"  {f}" for f in relative),
                 "",
                 f"Delete this folder within {RETENTION_HOURS} hours. Rotector flag",
                 "statuses change, and their Terms of Use forbid retaining responses",

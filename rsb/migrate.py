@@ -69,6 +69,14 @@ SCHEMA: list[Section] = [
                 True,
                 "Hide members with no Rotector-known Roblox account.",
             ),
+            Setting(
+                "on_rescan",
+                "ask",
+                "What a new scan does with results already on screen:\n"
+                '"ask", "replace", "merge_skip" or "merge_recheck".\n'
+                "Merging accumulates coverage across runs, because an\n"
+                "unprivileged scan only ever sees who was online.",
+            ),
         ],
     ),
     Section(
@@ -96,7 +104,13 @@ SCHEMA: list[Section] = [
         "export",
         "Defaults for the export dialog. Saved here when you tick 'Remember'.",
         [
-            Setting("formats", ["csv", "txt"], 'Any of "csv", "txt", "json".'),
+            Setting(
+                "formats",
+                ["csv", "txt"],
+                'Any of "csv", "txt", "json", "png", "html".\n'
+                '"png" draws the table as an image and needs Pillow;\n'
+                '"html" writes one searchable page with both views.',
+            ),
             Setting(
                 "scope",
                 "filtered",
@@ -105,6 +119,13 @@ SCHEMA: list[Section] = [
             Setting("segment_size", 1000, "Rows per CSV segment. 0 = one file."),
             Setting("columns", [], "Columns to write. Empty = the default set."),
             Setting("directory", "exports", "Parent folder for exports."),
+            Setting(
+                "png_style",
+                "table",
+                '"table" draws the results grid, "cards" draws a\n'
+                "Discord-style profile per member with avatar and banner,\n"
+                '"both" writes the table and every card.',
+            ),
             Setting(
                 "preserve",
                 False,

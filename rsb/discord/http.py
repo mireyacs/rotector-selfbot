@@ -14,9 +14,48 @@ import httpx
 
 API_BASE = "https://discord.com/api/v9"
 
+#: Build number the client identifies as. Discord rejects or degrades requests
+#: from a client it cannot place, which is why several routes answer 403 for a
+#: request that carries no super-properties at all.
+CLIENT_BUILD = 586984
+CLIENT_VERSION = "1.0.144"
+
+
+def super_properties() -> dict:
+    """The client descriptor Discord expects alongside a user token.
+
+    Sent as ``x-super-properties`` on HTTP and inside IDENTIFY on the gateway --
+    the same blob in both places, because a client that describes itself two
+    different ways is exactly what looks automated.
+    """
+    return {
+        "os": "Linux",
+        "browser": "Discord Client",
+        "release_channel": "stable",
+        "client_version": CLIENT_VERSION,
+        "os_version": "",
+        "os_arch": "x64",
+        "app_arch": "x64",
+        "system_locale": "en-US",
+        "has_client_mods": False,
+        "browser_user_agent": BROWSER_UA,
+        "browser_version": "37.6.0",
+        "client_build_number": CLIENT_BUILD,
+        "native_build_number": None,
+        "client_event_source": None,
+    }
+
+
+def super_properties_header() -> str:
+    import base64
+    import json
+
+    blob = json.dumps(super_properties(), separators=(",", ":"))
+    return base64.b64encode(blob.encode()).decode()
+
 BROWSER_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "discord/1.0.144 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36"
 )
 
 #: text-ish channel types whose member sidebar we can subscribe to
@@ -110,6 +149,7 @@ class Relationship:
     nickname: str | None
     type: int
     bot: bool = False
+    avatar: str | None = None
 
     @classmethod
     def parse(cls, raw: dict) -> "Relationship | None":
@@ -124,6 +164,7 @@ class Relationship:
             nickname=raw.get("nickname"),
             type=int(raw.get("type") or 0),
             bot=bool(user.get("bot")),
+            avatar=user.get("avatar"),
         )
 
 
@@ -192,6 +233,11 @@ class DiscordHTTP:
                 "accept": "*/*",
                 "accept-language": "en-US,en;q=0.9",
                 "x-discord-locale": "en-US",
+                "x-discord-timezone": "UTC",
+                "x-debug-options": "bugReporterEnabled",
+                # without this several routes answer 403, the profile one
+                # among them
+                "x-super-properties": super_properties_header(),
                 "referer": "https://discord.com/channels/@me",
             },
         )
@@ -335,6 +381,67 @@ class DiscordHTTP:
         await self._request(
             "PUT", f"/users/@me/relationships/{user_id}", json={"type": BLOCKED}
         )
+
+    async def user(self, user_id: str, guild_id: str | None = None) -> dict:
+        """A user's profile, as the client fetches it for a popout.
+
+        The plain ``/users/{id}`` route is a bot route and answers 403 for a
+        user token, so the popout endpoint is used instead. Passing
+        ``guild_id`` additionally returns that guild's member record -- roles,
+        join date, and whether they are currently timed out.
+
+        The response is flattened into one mapping: ``user``, then anything
+        ``user_profile`` adds, plus badges, connections and mutual guilds.
+        """
+        params = {
+            "type": "popout",
+            "with_mutual_guilds": "true",
+            "with_mutual_friends": "false",
+            "with_mutual_friends_count": "false",
+        }
+        if guild_id:
+            params["guild_id"] = str(guild_id)
+
+        try:
+            data = await self._get(f"/users/{user_id}/profile", **params)
+        except DiscordHTTPError:
+            return await self._get(f"/users/{user_id}")
+
+        user = dict(data.get("user") or {})
+        extra = data.get("user_profile") or {}
+        for key in ("banner", "accent_color", "bio", "banner_color", "pronouns",
+                    "theme_colors"):
+            if extra.get(key) is not None:
+                user[key] = extra[key]
+
+        user["badges"] = data.get("badges") or []
+        user["connected_accounts"] = data.get("connected_accounts") or []
+        user["mutual_guilds"] = data.get("mutual_guilds") or []
+        user["premium_type"] = data.get("premium_type")
+        user["premium_since"] = data.get("premium_since")
+        member = data.get("guild_member") or {}
+        if member:
+            user["guild_roles"] = member.get("roles") or []
+            user["guild_joined_at"] = member.get("joined_at")
+            user["guild_nick"] = member.get("nick")
+            user["timed_out_until"] = member.get("communication_disabled_until")
+        return user
+
+    async def widget(self, guild_id: str) -> dict | None:
+        """The guild's public widget, or None if it is not enabled.
+
+        Needs no permissions and no membership -- but it returns at most 100
+        members, only ones who are online, and it **anonymises their ids**
+        (they come back as 0, 1, 2 ... rather than snowflakes). So it is a
+        source of *names*, not of users: each still has to be resolved to a
+        real account before it means anything.
+        """
+        try:
+            return await self._get(f"/guilds/{guild_id}/widget.json")
+        except (DiscordForbidden, DiscordNotFound):
+            return None  # widget disabled, which is the common case
+        except DiscordHTTPError:
+            return None
 
     async def find_dm_channel(self, user_id: str) -> str | None:
         """The existing DM channel with ``user_id``, or None.
