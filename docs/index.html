@@ -634,8 +634,21 @@ html:not(.motion) .motion-toggle .state {
 .player__meta a { color: inherit; }
 
 /* the scrub bar: the page's own rule, filled to the position */
+/* The field stops at the transport. Bars running behind a scrub bar read as
+   damage rather than as texture, and the one thing in the panel that has to be
+   read exactly is the position. */
+.player__transport {
+  position: relative;
+  margin-top: .6rem;
+  padding: .5rem .8rem .7rem;
+  margin-left: -.8rem; margin-right: -.8rem;
+  background: var(--ground);
+  border-top: 1px solid var(--rule);
+}
+.player.on-light .player__transport { background: var(--ink); border-top-color: #c4c4c4; }
+
 .player__seek {
-  margin-top: .6rem; height: 12px; cursor: pointer; position: relative;
+  height: 12px; cursor: pointer; position: relative;
   border: 0; padding: 0; background: transparent; width: 100%; display: block;
 }
 .player__seek .rail { position: absolute; inset: 5px 0 5px 0; background: var(--texture-2); }
@@ -664,6 +677,34 @@ html:not(.motion) .motion-toggle .state {
 .player__row button:hover { background: var(--ink); color: var(--ground); }
 .player.on-light .player__row button:hover { background: var(--ground); color: var(--ink); }
 .player__row button[disabled] { opacity: .4; cursor: default; }
+
+/* The chip is the width of its icon when shut and grows to fit the word when
+   open, so a closed player is a mark in the corner rather than a label
+   competing with the motion control beside it. */
+.player__open .word {
+  display: inline-block;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: max-width .34s cubic-bezier(.16, 1, .3, 1), opacity .18s linear,
+              margin-left .34s cubic-bezier(.16, 1, .3, 1);
+  margin-left: 0;
+}
+.player.open .player__open .word { max-width: 6rem; opacity: 1; margin-left: .55rem; }
+.player__open { gap: 0; }
+
+/* play and pause, drawn as masks so they invert with the chip like everything
+   else here. Two bars while it plays, a triangle while it does not. */
+.player__open .state { width: 10px; height: 11px; }
+.player.playing .player__open .state {
+  -webkit-mask: linear-gradient(90deg, #000 0 3px, transparent 3px 7px, #000 7px 10px);
+  mask: linear-gradient(90deg, #000 0 3px, transparent 3px 7px, #000 7px 10px);
+}
+.player:not(.playing) .player__open .state {
+  -webkit-mask: conic-gradient(from -90deg at 0 50%, #000 0 60deg, transparent 60deg);
+  mask: conic-gradient(from -90deg at 0 50%, #000 0 60deg, transparent 60deg);
+}
 
 @media (max-width: 620px) { .player__body { width: 14rem; } }
 
@@ -1523,21 +1564,24 @@ cd rotector-selfbot</code></pre>
         '<canvas class="player__field" aria-hidden="true"></canvas>' +
         '<div class="player__now">Loading the library…</div>' +
         '<div class="player__meta"></div>' +
-        '<button type="button" class="player__seek" aria-label="Seek">' +
-          '<span class="rail"></span><span class="fill"></span><span class="head"></span>' +
-        '</button>' +
-        '<div class="player__time"><span class="at">0:00</span>' +
-          '<span class="of">--:--</span></div>' +
-        '<div class="player__row">' +
-          '<button type="button" data-act="prev">Prev</button>' +
-          '<button type="button" data-act="play">Play</button>' +
-          '<button type="button" data-act="next">Next</button>' +
+        '<div class="player__transport">' +
+          '<button type="button" class="player__seek" aria-label="Seek">' +
+            '<span class="rail"></span><span class="fill"></span><span class="head"></span>' +
+          '</button>' +
+          '<div class="player__time"><span class="at">0:00</span>' +
+            '<span class="of">--:--</span></div>' +
+          '<div class="player__row">' +
+            '<button type="button" data-act="prev">Prev</button>' +
+            '<button type="button" data-act="play">Play</button>' +
+            '<button type="button" data-act="next">Next</button>' +
+          '</div>' +
         '</div>' +
       '</div>' +
     '</div></div>' +
-    '<button type="button" class="motion-toggle" data-act="open" ' +
-      'aria-expanded="false">' +
-      '<span class="state" aria-hidden="true"></span><span>Music</span></button>';
+    '<button type="button" class="motion-toggle player__open" data-act="open" ' +
+      'aria-expanded="false" aria-label="Music player">' +
+      '<span class="state" aria-hidden="true"></span>' +
+      '<span class="word">Music</span></button>';
   dock.insertBefore(player, dock.firstChild);
 
   var body = player.querySelector('.player__body');
@@ -1713,8 +1757,7 @@ cd rotector-selfbot</code></pre>
     showTrack(track);
     loadEnvelope(track);
     audio.src = RAW + '/tracks/' + encodeURIComponent(track.file);
-    audio.play().then(function () { playBtn.textContent = 'Pause'; })
-      .catch(function () { playBtn.textContent = 'Play'; });
+    audio.play().then(state).catch(state);
   }
 
   /* ---- controls, matching the terminal player ------------------------- */
@@ -1730,12 +1773,9 @@ cd rotector-selfbot</code></pre>
     load().then(function () {
       if (!tracks.length) return;
       if (audio.paused) {
-        if (!audio.src) play(at); else audio.play().then(function () {
-          playBtn.textContent = 'Pause';
-        });
+        if (!audio.src) play(at); else audio.play().then(state);
       } else {
         audio.pause();
-        playBtn.textContent = 'Play';
       }
     });
   });
@@ -1760,9 +1800,19 @@ cd rotector-selfbot</code></pre>
     audio.currentTime = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * duration;
   });
 
+  function state() {
+    var live = !audio.paused && !!audio.src;
+    player.classList.toggle('playing', live);
+    playBtn.textContent = live ? 'Pause' : 'Play';
+    openBtn.setAttribute(
+      'aria-label', live ? 'Music playing - open the player' : 'Music player'
+    );
+  }
+
   audio.addEventListener('ended', function () { play(at + 1); });
-  audio.addEventListener('pause', function () { playBtn.textContent = 'Play'; });
-  audio.addEventListener('play', function () { playBtn.textContent = 'Pause'; });
+  audio.addEventListener('pause', state);
+  audio.addEventListener('play', state);
+  state();
 
   showTrack(null);
 })();

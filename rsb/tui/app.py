@@ -2163,9 +2163,11 @@ class ScannerApp(App):
         keypress should not block the interface on somebody else's CDN. Nothing
         here is ever fatal: music failing is a status line, never a scan.
         """
+        # Already playing means "show me the player again", not "stop". Coming
+        # back to a screen you left should return you to it; stopping is its
+        # own action, on 's' inside the player.
         if self.vibe is not None and self.vibe.playing:
-            await self.vibe.stop()
-            self._set_status("Vibe mode off.")
+            await self.push_screen_wait(VibeScreen(self.vibe))
             return
 
         if not player_available():
