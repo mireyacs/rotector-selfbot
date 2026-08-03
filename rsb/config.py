@@ -101,19 +101,21 @@ class OkappikiConfig:
 
 @dataclass
 class VibeConfig:
-    """Music streamed from the project's ``music`` branch, for long scans.
+    """Music streamed from a separate repository, for long scans.
 
-    The audio is not in this clone and never will be: an orphan branch costs
-    nothing until somebody turns the feature on. Playback is ffplay, which
-    ships with FFmpeg on all three platforms and streams a URL without
-    downloading it first.
+    Its own repository rather than a branch of this one, because a plain
+    ``git clone`` fetches every branch: half a gigabyte of audio on an orphan
+    branch here would have landed in every clone of a two-megabyte program,
+    permanently. Nothing is downloaded into this clone -- playback is ffplay,
+    which ships with FFmpeg on all three platforms and streams a URL without
+    fetching it to disk first.
     """
 
     enabled: bool = False
-    #: owner/name of the repository holding the music branch
-    repo: str = "mireyacs/rotector-selfbot"
-    #: the orphan branch the library lives on
-    branch: str = "music"
+    #: owner/name of the repository holding the library
+    repo: str = "mireyacs/openlofi"
+    #: the branch within it
+    branch: str = "main"
     #: 0-100, handed straight to ffplay
     volume: int = 60
     shuffle: bool = True

@@ -236,6 +236,30 @@ After a successful update the app hot-reloads what it safely can and says to
 restart to finish — the UI modules are deliberately excluded from hot reload.
 Set `[update] check_on_start = false` to only ever check on `ctrl+u`.
 
+### Vibe mode
+
+A scan of ten thousand members takes four minutes on Rotector and half an hour
+on Okappiki. `v` starts music for the half hour, `V` skips a track.
+
+The library is [166 CC0-1.0 lo-fi tracks](https://github.com/mireyacs/openlofi),
+about seven hours, streamed straight from their URLs. **Nothing is downloaded
+into this clone** — and that is why it is a separate repository rather than a
+branch here: a plain `git clone` fetches *every* branch, so half a gigabyte of
+audio on an orphan branch would have landed in every clone of this two-megabyte
+program, permanently.
+
+Playback needs `ffplay`, which ships with FFmpeg. Without it the app says so and
+carries on; nothing else depends on it.
+
+```bash
+sudo apt install ffmpeg     # or: brew install ffmpeg
+winget install Gyan.FFmpeg  # Windows
+```
+
+Point it somewhere else with `[vibe] repo` and `branch` — any repository with an
+`index.json` and a `tracks/` folder works. The project page has the same library
+behind a collapsible player next to the motion control.
+
 ### Choosing a theme
 
 `ctrl+p` → **Theme** switches the colour scheme, and the choice is remembered in

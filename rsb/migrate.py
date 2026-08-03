@@ -97,13 +97,13 @@ SCHEMA: list[Section] = [
     ),
     Section(
         "vibe",
-        "Music for long scans, streamed from the project's music branch.\n"
+        "Music for long scans, streamed from a separate repository.\n"
         "Nothing is downloaded into this clone. Needs ffplay (FFmpeg).",
         [
             Setting("enabled", False, "Start vibe mode with the app."),
-            Setting("repo", "mireyacs/rotector-selfbot",
-                    "owner/name of the repo holding the music branch."),
-            Setting("branch", "music", "The orphan branch the library is on."),
+            Setting("repo", "mireyacs/openlofi",
+                    "owner/name of the repo holding the library."),
+            Setting("branch", "main", "The branch within it."),
             Setting("volume", 60, "0-100, handed straight to ffplay."),
             Setting("shuffle", True, "Play the library in a random order."),
             Setting("follow_scans", False,

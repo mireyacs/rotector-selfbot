@@ -84,16 +84,17 @@ concurrency = 2
 check_on_start = true
 
 
-# Music for long scans, streamed from the project's music branch. Nothing is
-# downloaded into this clone -- the audio lives on an orphan branch and is
-# played straight from its URL. Needs ffplay, which ships with FFmpeg.
+# Music for long scans, streamed from https://github.com/mireyacs/openlofi.
+# Nothing is downloaded into this clone: it is a separate repository precisely
+# so that cloning this one never pulls half a gigabyte of audio. Needs ffplay,
+# which ships with FFmpeg.
 [vibe]
 # Start vibe mode with the app. 'v' toggles it either way.
 enabled = false
 
-# owner/name of the repo holding the music branch, and the branch itself.
-repo = "mireyacs/rotector-selfbot"
-branch = "music"
+# owner/name of the repo holding the library, and the branch within it.
+repo = "mireyacs/openlofi"
+branch = "main"
 
 # 0-100, handed straight to ffplay.
 volume = 60

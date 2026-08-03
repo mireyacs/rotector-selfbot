@@ -1,15 +1,17 @@
-"""Vibe mode: music streamed from the ``music`` branch, never from the clone.
+"""Vibe mode: music streamed from a separate repository, never from the clone.
 
 A scan of ten thousand members takes four minutes on Rotector and half an hour
 on Okappiki. This is for the half hour.
 
-The audio lives on an orphan branch rather than in ``main``, so cloning the
-project downloads none of it -- a few dozen megabytes for a feature most people
-will never switch on would be a few dozen megabytes on every clone, every CI
-run and every update. Nothing here writes to that branch or clones it; tracks
-are streamed by URL, one at a time.
+The library lives in its own repository (``mireyacs/openlofi``) rather than on
+a branch of this one. An orphan branch looked like it would keep the audio out
+of the download and does not: a plain ``git clone`` fetches every branch, so
+half a gigabyte of music would have landed in every clone of a two-megabyte
+program, permanently, since history cannot be trimmed without a rewrite.
+Nothing here clones or writes to it; tracks are streamed by URL, one at a
+time.
 
-``index.json`` on that branch *is* the library rather than an index of it.
+``index.json`` there *is* the library rather than an index of it.
 GitHub serves no directory listing for raw files, so there is nothing to
 enumerate: a track that is not in the manifest cannot be found, which is also
 what keeps the licensing honest -- every entry carries where it came from.
@@ -117,18 +119,18 @@ async def fetch_tracks(repo: str, branch: str, client=None) -> list[Track]:
     try:
         response = await client.get(url)
     except httpx.HTTPError as exc:
-        raise VibeError(f"could not reach the music branch: {exc}") from None
+        raise VibeError(f"could not reach the music library: {exc}") from None
     finally:
         if owned:
             await client.aclose()
 
     if response.status_code == 404:
         raise VibeError(
-            f"no {MANIFEST} on the {branch!r} branch of {repo}. Vibe mode reads "
-            f"its library from there; see that branch's README."
+            f"no {MANIFEST} at {repo}@{branch}. Vibe mode reads its library "
+            f"from there; see that repository's README."
         )
     if response.status_code >= 400:
-        raise VibeError(f"the music branch answered HTTP {response.status_code}")
+        raise VibeError(f"{repo} answered HTTP {response.status_code}")
 
     try:
         body = response.json()
@@ -214,8 +216,8 @@ class Vibe:
             await self.load(client)
         if not self.tracks:
             self.error = (
-                f"the {self.branch!r} branch has no tracks listed yet. Add some "
-                f"to {MANIFEST} there and they will show up here."
+                f"{self.repo} lists no tracks yet. Add some to {MANIFEST} "
+                f"there and they will show up here."
             )
             raise VibeError(self.error)
         self._task = asyncio.create_task(self._run())
