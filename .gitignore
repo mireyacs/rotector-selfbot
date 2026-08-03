@@ -11,6 +11,12 @@ proxies.txt.bak
 # Scan results contain personal data and expire after 24h.
 exports/
 
+# Design and product notes stay local. They are working documents about how the
+# page and the product were arrived at, not part of what the project ships.
+DESIGN.md
+PRODUCT.md
+.impeccable/
+
 .venv/
 __pycache__/
 *.pyc
