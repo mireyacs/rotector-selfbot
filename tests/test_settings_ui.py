@@ -15,6 +15,7 @@ from rsb.migrate import SCHEMA
 from rsb.rotector import MemberReport
 from rsb.tui.app import GROUP_KEY, PAGE_SIZE, Row
 from rsb.tui.commands import BindingCommands, _unpack
+from rsb.tui.proxies import ProxyTesterApp
 from rsb.tui.settings import (
     DiagnosticsScreen,
     SettingsScreen,
@@ -358,3 +359,106 @@ async def test_scrollable_footer():
 asyncio.run(test_wizard_and_settings())
 asyncio.run(test_paging_and_palette())
 asyncio.run(test_scrollable_footer())
+
+# --------------------------------------------------------------------------
+# the panel's own layout
+# --------------------------------------------------------------------------
+
+async def test_buttons_stay_on_screen():
+    """Save and Cancel have to be reachable at every terminal size.
+
+    TabbedContent defaults to height: auto. With eleven sections it grew to fit
+    all of them, overflowed the panel and pushed the buttons off the bottom of
+    the screen -- at every size, not only cramped ones, so the settings screen
+    could be opened but never saved with the mouse.
+    """
+    from textual.widgets import Button
+
+    config = Config()
+    config.token = "x"
+    config.proxy.file = "/nonexistent"
+
+    for size in [(100, 30), (120, 40), (80, 24), (70, 20)]:
+        app = ProxyTesterApp(config, persist_theme=False)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause(0.3)
+            app.push_screen(SettingsScreen(config))
+            await pilot.pause(1.0)
+            buttons = list(app.screen.query(Button))
+            assert len(buttons) == 2, buttons
+            for button in buttons:
+                region = button.region
+                assert region.width > 0 and region.height > 0, (size, button.id)
+                assert region.y >= 0, (size, button.id, region)
+                assert region.y + region.height <= size[1], (
+                    f"{button.id} is off the bottom at {size}: "
+                    f"{region.y}+{region.height} > {size[1]}"
+                )
+    ok("Save and Cancel are fully on screen at 70x20 through 120x40")
+
+
+async def test_wheel_walks_the_tabs():
+    """Eleven tabs do not fit across the panel, so the wheel moves through them.
+
+    And only over the strip: the same wheel over the fields has to keep
+    scrolling the fields, or the settings become unreadable to get at.
+    """
+    from textual import events
+    from textual.containers import VerticalScroll
+    from textual.widgets import TabbedContent, Tabs
+
+    config = Config()
+    config.token = "x"
+    config.proxy.file = "/nonexistent"
+    app = ProxyTesterApp(config, persist_theme=False)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        app.push_screen(SettingsScreen(config))
+        await pilot.pause(1.0)
+        screen = app.screen
+        content = screen.query_one(TabbedContent)
+        strip = screen.query_one(Tabs)
+
+        def wheel(event_type, widget, x, y):
+            screen.post_message(event_type(
+                widget=widget, x=x, y=y, delta_x=0, delta_y=-1, button=0,
+                shift=False, meta=False, ctrl=False,
+                screen_x=x, screen_y=y, style=None,
+            ))
+
+        region = strip.region
+        at_x, at_y = region.x + region.width // 2, region.y
+
+        seen = [content.active]
+        for _ in range(3):
+            wheel(events.MouseScrollDown, strip, at_x, at_y)
+            await pilot.pause(0.25)
+            seen.append(content.active)
+        assert len(set(seen)) == len(seen), f"the wheel did not advance: {seen}"
+
+        for _ in range(2):
+            wheel(events.MouseScrollUp, strip, at_x, at_y)
+            await pilot.pause(0.25)
+        assert content.active == seen[1], (content.active, seen)
+        ok(f"the wheel walks the tab strip both ways: {' -> '.join(seen)}")
+
+        # over the fields it must still be a scroll. Pinned to a pane that
+        # actually overflows -- the walk above can land on a short one, and a
+        # pane with nothing to scroll would pass this by doing nothing.
+        content.active = "tab-discord"
+        await pilot.pause(0.4)
+        body = next(v for v in screen.query(VerticalScroll) if v.display)
+        assert body.max_scroll_y > 0, "the pane under test does not overflow"
+        before_tab = content.active
+        before_y = body.scroll_offset.y
+        for _ in range(4):
+            wheel(events.MouseScrollDown, body, body.region.x + 4, body.region.y + 3)
+            await pilot.pause(0.2)
+        assert content.active == before_tab, "scrolling the fields changed the tab"
+        assert body.scroll_offset.y > before_y, "the fields no longer scroll"
+        ok("the same wheel over the fields still scrolls the fields")
+
+
+asyncio.run(test_buttons_stay_on_screen())
+asyncio.run(test_wheel_walks_the_tabs())

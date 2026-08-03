@@ -11,12 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, Checkbox, Input, Select, Static, TabbedContent, TabPane,
+    Button, Checkbox, Input, Select, Static, TabbedContent, TabPane, Tabs,
 )
 
 from ..config import Config, write_section
@@ -31,6 +31,15 @@ _CSS = """
         background: $surface;
         padding: 1 2;
     }
+    /* TabbedContent defaults to height: auto, so with eleven sections it grew
+       to fit them all, overflowed the panel and pushed Save and Cancel off the
+       bottom of the screen entirely -- at every terminal size, not just small
+       ones. 1fr makes it take what is left after the title, the hint and the
+       buttons, and scroll inside that. */
+    #panel > TabbedContent { height: 1fr; }
+    /* docked last so the buttons are laid out before the tabs get the rest,
+       which is what guarantees they are always on screen */
+    #panel > #buttons { dock: bottom; }
     #panel > .title { text-style: bold; padding-bottom: 1; }
     .hint { color: $text-muted; padding-bottom: 1; }
     .field-label { text-style: bold; padding-top: 1; }
@@ -157,6 +166,41 @@ class SettingsScreen(DismissOnOutsideClick, ModalScreen[bool]):
                     password=secret and bool(value),
                     placeholder=_as_text(setting.default),
                 )
+
+    def _tab_bar_under(self, x: int, y: int):
+        """The tab strip under a screen coordinate, or None.
+
+        Eleven sections do not fit across a 92-column panel, so the strip
+        scrolls -- and a scroll wheel over a row of tabs should move through
+        the tabs, not through whatever happens to be behind them.
+        """
+        try:
+            widget, _ = self.get_widget_at(x, y)
+        except Exception:  # noqa: BLE001 - outside the screen entirely
+            return None
+        while widget is not None:
+            if isinstance(widget, Tabs):
+                return widget
+            widget = widget.parent
+        return None
+
+    @on(events.MouseScrollDown)
+    def _tab_forward(self, event: events.MouseScrollDown) -> None:
+        tabs = self._tab_bar_under(event.screen_x, event.screen_y)
+        if tabs is None:
+            return
+        tabs.action_next_tab()
+        event.stop()
+        event.prevent_default()
+
+    @on(events.MouseScrollUp)
+    def _tab_back(self, event: events.MouseScrollUp) -> None:
+        tabs = self._tab_bar_under(event.screen_x, event.screen_y)
+        if tabs is None:
+            return
+        tabs.action_previous_tab()
+        event.stop()
+        event.prevent_default()
 
     @on(Button.Pressed, "#cancel")
     def action_cancel(self) -> None:
