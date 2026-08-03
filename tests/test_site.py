@@ -114,6 +114,41 @@ assert "border-radius: 0" in HTML, "the bar is square like everything else"
 ok("the scrollbar is styled for both tones, in both engines, with no radius")
 
 
+# --- motion, and the switch that stops it ---------------------------------
+# Everything that moves is gated on one class, so a single control can stop
+# the lot -- WCAG 2.2.2 asks for exactly that of anything moving on its own.
+for selector in (".bars", ".node__hd .chip", ".ledger .meter", ".btn .tick",
+                 ".wave path", ".ids"):
+    assert f"html.motion {selector}" in HTML, f"{selector} is not gated on .motion"
+ok("every moving element hangs off html.motion, so one switch stops them all")
+
+# built by script rather than sitting in the markup, so that a page with no
+# JavaScript never shows a control that could not do anything
+assert ".motion-toggle {" in HTML, "the control has no styles"
+assert "button.className = 'motion-toggle'" in HTML, "the control is never built"
+assert "aria-pressed" in HTML and "aria-label" in HTML, "the control is unlabelled"
+assert "@media (prefers-reduced-motion: reduce)" in HTML
+assert "* { animation: none !important; transition: none !important; }" in HTML
+ok("there is a real control, and reduced motion stops the animations outright")
+
+# the recordings are attached to figures, with the still kept as the source
+for name in ("results", "sources", "proxies"):
+    recording = ROOT / "docs" / "screenshots" / f"{name}.webp"
+    assert recording.is_file(), f"{name}.webp is missing; run tools/motion.py"
+    assert f'src="screenshots/{name}.svg" data-motion="screenshots/{name}.webp"' in HTML, (
+        f"{name}: the still has to stay the src, or no-JS and motion-off lose it"
+    )
+size = sum((ROOT / "docs" / "screenshots" / f"{n}.webp").stat().st_size
+           for n in ("results", "sources", "proxies"))
+assert size < 900_000, f"the recordings weigh {size // 1024} KB together"
+ok(f"three recordings, {size // 1024} KB, each behind its own still")
+
+# every webp that exists is actually used, or it is dead weight in the repo
+for recording in sorted((ROOT / "docs" / "screenshots").glob("*.webp")):
+    assert recording.name in HTML, f"{recording.name} is generated but never shown"
+ok("no recording ships without the page showing it")
+
+
 if NODE is None:
     print("[skip] node not installed -- page scripts not executed")
 else:
@@ -153,7 +188,11 @@ else:
     harness = r"""
 const fs = require('fs');
 const html = fs.readFileSync(PAGE, 'utf8');
-const script = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
+// only the hero-canvas IIFE: the later blocks build a control and observe
+// figures, and stubbing all of that would test the harness, not the field
+const whole = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
+const script = whole.slice(0, whole.indexOf('/* \u2500\u2500 motion: the switch'));
+let motionOn = false;   // the loop is tested separately; here it must settle
 let ops = { rects: [], pts: 0 };
 const ctx = { fillStyle:'', strokeStyle:'', globalAlpha:1, lineWidth:1,
   setTransform(){}, fillRect(x,y,w,h){ ops.rects.push({w,h,a:this.globalAlpha}); },
@@ -170,10 +209,14 @@ global.window = { devicePixelRatio:1,
 global.location = { hash: '' };
 global.document = { getElementById:id=>(id==='field'?canvas:null),
   querySelector:()=>null, querySelectorAll:()=>[], addEventListener(){},
-  documentElement:{ className:'', classList:{ add(){}, toggle(){} } } };
+  // the canvas asks whether motion is running before it loops again
+  documentElement:{ className:'',
+    classList:{ add(){}, toggle(){}, contains: () => motionOn } } };
 let rafFn = null;
 global.requestAnimationFrame = fn => { rafFn = fn; return 1; };
 global.cancelAnimationFrame = ()=>{};
+global.setTimeout = fn => 1;
+global.clearTimeout = ()=>{};
 eval(script);
 // let the one authored motion finish
 if (rafFn) { rafFn(0); while (rafFn) { const f = rafFn; rafFn = null; f(3000); } }

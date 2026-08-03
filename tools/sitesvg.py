@@ -160,11 +160,13 @@ def _format(label: str, svg_width: int) -> str:
 """
 
 
-def save(app, path: Path, label: str) -> None:
-    """Write ``app``'s current screen to ``path`` as a page-framed SVG.
+def render(app, label: str, unique_id: str = "rsb") -> str:
+    """``app``'s current screen as a page-framed SVG string.
 
     Mirrors ``App.export_screenshot``, which offers no way to pass a terminal
     theme or a template, so the compositor call below is the one it makes.
+    Split out from :func:`save` because the motion frames need the same framing
+    without a file each.
     """
     if app.theme != THEME_NAME:
         raise RuntimeError(
@@ -188,16 +190,18 @@ def save(app, path: Path, label: str) -> None:
             full=True, screen_stack=app._background_screens, simplify=False
         )
     )
-    path.write_text(
-        console.export_svg(
-            title="",
-            theme=SITE_TERMINAL,
-            code_format=_format(label, _svg_width(columns)),
-            font_aspect_ratio=FONT_ASPECT,
-            unique_id=f"rsb-{path.stem}",
-        ),
-        encoding="utf-8",
+    return console.export_svg(
+        title="",
+        theme=SITE_TERMINAL,
+        code_format=_format(label, _svg_width(columns)),
+        font_aspect_ratio=FONT_ASPECT,
+        unique_id=unique_id,
     )
 
 
-__all__ = ["save", "SITE_TERMINAL", "FONT_ASPECT", "FONT_STACK"]
+def save(app, path: Path, label: str) -> None:
+    """Write ``app``'s current screen to ``path`` as a page-framed SVG."""
+    path.write_text(render(app, label, f"rsb-{path.stem}"), encoding="utf-8")
+
+
+__all__ = ["render", "save", "SITE_TERMINAL", "FONT_ASPECT", "FONT_STACK"]

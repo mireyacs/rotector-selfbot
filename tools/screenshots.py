@@ -250,4 +250,6 @@ async def main():
     print(f"\n{len(list(OUT.glob('*.svg')))} screenshots in {OUT.relative_to(ROOT)}")
 
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())

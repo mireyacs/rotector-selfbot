@@ -482,10 +482,78 @@ html.on-light ::-webkit-scrollbar-thumb { background: #c4c4c4; }
 html.on-light::-webkit-scrollbar-thumb:hover,
 html.on-light ::-webkit-scrollbar-thumb:hover { background: #8d8d8d; }
 
+/* ── motion ────────────────────────────────────────────────────────────── */
+/* Everything that moves hangs off `html.motion`, which the script sets and the
+   control in the corner clears. One switch, because content that moves on its
+   own has to be stoppable -- WCAG 2.2.2 -- and because a page whose every
+   ornament drifts is unreadable to some people and merely tiring to others.
+   prefers-reduced-motion is honoured before the class is ever added. */
+
+/* the bar-field rules drift sideways, one period every few seconds, so the
+   dividers read as a running tape rather than a printed rule */
+@keyframes drift { to { background-position: -24px 0; } }
+html.motion .bars { animation: drift 3.4s linear infinite; }
+html.motion .invert .bars { animation-duration: 4.6s; }
+
+/* the masked chips and meters are the same material, so they run the same way */
+@keyframes mask-drift { to { -webkit-mask-position: -18px 0; mask-position: -18px 0; } }
+html.motion .node__hd .chip { animation: mask-drift 2.8s linear infinite; }
+html.motion .ledger .meter { animation: mask-drift 4.2s linear infinite; }
+html.motion .btn .tick { animation: mask-drift 1.9s linear infinite; }
+
+/* the setup wave draws itself, over and over */
+html.motion .wave path {
+  stroke-dasharray: 220 1400;
+  animation: trace 7s linear infinite;
+}
+@keyframes trace { from { stroke-dashoffset: 1620; } to { stroke-dashoffset: 0; } }
+
+/* a slow breath under the ornament rails, so the numerals feel sampled rather
+   than typeset. Opacity only: nothing moves position, nothing reflows. */
+@keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+html.motion .ids, html.motion .index { animation: breathe 9s ease-in-out infinite; }
+
+/* the figures fade between their still and their recording rather than
+   swapping hard, which is the only transition on an image anywhere */
+figure img { transition: opacity .28s linear; }
+figure img.swapping { opacity: .35; }
+
+/* ── the motion control ────────────────────────────────────────────────── */
+.motion-toggle {
+  position: fixed;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .55rem .8rem;
+  border: 1px solid var(--ink);
+  background: var(--ground);
+  color: var(--ink);
+  font: inherit;
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .17em;
+  text-transform: uppercase;
+  border-radius: 0;
+  cursor: pointer;
+}
+.motion-toggle:hover, .motion-toggle:focus-visible { background: var(--ink); color: var(--ground); }
+/* the two-bar/▶ glyph is drawn, not typed, so it inherits the invert */
+.motion-toggle .state { display: block; width: 9px; height: 11px; background: currentColor;
+  -webkit-mask: linear-gradient(90deg, #000 0 3px, transparent 3px 6px, #000 6px 9px);
+  mask: linear-gradient(90deg, #000 0 3px, transparent 3px 6px, #000 6px 9px); }
+html:not(.motion) .motion-toggle .state {
+  -webkit-mask: linear-gradient(90deg, #000 0 9px); mask: linear-gradient(90deg, #000 0 9px);
+}
+@media (max-width: 620px) { .motion-toggle { font-size: .58rem; padding: .45rem .6rem; } }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
   /* including the one motion a stylesheet can start on its own */
   html, html.smooth { scroll-behavior: auto !important; }
+  /* the control stays, so the preference can still be overridden by hand */
 }
 </style>
 </head>
@@ -563,7 +631,7 @@ html.on-light ::-webkit-scrollbar-thumb:hover { background: #8d8d8d; }
           complete in a single request: no sidebar, no coverage question.</p>
       </div>
       <figure>
-        <img src="screenshots/results.svg" alt="The scanner's results table: members listed with verdict, flag type, category and linked Roblox accounts, with a detail pane below." loading="lazy" decoding="async">
+        <img src="screenshots/results.svg" data-motion="screenshots/results.webp" alt="The scanner's results table: members listed with verdict, flag type, category and linked Roblox accounts, with a detail pane below." loading="lazy" decoding="async">
         <figcaption>The results table. Colour appears on this page only inside the
           program's own screenshots.</figcaption>
       </figure>
@@ -589,7 +657,7 @@ html.on-light ::-webkit-scrollbar-thumb:hover { background: #8d8d8d; }
         </div>
         <div class="stack">
           <figure>
-            <img src="screenshots/sources.svg" alt="The sources pane: servers, friends, requests and group DMs in collapsible groups." loading="lazy" decoding="async">
+            <img src="screenshots/sources.svg" data-motion="screenshots/sources.webp" alt="The sources pane: servers, friends, requests and group DMs in collapsible groups." loading="lazy" decoding="async">
             <figcaption>Sources, grouped and collapsible.</figcaption>
           </figure>
           <p style="font-size:.82rem"><b>A bot token removes the limit entirely.</b> With
@@ -903,7 +971,7 @@ cd rotector-selfbot</code></pre>
           not what they are for; their terms forbid it, and so does this tool.</p>
       </div>
       <figure>
-        <img src="screenshots/proxies.svg" alt="The proxy tester, showing each proxy's measured latency and whether it carries its own rate budget." loading="lazy" decoding="async">
+        <img src="screenshots/proxies.svg" data-motion="screenshots/proxies.webp" alt="The proxy tester, showing each proxy's measured latency and whether it carries its own rate budget." loading="lazy" decoding="async">
         <figcaption>The proxy tester, run against the Rotector API itself.</figcaption>
       </figure>
     </div>
@@ -1065,8 +1133,32 @@ cd rotector-selfbot</code></pre>
     var p = Math.min(1, (ts - t0) / 2200);
     // exponential ease-out from an already-visible default
     draw(1 - Math.pow(1 - p, 3));
-    if (p < 1) raf = requestAnimationFrame(step);
+    if (p < 1) { raf = requestAnimationFrame(step); return; }
+    // With motion running the pass repeats rather than stopping: the field
+    // rests at full for a beat, then sweeps again. The findings are never
+    // unlit for long, because a wall that keeps losing its marks reads as
+    // broken rather than alive.
+    raf = null;
+    if (document.documentElement.classList.contains('motion')) {
+      sweepAgain();
+    }
   }
+
+  var restTimer = null;
+  function sweepAgain() {
+    clearTimeout(restTimer);
+    restTimer = setTimeout(function () {
+      if (!document.documentElement.classList.contains('motion')) return;
+      t0 = null;
+      raf = requestAnimationFrame(step);
+    }, 2600);
+  }
+
+  // the toggle tells the canvas to pick the loop back up
+  window.addEventListener('rsb:motion', function (event) {
+    if (event.detail) { if (raf === null) sweepAgain(); }
+    else { clearTimeout(restTimer); if (raf) { cancelAnimationFrame(raf); raf = null; } draw(1); }
+  });
 
   build();
   resize();
@@ -1109,6 +1201,111 @@ cd rotector-selfbot</code></pre>
   // The routes are real; per-route coverage figures are not measured, so none
   // are shown. Inventing a number here would undercut the one claim the page
   // is built on.
+})();
+
+/* ── motion: the switch, the numerals, the recordings ──────────────────── */
+(function () {
+  var root = document.documentElement;
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  /* On by default, off if the system asks for less, and whatever was chosen
+     last wins over both. Content that moves on its own has to be stoppable --
+     WCAG 2.2.2 -- so this is a real control rather than a preference buried in
+     a menu, and everything that moves is gated on the class it sets. */
+  var saved = null;
+  try { saved = localStorage.getItem('rsb-motion'); } catch (e) { /* private mode */ }
+  var on = saved === null ? !reduce.matches : saved === 'on';
+
+  var button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'motion-toggle';
+  button.innerHTML = '<span class="state" aria-hidden="true"></span><span class="word"></span>';
+  var word = button.querySelector('.word');
+
+  function apply(next, remember) {
+    on = next;
+    root.classList.toggle('motion', on);
+    button.setAttribute('aria-pressed', String(!on));
+    word.textContent = on ? 'Motion on' : 'Motion off';
+    button.setAttribute('aria-label', on ? 'Stop the animations' : 'Start the animations');
+    if (remember) {
+      try { localStorage.setItem('rsb-motion', on ? 'on' : 'off'); } catch (e) {}
+    }
+    window.dispatchEvent(new CustomEvent('rsb:motion', { detail: on }));
+  }
+
+  button.addEventListener('click', function () { apply(!on, true); });
+  document.body.appendChild(button);
+  apply(on, false);
+
+  // a mid-session switch to reduced motion is honoured, unless it was set by hand
+  reduce.addEventListener('change', function () {
+    if (saved === null) apply(!reduce.matches, false);
+  });
+
+  /* The ornament rails re-roll a few digits at a time. They are aria-hidden
+     and unselectable already, so this is texture changing rather than content
+     changing -- nothing a screen reader announces, nothing that reflows. */
+  var rails = [].slice.call(document.querySelectorAll('.ids, .index'));
+  var rollTimer = null;
+  function roll() {
+    if (!on) return;
+    for (var i = 0; i < rails.length; i++) {
+      var lines = rails[i].textContent.split('\n');
+      if (!lines.length) continue;
+      var line = Math.floor(Math.random() * lines.length);
+      var text = lines[line];
+      if (!text) continue;
+      var at = Math.floor(Math.random() * text.length);
+      lines[line] = text.slice(0, at) + Math.floor(Math.random() * 10) + text.slice(at + 1);
+      rails[i].textContent = lines.join('\n');
+    }
+  }
+  function schedule() {
+    clearInterval(rollTimer);
+    if (on) rollTimer = setInterval(roll, 320);
+  }
+  window.addEventListener('rsb:motion', schedule);
+  schedule();
+
+  /* The figures carry a recording of the pane being used. The SVG stays the
+     default -- vector, crisp at any size, and what shows with motion off or no
+     script at all -- and the loop is swapped in only while the figure is on
+     screen. Off-screen loops are swapped back out, because a browser will
+     happily decode four animations nobody is looking at. */
+  var figures = [].slice.call(document.querySelectorAll('figure img[data-motion]'));
+  var visible = new Set();
+
+  function sync() {
+    figures.forEach(function (img) {
+      var want = on && visible.has(img) ? img.dataset.motion : img.dataset.still;
+      if (img.getAttribute('src') === want) return;
+      img.classList.add('swapping');
+      var next = new Image();
+      next.onload = next.onerror = function () {
+        img.src = want;
+        img.classList.remove('swapping');
+      };
+      next.src = want;
+    });
+  }
+
+  figures.forEach(function (img) { img.dataset.still = img.getAttribute('src'); });
+
+  if (figures.length && 'IntersectionObserver' in window) {
+    var watcher = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) visible.add(entry.target);
+        else visible.delete(entry.target);
+      });
+      sync();
+    }, { rootMargin: '120px 0px' });
+    figures.forEach(function (img) { watcher.observe(img); });
+  } else {
+    figures.forEach(function (img) { visible.add(img); });
+    sync();
+  }
+  window.addEventListener('rsb:motion', sync);
 })();
 
 /* ── scrolling, and the bar beside it ──────────────────────────────────── */
