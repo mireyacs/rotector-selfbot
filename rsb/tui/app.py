@@ -659,6 +659,9 @@ class ScannerApp(App):
         self._process_started: float | None = None
         #: set while a scan is being torn down, so late callbacks are ignored
         self._stopping = False
+        #: set the moment the app starts tearing down, so a callback still
+        #: in flight writes nothing into widgets that have gone
+        self._closing = False
         self._scan_task: asyncio.Task | None = None
         self._pane_width = 56
         self.my_id: str | None = None
@@ -1763,6 +1766,12 @@ class ScannerApp(App):
                 )
 
             def scan_progress(stage: str, done: int, of: int) -> None:
+                # A batch cancelled at the end of a run still publishes once on
+                # its way out. Without this the last one lands *after* the
+                # teardown has cleared the clocks and puts the ETA back, so a
+                # stopped scan keeps a live-looking readout.
+                if self._stopping or self._closing:
+                    return
                 progress.update(total=max(of, 1), progress=done)
                 self._eta.update(done)
                 self._eta_progress = None if source.is_live else (done, of)
@@ -1776,6 +1785,8 @@ class ScannerApp(App):
                 self._set_activity(f"{stage} - {done:,} / {of:,}{note}")
 
             def partial(reports: list[MemberReport]) -> None:
+                if self._closing:
+                    return
                 for report in reports:
                     member = by_id.get(report.discord_id)
                     if member is None:
@@ -2068,8 +2079,19 @@ class ScannerApp(App):
             self.refresh_tabs()
             progress.remove_class("visible")
             task = self._scan_task
-            if task is not None and not task.done():
-                task.cancel()
+            if task is not None:
+                # Cancelled *and* drained. Cancelling alone leaves the task to
+                # fail on its own later -- a batch losing its client on the way
+                # out raises AllRoutesFailed -- and by then this method has set
+                # _scan_task to None, so nothing is left holding a reference to
+                # retrieve it from. That is the "Task exception was never
+                # retrieved" traceback, arriving after the UI has gone.
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             # _end_run rather than clearing the fields by hand: it also drops
             # _activity and repaints. A cancelled run used to skip that -- the
             # CancelledError handler that called it sat below `except
@@ -2392,6 +2414,8 @@ class ScannerApp(App):
 
     def _append_row(self, discord_id: str) -> None:
         """Add a streaming result, if it belongs on the page being viewed."""
+        if self._closing:
+            return
         row = self.rows[discord_id]
         if not self._passes(row):
             return
@@ -2421,6 +2445,8 @@ class ScannerApp(App):
         return max(1, (self._matching + self.page_size - 1) // self.page_size)
 
     def _rebuild_table(self) -> None:
+        if self._closing:
+            return
         table = self.query_one("#results", DataTable)
         table.clear()
         self._shown.clear()
@@ -2455,6 +2481,8 @@ class ScannerApp(App):
         self._rebuild_table()
 
     def _update_summary(self) -> None:
+        if self._closing:
+            return
         counts = {v: 0 for v in Verdict}
         for row in self.rows.values():
             counts[row.report.verdict] += 1
@@ -3866,6 +3894,8 @@ class ScannerApp(App):
         return self._eta.eta(done, total)
 
     def _paint_status(self) -> None:
+        if self._closing:
+            return
         try:
             self.query_one(StatusStrip).set_text(self._compose_status())
         except Exception:
@@ -3879,6 +3909,32 @@ class ScannerApp(App):
     # -- shutdown ----------------------------------------------------------
 
     async def on_unmount(self) -> None:
+        """Shut down in an order that cannot outlive the widgets.
+
+        Closing the clients first was wrong: a scan still in flight then failed
+        with "client has been closed", and its error path published a partial
+        batch into a UI that no longer had a #summary to write to -- a
+        NoMatches raised inside a task nobody was awaiting. So the flag goes up
+        first, the scan is stopped and given a moment to unwind, and only then
+        is anything closed.
+        """
+        self._closing = True
+
+        self.workers.cancel_group(self, "scan")
+        task = self._scan_task
+        self._scan_task = None
+        if task is not None:
+            # Awaited even when already finished. A scan that failed a moment
+            # before the quit is *done*, and skipping it there leaves its
+            # exception unretrieved -- which is the very thing this is here to
+            # prevent, arriving by a slightly different route.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
         # ffplay is a child process; leaving it running after the UI is gone
         # would keep playing into a terminal that no longer exists
         if self.vibe is not None:

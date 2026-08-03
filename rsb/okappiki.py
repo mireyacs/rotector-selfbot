@@ -49,7 +49,7 @@ import httpx
 
 from .proxy import AllRoutesFailed, RoutePool
 from .ratelimit import RateLimiter
-from .rotector import MemberReport, ProgressCallback, RobloxAccount
+from .rotector import MemberReport, ProgressCallback, RobloxAccount, _absorb
 from .verdict import Signal, Verdict, verdict_for_flag
 
 BASE_URL = "https://okappiki.com"
@@ -418,7 +418,9 @@ class OkappikiClient:
             if discord_id in seen:
                 return
             seen.add(discord_id)
-            tasks.append(asyncio.create_task(handle(discord_id)))
+            task = asyncio.create_task(handle(discord_id))
+            task.add_done_callback(_absorb)
+            tasks.append(task)
 
         while True:
             item = await incoming.get()
@@ -431,9 +433,24 @@ class OkappikiClient:
                 submit(str(item))
 
         if tasks:
-            # gather rather than wait: an AllRoutesFailed from any lookup should
-            # surface here the way it does on the Rotector side
-            await asyncio.gather(*tasks)
+            # return_exceptions, then re-raise: a bare gather leaves the *other*
+            # tasks' errors unretrieved the moment one of them fails, and a
+            # cancellation leaves all of them running. Either way the traceback
+            # arrives later, from a task nobody is awaiting.
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            for outcome in results:
+                if isinstance(outcome, AllRoutesFailed):
+                    raise outcome
+            for outcome in results:
+                if isinstance(outcome, BaseException):
+                    raise outcome
         return reports
 
     async def scan_members(

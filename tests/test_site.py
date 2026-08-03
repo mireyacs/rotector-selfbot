@@ -167,8 +167,18 @@ assert "grid-template-rows: 0fr" in HTML and ".player.open .player__slot" in HTM
 assert "transition: grid-template-rows" in HTML
 ok("the player opens by unrolling, and carries prev / seek / next")
 
-# the field is behind the content, not beside it
-assert ".player__body > *:not(.player__field) { position: relative; z-index: 1; }" in HTML
+# The field is behind the content, not beside it -- but only behind the part it
+# actually sits under. It used to span the whole panel, which put a plate under
+# the seekbar and its time: opaque enough to read as a box the transport was
+# stuck inside. Confining the canvas to the head fixes that at the source, so
+# the stacking guard belongs to the head's children and the transport needs no
+# lift at all. If the canvas ever escapes back out to the body, the plate is
+# back, so assert the containment rather than just the z-index.
+assert ".player__head > *:not(.player__field) { position: relative; z-index: 1; }" in HTML
+assert HTML.index('class="player__field"') > HTML.index('class="player__head"')
+assert HTML.index('class="player__seek') > HTML.index("</div>", HTML.index('class="player__field"')), (
+    "the seekbar must sit outside the head, or the field draws under it again"
+)
 assert "'/peaks/'" in HTML, "the field must read the shipped envelope"
 assert "mireyacs/openlofi" in HTML, "one library, not two"
 ok("the barcode field sits behind the panel and reads the same envelope as the app")

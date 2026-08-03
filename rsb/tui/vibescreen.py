@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 
 from rich.segment import Segment
 from rich.style import Style
@@ -74,8 +75,8 @@ class Field(Widget):
     def __init__(self) -> None:
         super().__init__()
         self.levels: list[float] = []
-        #: (x fraction, y fraction) per finding, in the order they were found
-        self.marks: list[tuple[float, float]] = []
+        #: (x fraction, y fraction, brightness) per finding still showing
+        self.marks: list[tuple[float, float, float]] = []
 
     def render_line(self, y: int) -> Strip:
         width, height = self.size.width, max(1, self.size.height)
@@ -118,7 +119,7 @@ class Field(Widget):
 
         # findings last, so a mark is never hidden by a bar
         used: set[int] = set()
-        for index, (mx, my) in enumerate(self.marks):
+        for mx, my, glow in self.marks:
             column = min(width - 1, int(mx * width))
             # findings from one published batch share a progress fraction;
             # without this they stack into a single line pretending to be one
@@ -127,9 +128,11 @@ class Field(Widget):
             used.add(column)
             mark_row = int(my * (height - 1))
             if y == mark_row:
-                cells[column] = ("■", foreground)
+                shade = int(60 + glow * 195)
+                cells[column] = ("■", f"rgb({shade},{shade},{shade})")
             else:
-                cells[column] = ("│", "rgb(150,150,150)")
+                shade = int(30 + glow * 120)
+                cells[column] = ("│", f"rgb({shade},{shade},{shade})")
 
         segments: list[Segment] = []
         run, run_style = [], None
@@ -215,9 +218,17 @@ class VibeScreen(Screen):
     def __init__(self, vibe) -> None:
         super().__init__()
         self.vibe = vibe
-        self._marks: list[tuple[float, float]] = []
+        #: (x, y, born) per finding. A mark is a *moment* -- it lands, it is
+        #: read, it goes. Keeping every hit for the length of a ten-thousand
+        #: member scan would fill the field with a wall of lines and lose the
+        #: one thing the marks are for, which is noticing the new one.
+        self._marks: list[tuple[float, float, float]] = []
         self._hits = 0
         self._rng = random.Random(0xF1A6)
+
+    #: seconds a finding stays at full brightness, then how long it takes to go
+    HOLD = 3.0
+    FADE = 2.5
 
     def compose(self) -> ComposeResult:
         with Vertical(id="vibe-wrap"):
@@ -275,10 +286,25 @@ class VibeScreen(Screen):
             self._hits += 1
             done = len(job.rows)
             span = job.expected or max(done, 1)
-            self._marks.append(
-                (min(0.98, done / span if span else 0.0), self._rng.random())
-            )
-        return self._marks
+            self._marks.append((
+                min(0.98, done / span if span else 0.0),
+                self._rng.random(),
+                time.monotonic(),
+            ))
+
+        now = time.monotonic()
+        kept: list[tuple[float, float, float]] = []
+        showing: list[tuple[float, float, float]] = []
+        for mark in self._marks:
+            mx, my, born = mark
+            age = now - born
+            if age >= self.HOLD + self.FADE:
+                continue          # dropped, not merely dimmed
+            kept.append(mark)
+            glow = 1.0 if age <= self.HOLD else 1.0 - (age - self.HOLD) / self.FADE
+            showing.append((mx, my, glow))
+        self._marks = kept
+        return showing
 
     def _tick(self) -> None:
         vibe = self.vibe

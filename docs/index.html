@@ -578,7 +578,10 @@ html:not(.motion) .motion-toggle .state {
 /* the control moves into the dock, so it no longer positions itself */
 .dock .motion-toggle { position: static; right: auto; bottom: auto; }
 
-.player { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+/* flex-end, not stretch: the chip is a mark in the corner and must not grow
+   to the width of the panel it opens. */
+.player { display: flex; flex-direction: column; align-items: flex-end; gap: 0; }
+.player__slot, .player__clip { width: 100%; }
 
 /* Opens by unrolling. grid-template-rows animates where height: auto cannot,
    so the panel grows to whatever the track title needs without a magic pixel
@@ -616,7 +619,7 @@ html:not(.motion) .motion-toggle .state {
   display: block;
   z-index: 0;
 }
-.player__body > *:not(.player__field) { position: relative; z-index: 1; }
+.player__head > *:not(.player__field) { position: relative; z-index: 1; }
 
 /* legibility over a live field without an opaque plate, the way the hero
    rails manage it */
@@ -634,18 +637,13 @@ html:not(.motion) .motion-toggle .state {
 .player__meta a { color: inherit; }
 
 /* the scrub bar: the page's own rule, filled to the position */
-/* The field stops at the transport. Bars running behind a scrub bar read as
-   damage rather than as texture, and the one thing in the panel that has to be
-   read exactly is the position. */
-.player__transport {
-  position: relative;
-  margin-top: .6rem;
-  padding: .5rem .8rem .7rem;
-  margin-left: -.8rem; margin-right: -.8rem;
-  background: var(--ground);
-  border-top: 1px solid var(--rule);
-}
-.player.on-light .player__transport { background: var(--ink); border-top-color: #c4c4c4; }
+/* The field is confined to the head of the panel rather than covering it and
+   being masked off behind the transport. A plate over a live surface was the
+   wrong fix twice over: it is the thing this design does not do, and it read
+   as a grey box sitting in the middle of the panel. */
+.player__head { position: relative; }
+.player__transport { margin-top: .6rem; border-top: 1px solid var(--rule); padding-top: .5rem; }
+.player.on-light .player__transport { border-top-color: #c4c4c4; }
 
 .player__seek {
   height: 12px; cursor: pointer; position: relative;
@@ -699,16 +697,14 @@ html:not(.motion) .motion-toggle .state {
 .player.open .player__open .word > span { padding-left: .55rem; }
 .player__open { gap: 0; }
 
-/* play and pause, drawn as masks so they invert with the chip like everything
-   else here. Two bars while it plays, a triangle while it does not. */
-.player__open .state { width: 10px; height: 11px; }
-.player.playing .player__open .state {
-  -webkit-mask: linear-gradient(90deg, #000 0 3px, transparent 3px 7px, #000 7px 10px);
-  mask: linear-gradient(90deg, #000 0 3px, transparent 3px 7px, #000 7px 10px);
-}
-.player:not(.playing) .player__open .state {
-  -webkit-mask: conic-gradient(from -90deg at 0 50%, #000 0 60deg, transparent 60deg);
-  mask: conic-gradient(from -90deg at 0 50%, #000 0 60deg, transparent 60deg);
+/* A character rather than a mask. The conic-gradient mask this used drew
+   nothing at all, so the chip sat there with an empty icon slot. */
+.player__open .state {
+  width: auto; height: auto; background: none;
+  -webkit-mask: none; mask: none;
+  /* no size of its own: the glyph is part of the button face and belongs on
+     Action with the word beside it */
+  line-height: 1;
 }
 
 @media (max-width: 620px) { .player__body { width: 14rem; } }
@@ -1566,9 +1562,11 @@ cd rotector-selfbot</code></pre>
   player.innerHTML =
     '<div class="player__slot"><div class="player__clip">' +
       '<div class="player__body">' +
-        '<canvas class="player__field" aria-hidden="true"></canvas>' +
-        '<div class="player__now">Loading the library…</div>' +
-        '<div class="player__meta"></div>' +
+        '<div class="player__head">' +
+          '<canvas class="player__field" aria-hidden="true"></canvas>' +
+          '<div class="player__now">Loading the library…</div>' +
+          '<div class="player__meta"></div>' +
+        '</div>' +
         '<div class="player__transport">' +
           '<button type="button" class="player__seek" aria-label="Seek">' +
             '<span class="rail"></span><span class="fill"></span><span class="head"></span>' +
@@ -1590,6 +1588,7 @@ cd rotector-selfbot</code></pre>
   dock.insertBefore(player, dock.firstChild);
 
   var body = player.querySelector('.player__body');
+  var headEl = player.querySelector('.player__head');
   var canvas = player.querySelector('.player__field');
   var now = player.querySelector('.player__now');
   var meta = player.querySelector('.player__meta');
@@ -1680,7 +1679,7 @@ cd rotector-selfbot</code></pre>
 
   function paint() {
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    var w = body.clientWidth, h = body.clientHeight;
+    var w = headEl.clientWidth, h = headEl.clientHeight;
     if (!w || !h) return;
     if (canvas.width !== Math.round(w * dpr)) {
       canvas.width = Math.round(w * dpr);
@@ -1805,10 +1804,13 @@ cd rotector-selfbot</code></pre>
     audio.currentTime = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * duration;
   });
 
+  var stateEl = openBtn.querySelector('.state');
+
   function state() {
     var live = !audio.paused && !!audio.src;
     player.classList.toggle('playing', live);
     playBtn.textContent = live ? 'Pause' : 'Play';
+    stateEl.textContent = live ? '\u25b6' : '';
     openBtn.setAttribute(
       'aria-label', live ? 'Music playing - open the player' : 'Music player'
     );

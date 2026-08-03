@@ -175,3 +175,69 @@ async def main():
 
 
 asyncio.run(main())
+
+# --------------------------------------------------------------------------
+# quitting mid-scan
+# --------------------------------------------------------------------------
+
+async def test_quitting_mid_scan_is_quiet():
+    """Closing the app while a scan runs must not raise out of a stray task.
+
+    Reported from a real session: on_unmount closed the HTTP clients while a
+    scan was still in flight, so the next batch failed with "client has been
+    closed" and its *error* path published a partial result into a UI that no
+    longer had a #summary to write to. The NoMatches surfaced as
+    "Task exception was never retrieved", which is the worst shape for a bug --
+    nothing to catch and nothing on screen.
+    """
+    problems = []
+
+    def _record(loop, ctx):
+        # Name the coroutine, not just the exception. "AllRoutesFailed" alone
+        # says nothing about who dropped it, and these leaks are always some
+        # task nobody is left to await -- the qualname is the whole diagnosis.
+        # This one cost an hour before the handler started reporting it.
+        task = ctx.get("future") or ctx.get("task")
+        coro = getattr(task, "get_coro", lambda: None)()
+        error = ctx.get("exception")
+        problems.append(
+            f"{type(error).__name__}({error}) from "
+            f"{getattr(coro, '__qualname__', coro) or ctx.get('message')}"
+        )
+
+    asyncio.get_running_loop().set_exception_handler(_record)
+
+    appmod.DiscordHTTP = FakeHTTP
+    appmod.DiscordGateway = SlowGateway
+    config = Config()
+    config.token = "fake"
+    config.proxy.file = "/nonexistent"
+    config.update.check_on_start = False
+    app = appmod.ScannerApp(config, persist_theme=False)
+
+    async with app.run_test(size=(110, 32)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if app.rotector is not None:
+                break
+        select_source(app, "guild")
+        await pilot.pause(0.3)
+        source = app.current_source or (app.sources[-1] if app.sources else None)
+        assert source is not None
+        app.scan_source(source, lookup=True, mode="replace")
+        await pilot.pause(2.0)
+        assert app._scanning, "the scan has to be in flight for this to mean anything"
+
+    await asyncio.sleep(1.0)
+    assert not problems, f"quitting mid-scan raised: {problems}"
+    ok("quitting mid-scan leaves no unretrieved task exception")
+
+    # and a callback that still slips through writes nothing rather than raising
+    app._closing = True
+    app._update_summary()
+    app._rebuild_table()
+    app._paint_status()
+    ok("a late callback after teardown is a no-op, not a NoMatches")
+
+
+asyncio.run(test_quitting_mid_scan_is_quiet())

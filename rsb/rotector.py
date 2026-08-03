@@ -42,6 +42,23 @@ ProgressCallback = Callable[[str, int, int], None]
 IDLE_FLUSH = 2.0
 
 
+
+def _absorb(task: "asyncio.Task") -> None:
+    """Mark a finished task's exception as seen.
+
+    Attached the moment a batch task is created, because the gather that would
+    normally collect it is only reached on the happy path: cancel the stream
+    while it is still consuming ids -- which is what quitting the app mid-scan
+    does -- and every task already in flight is orphaned. Its error then
+    surfaces later as "Task exception was never retrieved", from a traceback
+    with no caller and no UI left to report into.
+
+    Reading the exception here is idempotent; the gather still sees it too.
+    """
+    if not task.cancelled():
+        task.exception()
+
+
 class RotectorError(RuntimeError):
     pass
 
@@ -473,7 +490,9 @@ class RotectorClient:
             while len(buffer) >= MAX_BATCH or (force and buffer):
                 chunk = buffer[:MAX_BATCH]
                 del buffer[:MAX_BATCH]
-                tasks.append(asyncio.create_task(handle(chunk)))
+                task = asyncio.create_task(handle(chunk))
+                task.add_done_callback(_absorb)
+                tasks.append(task)
 
         while True:
             if idle_flush and buffer:
@@ -494,7 +513,18 @@ class RotectorClient:
             dispatch()
         dispatch(force=True)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # The app is going away mid-scan. Cancelling this coroutine does not
+            # touch the batch tasks it started, so without draining them here
+            # their errors land in a task nobody is awaiting and surface as
+            # "Task exception was never retrieved" after the UI has gone.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for outcome in results:
             if isinstance(outcome, AllRoutesFailed):
                 raise outcome
