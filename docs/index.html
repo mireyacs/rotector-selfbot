@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rotector-selfbot — check every member of a Discord server</title>
+<meta name="description" content="A terminal scanner that reads every member of a Discord server, checks each against the Rotector database, and reports honestly how many it could not reach.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="rotector-selfbot">
+<meta property="og:description" content="Check every member of a Discord server against the Rotector database — and read the number that says who you missed.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+<style>
+/* ── field ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --ink: #ffffff;
+  --ground: #000000;
+  /* texture tones exist for ornamental numerals and rules only; never for
+     content text, which stays pure ink so the field has no grey in it */
+  --texture-1: #6f6f6f;
+  --texture-2: #3a3a3a;
+  --rule: #2a2a2a;
+  --measure: 68ch;
+  --gutter: clamp(1.25rem, 4vw, 4rem);
+  --rail: 13rem;
+}
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Azeret Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.62;
+  letter-spacing: -0.01em;
+  font-variant-ligatures: none;
+  overflow-x: hidden;
+}
+
+::selection { background: var(--ink); color: var(--ground); }
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--ink); color: var(--ground);
+  padding: .75rem 1rem; z-index: 100; font-weight: 700;
+}
+.skip:focus { left: 0; }
+
+/* ── type scale ────────────────────────────────────────────────────────── */
+h1, h2, h3 { font-weight: 800; letter-spacing: -0.045em; margin: 0; text-wrap: balance; }
+
+h1 {
+  font-size: clamp(2.6rem, 7.6vw, 4.9rem);
+  line-height: .9;
+}
+
+h2 {
+  font-size: clamp(1.5rem, 3.4vw, 2.6rem);
+  line-height: 1.02;
+}
+
+h3 {
+  font-size: clamp(1.02rem, 1.5vw, 1.2rem);
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+}
+
+p { margin: 0 0 1.15em; max-width: var(--measure); }
+p:last-child { margin-bottom: 0; }
+
+.lead {
+  font-size: clamp(1rem, 1.55vw, 1.2rem);
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: -0.02em;
+}
+
+.label {
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .19em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+/* only the ornamental rails keep a texture tone; content text never does */
+.rail .label { color: var(--ink); }
+
+/* ── bar-field rule: the world's own divider ───────────────────────────── */
+.bars {
+  display: block;
+  width: 100%;
+  height: 12px;
+  border: 0;
+  margin: 0;
+  background-repeat: repeat-x;
+  background-size: 24px 12px;
+  background-image:
+    linear-gradient(90deg,
+      var(--ink) 0 1px, transparent 1px 3px,
+      var(--ink) 3px 4px, transparent 4px 9px,
+      var(--ink) 9px 11px, transparent 11px 14px,
+      var(--ink) 14px 15px, transparent 15px 21px,
+      var(--ink) 21px 22px, transparent 22px 24px);
+  opacity: .55;
+}
+
+/* ── hero ──────────────────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  min-height: 100svh;
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr) var(--rail);
+  align-items: stretch;
+  border-bottom: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+#field {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  display: block;
+}
+
+.hero > * { position: relative; z-index: 1; }
+
+.rail {
+  padding: 1.5rem 1rem;
+  font-size: .68rem;
+  line-height: 1.85;
+  color: var(--texture-1);
+  letter-spacing: .02em;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  /* legibility over the live field without an opaque panel behind it, so the
+     wall stays one continuous surface rather than three */
+  text-shadow: 0 0 7px #000, 0 0 3px #000, 0 0 1px #000;
+}
+.rail--l { border-right: 1px solid var(--rule); }
+.rail--r { border-left: 1px solid var(--rule); text-align: right; }
+
+.rail b {
+  display: block;
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 1.5rem;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+}
+
+.rail .row { margin-bottom: 1.35rem; }
+.rail .row:last-child { margin-bottom: 0; }
+
+.ids { white-space: pre; font-size: .62rem; line-height: 1.7; color: var(--texture-2); }
+.rail--r .ids { color: var(--texture-1); }
+.routes { font-size: .68rem; line-height: 1.8; color: var(--ink); }
+
+.hero__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6rem var(--gutter) 3rem;
+  gap: 1.75rem;
+}
+
+.hero__mark {
+  position: absolute;
+  top: 1.4rem; left: var(--gutter);
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+}
+
+h1 .thin { font-weight: 300; display: block; letter-spacing: -0.03em;
+  font-size: .43em; line-height: 1.12; margin-top: .5em; max-width: 22ch; }
+
+.hero .lead { max-width: 54ch; }
+
+.actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: .5rem; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .85rem 1.15rem;
+  border: 1px solid var(--ink);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: .78rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--ink);
+  transition: background .18s cubic-bezier(.16,1,.3,1), color .18s cubic-bezier(.16,1,.3,1);
+}
+.btn { background: var(--ink); color: var(--ground); }
+.btn:hover, .btn:focus-visible { background: var(--ground); color: var(--ink); }
+.btn .tick { display: block; width: 34px; height: 11px; background: currentColor;
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px);
+  mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px); }
+.btn--quiet { background: transparent; color: var(--ink); border-color: #9a9a9a; font-weight: 500;
+  text-shadow: 0 0 6px #000, 0 0 2px #000; }
+.btn--quiet:hover, .btn--quiet:focus-visible { background: var(--ink); color: var(--ground); text-shadow: none; }
+.btn--quiet:hover, .btn--quiet:focus-visible { border-color: var(--ink); }
+
+/* ── sections ──────────────────────────────────────────────────────────── */
+section { padding: clamp(3.5rem, 8vw, 7rem) var(--gutter); border-bottom: 1px solid var(--rule); }
+
+.wrap { max-width: 1180px; margin: 0 auto; }
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(1.75rem, 4vw, 4rem);
+  align-items: start;
+}
+
+.stack > * + * { margin-top: 1.5rem; }
+
+figure { margin: 0; }
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  background: #0a0a0a;
+}
+figcaption { margin-top: .7rem; font-size: .68rem; color: var(--ink); line-height: 1.5; max-width: 62ch; }
+
+/* ── inversion: reading passages and the warning ───────────────────────── */
+.invert {
+  background: var(--ink);
+  color: var(--ground);
+  border-bottom: 1px solid var(--ink);
+}
+.invert .label { color: #555; }
+.invert a { color: var(--ground); }
+.invert ::selection { background: var(--ground); color: var(--ink); }
+.invert .bars { opacity: 1; background-image:
+    linear-gradient(90deg,
+      #000 0 1px, transparent 1px 3px,
+      #000 3px 4px, transparent 4px 9px,
+      #000 9px 11px, transparent 11px 14px,
+      #000 14px 15px, transparent 15px 21px,
+      #000 21px 22px, transparent 22px 24px); }
+
+.warn__head { display: flex; align-items: baseline; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+
+/* ── data table: the verdict ledger ────────────────────────────────────── */
+.tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.ledger { width: 100%; min-width: 34rem; border-collapse: collapse; font-size: .82rem; margin-top: 1.75rem; }
+.ledger caption { text-align: left; font-size: .68rem; letter-spacing: .19em; text-transform: uppercase;
+  color: var(--ink); padding-bottom: .9rem; }
+.ledger th, .ledger td { text-align: left; padding: .8rem .9rem .8rem 0; border-top: 1px solid var(--rule); vertical-align: top; }
+.ledger thead th { border-top: 0; font-size: .68rem; letter-spacing: .17em; text-transform: uppercase;
+  color: var(--ink); font-weight: 500; padding-bottom: .5rem; }
+.ledger tbody th { font-weight: 800; letter-spacing: -0.02em; white-space: nowrap; }
+.ledger td:last-child, .ledger th:last-child { padding-right: 0; }
+.ledger .meter { display: block; height: 9px; width: 74px; background: currentColor;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
+.m4 { -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 5px); mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 5px); }
+.m3 { -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 6px); mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 6px); }
+.m2 { -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 7px); mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 7px); }
+.m1 { -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 12px); mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 12px); }
+.m0 { -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 24px); mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 24px); }
+
+/* ── data node: the world's frame for a block of values ───────────────── */
+.node { border: 1px solid var(--rule); }
+.node__hd {
+  display: flex; align-items: center; gap: 1rem;
+  padding: .6rem .9rem; border-bottom: 1px solid var(--rule);
+}
+.node__hd .label { font-size: .62rem; letter-spacing: .21em; white-space: nowrap; }
+.node__hd .chip {
+  flex: 1 1 auto; height: 10px; background: currentColor; opacity: .5;
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px,
+    #000 4px 6px, transparent 6px 11px, #000 11px 12px, transparent 12px 17px);
+  mask: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px,
+    #000 4px 6px, transparent 6px 11px, #000 11px 12px, transparent 12px 17px);
+}
+.node__bd { padding: 1.1rem .9rem 1.3rem; }
+.invert .node { border-color: #c4c4c4; }
+.invert .node__hd { border-bottom-color: #c4c4c4; }
+
+/* the index column: the hero's numeric rail, carried down the page edge */
+.indexed { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); gap: clamp(1rem, 3vw, 2.5rem); }
+.index { font-size: .62rem; line-height: 1.9; color: var(--texture-2); white-space: pre;
+  -webkit-user-select: none; user-select: none; border-right: 1px solid var(--rule); padding-right: .9rem; }
+.invert .index { color: #b4b4b4; border-right-color: #c4c4c4; }
+@media (max-width: 860px) { .indexed { grid-template-columns: minmax(0, 1fr); } .index { display: none; } }
+
+/* the sine, carried onto the white ground it never reached */
+.wave { display: block; width: 100%; height: 46px; }
+.wave path { fill: none; stroke: currentColor; stroke-width: 1; opacity: .55; }
+
+/* ── steps ─────────────────────────────────────────────────────────────── */
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: s; }
+.steps > li { counter-increment: s; border-top: 1px solid var(--rule); padding: 1.6rem 0; display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr); gap: 1rem; }
+.steps > li::before { content: counter(s, decimal-leading-zero); font-weight: 800; font-size: .82rem;
+  color: var(--ink); letter-spacing: -0.02em; }
+
+pre {
+  margin: .9rem 0 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--rule);
+  overflow-x: auto;
+  font-size: .82rem;
+  line-height: 1.75;
+  font-family: inherit;
+  color: inherit;
+}
+pre .c { color: #8d8d8d; }
+.cmd { display: inline-block; min-width: 36ch; }
+.invert pre { border-color: #c4c4c4; }
+.invert pre .c { color: #6a6a6a; }
+code { font-family: inherit; font-size: .92em; }
+p > code, li > code, td > code { border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+.invert p > code, .invert li > code { border-bottom-color: #bbb; }
+
+/* ── keys ──────────────────────────────────────────────────────────────── */
+.keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 2rem; margin: 1.5rem 0 0; padding: 0; list-style: none; }
+.keys li { display: flex; gap: .85rem; align-items: baseline; padding: .55rem 0; border-top: 1px solid var(--rule); font-size: .82rem; }
+kbd { font-family: inherit; font-weight: 700; font-size: .78rem; border: 1px solid var(--rule); padding: .1rem .4rem;
+  min-width: 2.1rem; text-align: center; letter-spacing: 0; flex: none; }
+
+/* ── close ─────────────────────────────────────────────────────────────── */
+footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
+.foot { display: flex; flex-wrap: wrap; gap: 2rem 3rem; justify-content: space-between; align-items: flex-end; }
+.foot p { font-size: .78rem; color: var(--ink); max-width: 46ch; margin: 0; }
+.foot a { text-decoration: none; border-bottom: 1px solid var(--rule); }
+.foot a:hover, .foot a:focus-visible { border-bottom-color: var(--ink); color: var(--ink); }
+
+/* ── adapt: columns thin and drop from the edges ───────────────────────── */
+@media (max-width: 1180px) { :root { --rail: 10.5rem; } .rail { font-size: .62rem; } }
+
+@media (max-width: 980px) {
+  .hero { grid-template-columns: minmax(0, 1fr); min-height: auto; }
+  .rail--l { display: none; }
+  .rail--r {
+    border-left: 0; border-top: 1px solid var(--rule); text-align: left;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; padding: 1.25rem var(--gutter);
+  }
+  .rail--r .row { margin-bottom: 0; }
+  .rail--r .ids { display: none; }
+  .hero__body { padding: 6rem var(--gutter) 2.5rem; min-height: 74svh; }
+  .split { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 620px) {
+  body { font-size: 14px; }
+  .rail--r { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .steps > li { grid-template-columns: minmax(0, 1fr); gap: .35rem; }
+  /* four columns cannot survive 390px, so the ledger stacks into labelled
+     pairs rather than fracturing every word down the middle */
+  .ledger { font-size: .82rem; min-width: 0; }
+  .ledger thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ledger tbody tr { display: block; border-top: 1px solid var(--rule); padding: 1rem 0 .35rem; }
+  .ledger tbody tr:first-child { border-top: 0; }
+  .ledger tbody th, .ledger tbody td { display: block; border: 0; padding: 0 0 .55rem; white-space: normal; }
+  .ledger tbody th { font-size: 1rem; padding-bottom: .5rem; }
+  .ledger td[data-label]::before {
+    content: attr(data-label);
+    display: block; font-size: .62rem; letter-spacing: .17em; text-transform: uppercase;
+    color: var(--ink); margin-bottom: .15rem;
+  }
+  .node__bd { padding: .9rem .65rem 1rem; }
+  .node__hd { padding: .55rem .65rem; }
+  pre { padding: .8rem .7rem; font-size: .68rem; }
+  .ledger .meter { display: block; margin: .3rem 0 .1rem; width: 92px; }
+  .cmd { display: block; min-width: 0; }
+  pre .c { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<!--
+  THESIS: Scale makes the argument — 10,833 members as one hairline field, the
+  flagged few the only marks that break it. Refuses the dark-hero-plus-terminal-
+  mockup tool page.
+  OWN-WORLD: Pure black and white, no grey fills; tone comes only from bar
+  density. One mono (Azeret) at data density in tabular columns. Reading
+  passages are full-frame inversions, black on white. Rules are bar-fields.
+  STORY: This checks every member and tells you honestly how many it missed;
+  automating a user account risks that account; a bot avoids the risk.
+  FIRST VIEWPORT: Full-bleed seeded barcode canvas; id rail left, scan readout
+  right; "Check everyone." set large centre-left with the primary action beneath.
+  FORM: Datamatics (Ikeda) — user-chosen over assigned index 4; seed dbcf7f95.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="hero">
+  <canvas id="field" aria-hidden="true"></canvas>
+
+  <div class="rail rail--l" aria-hidden="true">
+    <div class="label">Member ids</div>
+    <div class="ids" id="ids"></div>
+  </div>
+
+  <div class="hero__body">
+    <div class="hero__mark">rotector-selfbot</div>
+    <h1>Check everyone.<span class="thin">Then read the number<br>that says who you missed.</span></h1>
+    <p class="lead">A terminal scanner that lists your Discord servers, friends, friend
+      requests and group DMs, reads the members of whichever you pick, and checks
+      every one against the <a href="https://rotector.com">Rotector</a> database —
+      surfacing accounts with detected violations before you interact, not after.</p>
+    <div class="actions">
+      <a class="btn" href="#setup"><span class="tick" aria-hidden="true"></span>Get it running<span class="tick" aria-hidden="true"></span></a>
+      <a class="btn btn--quiet" href="https://github.com/mireyacs/rotector-selfbot">Source</a>
+    </div>
+  </div>
+
+  <div class="rail rail--r">
+    <div class="row">
+      <div class="label">Example scan &mdash; members read</div>
+      <b>10,833</b>
+    </div>
+    <div class="row">
+      <div class="label">Findings</div>
+      <b>14</b>
+    </div>
+    <div class="row">
+      <div class="label">Coverage</div>
+      <b>stated</b>
+      <div class="routes">as a fraction,<br>never a checkmark</div>
+    </div>
+    <div class="row">
+      <div class="label">Routes unioned</div>
+      <div class="routes">Sidebar windows<br>Full-member request<br>Name search<br>Public widget</div>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- what it is ------------------------------------------------------- -->
+  <section>
+    <div class="wrap split">
+      <div class="stack">
+        <h2>A server of ten thousand has a handful that matter.</h2>
+        <p>Findings only, by default. Every member is checked; the table lists the
+          ones a human needs to look at, with the flag type, the category, the linked
+          Roblox accounts and the full reasons underneath.</p>
+        <p>Servers are not the only thing you can point it at. Friends, incoming
+          friend requests and group DMs all scan the same way, and those arrive
+          complete in a single request: no sidebar, no coverage question.</p>
+      </div>
+      <figure>
+        <img src="screenshots/results.svg" alt="The scanner's results table: members listed with verdict, flag type, category and linked Roblox accounts, with a detail pane below." loading="lazy" decoding="async">
+        <figcaption>The results table. Colour appears on this page only inside the
+          program's own screenshots.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- coverage --------------------------------------------------------- -->
+  <section>
+    <div class="wrap">
+      <h2>The number that says who you missed.</h2>
+      <div class="split" style="margin-top:2rem">
+        <div class="stack">
+          <p>A member the sidebar never shows is a member never checked. Discord only
+            hands a user account the full member list when it holds <b>kick</b>,
+            <b>ban</b> or <b>manage roles</b> in that server. Without those, offline
+            members of a large server are unreachable. Not slow. Unreachable.</p>
+          <p>So the scan pursues them through several independent routes: a privileged
+            full-member request, member-list windows unioned across every channel@everyone can see, an adaptive name search that
+            deepens only where results come back saturated, and the public widget as a
+            name source.</p>
+          <p><b>Whatever is still missing is reported as a fraction with the reason.</b>
+            Not a checkmark, not a spinner that stops. A scan that reached 94% says 94%.</p>
+        </div>
+        <div class="stack">
+          <figure>
+            <img src="screenshots/sources.svg" alt="The sources pane: servers, friends, requests and group DMs in collapsible groups." loading="lazy" decoding="async">
+            <figcaption>Sources, grouped and collapsible.</figcaption>
+          </figure>
+          <p style="font-size:.82rem"><b>A bot token removes the limit entirely.</b> With
+            the Server Members Intent it is handed every member of the servers it was
+            invited to, offline included, whatever permissions it holds. It cannot see
+            friends or DMs, so that trade is yours to make. The tool takes whichever
+            token you give it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- the warning: full-frame inversion --------------------------------- -->
+  <section class="invert">
+    <div class="wrap">
+      <hr class="bars">
+      <div class="warn__head" style="margin-top:1.75rem">
+        <h2>Read this before you install it.</h2>
+      </div>
+      <div class="split">
+        <div class="stack">
+          <p><b>Automating a user account is against Discord's Terms of Service</b>,
+            whatever the account is used for. Discord does not carve out an exception
+            for safety tooling, and accounts caught driving the API this way get
+            disabled.</p>
+          <p>This tool only ever <i>reads</i>. It lists servers, reads the member
+            sidebar, and looks ids up. That is still automation of a user account, and
+            the risk of losing the account is real and entirely yours.</p>
+          <p>If you have the option, <b>a regular bot with the <code>GUILD_MEMBERS</code>
+            intent does the same job with no ToS problem.</b> The Rotector half of the
+            codebase works unchanged either way.</p>
+        </div>
+        <div class="stack">
+          <p><b>A verdict is not a background check.</b> <code>NO DETECTIONS</code> means
+            Rotector has not flagged the account <i>yet</i>. It is not a clean bill of
+            health, and Rotector's own terms forbid presenting it as "safe".</p>
+          <p>Only <code>THREAT</code>, meaning flag types <i>Flagged</i> and <i>Confirmed</i>,
+            is documented as safe to act on automatically. Everything below that is
+            information for a person to weigh, and the tool treats it that way.</p>
+        </div>
+      </div>
+      <hr class="bars" style="margin-top:2.5rem">
+    </div>
+  </section>
+
+  <!-- verdict ledger ---------------------------------------------------- -->
+  <section>
+    <div class="wrap">
+      <h2>Five tiers, and what each one permits.</h2>
+      <p style="margin-top:1.25rem">The strength of the evidence decides how hard the
+        tool makes it to act. Nothing here is a conclusion the database did not reach.</p>
+      <div class="indexed" style="margin-top:1.75rem">
+      <div class="index" aria-hidden="true" data-index="5"></div>
+      <div class="node">
+        <div class="node__hd"><span class="label">Verdict ledger</span><span class="chip"></span></div>
+        <div class="node__bd">
+      <div class="tablewrap">
+      <table class="ledger" style="margin-top:0">
+        <caption>Rotector flag types, as this tool grades them</caption>
+        <thead>
+          <tr>
+            <th scope="col">Verdict</th>
+            <th scope="col">Flag types</th>
+            <th scope="col">Evidence</th>
+            <th scope="col">What it permits</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">THREAT</th>
+            <td data-label="Flag types">Flagged, Confirmed</td>
+            <td data-label="Evidence"><span class="meter m4" aria-hidden="true"></span>Detected violations</td>
+            <td data-label="What it permits">Acts on one confirmation. The only tier Rotector documents as safe to action.</td>
+          </tr>
+          <tr>
+            <th scope="row">CAUTION</th>
+            <td data-label="Flag types">Provisional, Mixed</td>
+            <td data-label="Evidence"><span class="meter m3" aria-hidden="true"></span>Signal, not proof</td>
+            <td data-label="What it permits">Permitted, but takes a second confirmation: tick the acknowledgement <b>and</b> type the action word.</td>
+          </tr>
+          <tr>
+            <th scope="row">INFO</th>
+            <td data-label="Flag types">Queued, Past Offender, Redacted</td>
+            <td data-label="Evidence"><span class="meter m2" aria-hidden="true"></span>Informational</td>
+            <td data-label="What it permits">Blocked unless deliberately overridden. Not an accusation.</td>
+          </tr>
+          <tr>
+            <th scope="row">NO DETECTIONS</th>
+            <td data-label="Flag types">Unflagged</td>
+            <td data-label="Evidence"><span class="meter m1" aria-hidden="true"></span>Nothing detected yet</td>
+            <td data-label="What it permits">Blocked. Never shown as "safe": acting on it is acting on nothing.</td>
+          </tr>
+          <tr>
+            <th scope="row">UNKNOWN</th>
+            <td data-label="Flag types">—</td>
+            <td data-label="Evidence"><span class="meter m0" aria-hidden="true"></span>No linked account</td>
+            <td data-label="What it permits">Blocked. Rotector knows of no Roblox account for this user.</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+        </div>
+      </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- acting ------------------------------------------------------------ -->
+  <section>
+    <div class="wrap split">
+      <div class="stack">
+        <h2>Acting on a finding, one or fifty.</h2>
+        <p>What the keys mean depends on where you are: kick and ban in a server,
+          remove friend and block on your friends list, decline on a request, remove
+          from group in a group DM.</p>
+        <p>Bulk runs are the least recoverable thing here, so they are the hardest to
+          start. Ineligible members are named and excluded rather than swept along;
+          you type the exact target count by hand; the run is paced rather than
+          parallel and stops on a keypress; and whatever Discord refuses is reported
+          per member instead of stranding the rest.</p>
+        <p>Every reason written to the audit log carries attribution and an appeal
+          route, because Rotector's terms require that anyone actioned on their data
+          can contest it. With a bot token the person can also be told before the
+          action, while a DM can still reach them.</p>
+      </div>
+      <div class="stack">
+        <ul class="keys">
+          <li><kbd>s</kbd><span>Scan the selected source</span></li>
+          <li><kbd>f</kbd><span>Cycle the filter</span></li>
+          <li><kbd>/</kbd><span>Search by name or id</span></li>
+          <li><kbd>e</kbd><span>Export — CSV, TXT, PNG, HTML</span></li>
+          <li><kbd>k</kbd><span>Kick / remove friend</span></li>
+          <li><kbd>b</kbd><span>Ban / block</span></li>
+          <li><kbd>␣</kbd><span>Tick for a bulk action</span></li>
+          <li><kbd>B</kbd><span>Run one action against many</span></li>
+          <li><kbd>x</kbd><span>Stop a scan or a bulk run</span></li>
+          <li><kbd>^p</kbd><span>Command palette</span></li>
+        </ul>
+        <p style="font-size:.82rem">Every command is reachable
+          twice, by key and by searchable palette, so a clipped footer never hides
+          functionality.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- setup: inverted reading passage ----------------------------------- -->
+  <section class="invert" id="setup">
+    <div class="wrap">
+      <h2>Get it running.</h2>
+      <svg class="wave" viewBox="0 0 1200 46" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 30 C 150 4, 300 4, 450 26 S 750 46, 900 20 S 1100 6, 1200 16"/>
+      </svg>
+      <div class="indexed" style="margin-top:1.5rem">
+      <div class="index" aria-hidden="true" data-index="3"></div>
+      <div class="node">
+        <div class="node__hd"><span class="label">Setup</span><span class="chip"></span></div>
+        <div class="node__bd">
+      <ol class="steps">
+        <li>
+          <div>
+            <h3>Install</h3>
+            <p style="margin-top:.4rem">Python 3.11 or newer, because it reads its config with
+              <code>tomllib</code>. Nothing is installed globally.</p>
+<pre><code>python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt</code></pre>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Configure</h3>
+            <p style="margin-top:.4rem">Copy the example and put a token in it, or set
+              <code>DISCORD_TOKEN</code> / <code>DISCORD_BOT_TOKEN</code> in the
+              environment. <code>config.toml</code> is gitignored; the token is a
+              full-access credential, so treat it like a password.</p>
+<pre><code>cp config.example.toml config.toml</code></pre>
+            <p style="margin-top:.9rem">A Rotector API key is optional. Without one you
+              get the standard rate limit, which is enough for normal use. Set both a
+              user and a bot token and the user token wins, because it can reach
+              strictly more.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Run</h3>
+<pre><code><span class="cmd">./.venv/bin/python -m rsb</span><span class="c"># the scanner</span>
+<span class="cmd">./.venv/bin/python -m rsb proxies</span><span class="c"># the proxy tester</span></code></pre>
+            <p style="margin-top:.9rem">First run opens a setup wizard; after that,
+              every setting is editable in-app with <code>ctrl+s</code>. Upgrading from
+              an older version, <code>python -m rsb migrate</code> appends whatever
+              settings are new and leaves your values and comments alone.</p>
+          </div>
+        </li>
+      </ol>
+        </div>
+      </div>
+      </div>
+      <hr class="bars" style="margin-top:2.5rem">
+    </div>
+  </section>
+
+  <!-- rate limits ------------------------------------------------------- -->
+  <section>
+    <div class="wrap split">
+      <div class="stack">
+        <h2>Inside the window, not around it.</h2>
+        <p>Rotector allows 50 requests per 10 seconds per IP. The scanner holds a
+          reserve, tracks the returned headers, and waits rather than gambling.
+          Measured across live runs at zero rate-limit rejections.</p>
+        <p>Proxies are supported for the throughput they genuinely add, and the tester
+          checks each against the real API to show which actually bring their own
+          budget and which only look like they do. Rotating IPs to defeat the limit is
+          not what they are for; their terms forbid it, and so does this tool.</p>
+      </div>
+      <figure>
+        <img src="screenshots/proxies.svg" alt="The proxy tester, showing each proxy's measured latency and whether it carries its own rate budget." loading="lazy" decoding="async">
+        <figcaption>The proxy tester, run against the Rotector API itself.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <hr class="bars">
+    <div class="foot" style="margin-top:2rem">
+      <div>
+        <div class="label" style="margin-bottom:.6rem">rotector-selfbot</div>
+        <p>Detection data belongs to <a href="https://rotector.com">Rotector</a>, whose
+          terms this tool follows: nothing retained past 24 hours, attribution and an
+          appeal route on every action, and <code>Unflagged</code> never presented as
+          safe.</p>
+      </div>
+      <div>
+        <div class="label" style="margin-bottom:.6rem">Elsewhere</div>
+        <p style="line-height:2">
+          <a href="https://github.com/mireyacs/rotector-selfbot">Source and full README</a><br>
+          <a href="https://rotector.com">rotector.com</a><br>
+          <a href="https://roscoe.rotector.com/docs">API documentation</a>
+        </p>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var canvas = document.getElementById('field');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d', { alpha: false });
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  // Seeded so the field is the same wall every visit rather than noise that
+  // happens to look different each load.
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  var MEMBERS = 10833;   // the README's real server
+  var FINDINGS = 14;     // the handful that break the field
+  var bars = [], marks = [], w = 0, h = 0, dpr = 1, raf = null, t0 = null;
+  // where the stacked readout starts on narrow screens; the field stops above
+  // it rather than running its marks behind the figures
+  var floorY = null, ceilY = null;
+
+  function build() {
+    var rand = mulberry32(0x5EED);
+    bars = [];
+    // one bar per ~14 members, so the wall is the population, not decoration
+    var count = Math.max(120, Math.round(MEMBERS / 14));
+    for (var i = 0; i < count; i++) {
+      var x = i / count;
+      // Density envelope: the wall is dense at the edges and thins through the
+      // middle, where the reading sits. The field has to be felt, not fought.
+      var env = Math.pow(Math.abs(x - 0.5) * 2, 1.5);
+      bars.push({
+        x: x,
+        w: rand() < 0.14 ? 2 : 1,
+        a: (0.03 + Math.pow(rand(), 2.4) * 0.26) * (0.16 + env * 0.84)
+      });
+    }
+    marks = [];
+    var mrand = mulberry32(0xF1A6);
+    for (var j = 0; j < FINDINGS; j++) {
+      marks.push({ x: 0.04 + mrand() * 0.92, phase: mrand() });
+    }
+    marks.sort(function (a, b) { return a.x - b.x; });
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var r = canvas.getBoundingClientRect();
+    w = Math.max(1, Math.round(r.width));
+    h = Math.max(1, Math.round(r.height));
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var readout = document.querySelector('.rail--r');
+    floorY = (w <= 980 && readout && readout.offsetTop > 0) ? readout.offsetTop : null;
+    // on narrow screens the marks go in the clear band between the actions and
+    // the readout, so nothing the visitor reads or clicks is struck through
+    var acts = document.querySelector('.actions');
+    ceilY = (w <= 980 && acts) ? acts.offsetTop + acts.offsetHeight + 22 : null;
+    draw(reduce.matches ? 1 : 0);
+  }
+
+  // One authored moment: a single scan pass sweeps the field once on load and
+  // leaves the findings standing. No looping strobe, nothing on hover.
+  function draw(p) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+
+    var top = h * 0.06;
+    var bot = floorY ? Math.min(h * 0.94, floorY - 16) : h * 0.94;
+    var span = bot - top;
+    // Narrow viewports stack the type over the whole field rather than beside
+    // it, so the wall drops in weight and the findings move below the reading.
+    var narrow = w <= 980;
+    var ceiling = narrow ? 0.34 : 1;
+    var markTop = narrow ? (ceilY || top + span * 0.66) : top;
+    var markRoom = bot - markTop;
+
+    for (var i = 0; i < bars.length; i++) {
+      var b = bars[i], x = Math.round(b.x * w) + 0.5;
+      var lit = b.x <= p;
+      ctx.globalAlpha = (lit ? b.a : b.a * 0.22) * ceiling;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x, top, b.w, span);
+    }
+
+    // the sine trace: one continuous curve across the wall
+    ctx.globalAlpha = 0.34;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    var mid = narrow ? h * 0.84 : h * 0.66, amp = Math.min(h * (narrow ? 0.08 : 0.17), 130);
+    for (var sx = 0; sx <= w * p; sx += 2) {
+      var y = mid + Math.sin((sx / w) * Math.PI * 1.6 + 0.4) * amp;
+      if (sx === 0) ctx.moveTo(sx, y); else ctx.lineTo(sx, y);
+    }
+    ctx.stroke();
+
+    // findings: the only marks that break the field
+    for (var m = 0; m < marks.length; m++) {
+      var mk = marks[m];
+      if (mk.x > p) continue;
+      var mxr = Math.round(mk.x * w) + 0.5;
+      ctx.globalAlpha = (0.5 + 0.5 * Math.pow(Math.abs(mk.x - 0.5) * 2, 1.2)) * (narrow ? 0.85 : 1);
+      ctx.fillStyle = '#fff';
+      if (narrow && markRoom < 70) continue;
+      ctx.fillRect(mxr - 1, markTop, 2, markRoom);
+      ctx.globalAlpha = 1;
+      var my = markTop + markRoom * (0.18 + mk.phase * 0.64);
+      ctx.fillRect(mxr - 4, Math.round(my), 9, 9);
+      ctx.globalAlpha = 0.28;
+      ctx.fillRect(mxr - 14, Math.round(my) + 4, 29, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function step(ts) {
+    if (t0 === null) t0 = ts;
+    var p = Math.min(1, (ts - t0) / 2200);
+    // exponential ease-out from an already-visible default
+    draw(1 - Math.pow(1 - p, 3));
+    if (p < 1) raf = requestAnimationFrame(step);
+  }
+
+  build();
+  resize();
+  if (!reduce.matches) { t0 = null; raf = requestAnimationFrame(step); }
+
+  var rt;
+  window.addEventListener('resize', function () {
+    clearTimeout(rt);
+    rt = setTimeout(resize, 120);
+  }, { passive: true });
+
+  reduce.addEventListener('change', function () {
+    if (raf) cancelAnimationFrame(raf);
+    if (reduce.matches) { draw(1); } else { t0 = null; raf = requestAnimationFrame(step); }
+  });
+
+  // rails: real-shaped id and readout texture, never mistaken for content
+  var idr = mulberry32(0xC0DE), lines = [];
+  for (var k = 0; k < 34; k++) {
+    var s = '';
+    for (var d = 0; d < 18; d++) s += Math.floor(idr() * 10);
+    lines.push(s.slice(0, 18));
+  }
+  var cols = document.querySelectorAll('.index');
+  for (var ci = 0; ci < cols.length; ci++) {
+    var cr = mulberry32(0x1D0 + ci * 977), rows = [];
+    var n = Number(cols[ci].getAttribute('data-index')) || 5;
+    for (var cj = 0; cj < n * 4; cj++) {
+      var v = '';
+      for (var cd = 0; cd < 6; cd++) v += Math.floor(cr() * 10);
+      rows.push(v);
+    }
+    cols[ci].textContent = rows.join('\n');
+  }
+
+  var idsEl = document.getElementById('ids');
+  if (idsEl) idsEl.textContent = lines.join('\n');
+
+  // The routes are real; per-route coverage figures are not measured, so none
+  // are shown. Inventing a number here would undercut the one claim the page
+  // is built on.
+})();
+</script>
+</body>
+</html>
