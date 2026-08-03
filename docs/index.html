@@ -562,10 +562,10 @@ html:not(.motion) .motion-toggle .state {
 
 /* ── the music player ──────────────────────────────────────────────────── */
 /* Sits beside the motion control and behaves like it: a hairline chip that
-   inverts with the band under it. Collapsed to a single button until asked,
-   because a player nobody opened should cost a row of pixels, not a panel.
-   Never autoplays -- browsers block it, and sound a visitor did not ask for
-   is the rudest thing a page can do. */
+   inverts with the band under it. Collapsed until asked, because a player
+   nobody opened should cost a row of pixels rather than a panel. Never
+   autoplays -- browsers block it, and sound a visitor did not ask for is the
+   rudest thing a page can do. */
 .dock {
   position: fixed;
   right: max(1rem, env(safe-area-inset-right));
@@ -579,21 +579,78 @@ html:not(.motion) .motion-toggle .state {
 .dock .motion-toggle { position: static; right: auto; bottom: auto; }
 
 .player { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+
+/* Opens by unrolling. grid-template-rows animates where height: auto cannot,
+   so the panel grows to whatever the track title needs without a magic pixel
+   number that a two-line name would overflow. */
+.player__slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows .34s cubic-bezier(.16, 1, .3, 1),
+              opacity .2s linear;
+  opacity: 0;
+}
+.player.open .player__slot { grid-template-rows: 1fr; opacity: 1; }
+.player__clip { overflow: hidden; min-height: 0; }
+
 .player__body {
-  display: none;
+  position: relative;
   border: 1px solid var(--ink);
   border-bottom: 0;
   background: var(--ground);
   padding: .7rem .8rem;
-  max-width: 19rem;
+  width: 19rem;
+  max-width: 60vw;
 }
-.player.open .player__body { display: block; }
-.player.on-light .player__body { background: var(--ink); color: var(--ground); border-color: var(--ground); }
+.player.on-light .player__body {
+  background: var(--ink); color: var(--ground); border-color: var(--ground);
+}
 
-.player__now { font-size: .68rem; letter-spacing: .02em; line-height: 1.5; word-break: break-word; }
-.player__meta { font-size: .62rem; letter-spacing: .17em; text-transform: uppercase; color: var(--texture-1); margin-top: .35rem; }
-.player.on-light .player__meta { color: #6a6a6a; }
+/* the field sits *behind* everything in the panel, which is the point: the
+   title is read off the music rather than beside it */
+.player__field {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 0;
+}
+.player__body > *:not(.player__field) { position: relative; z-index: 1; }
+
+/* legibility over a live field without an opaque plate, the way the hero
+   rails manage it */
+.player__now {
+  font-size: .68rem; letter-spacing: .02em; line-height: 1.5;
+  word-break: break-word; text-shadow: 0 0 6px var(--ground), 0 0 2px var(--ground);
+}
+.player.on-light .player__now { text-shadow: 0 0 6px var(--ink), 0 0 2px var(--ink); }
+.player__meta {
+  font-size: .62rem; letter-spacing: .17em; text-transform: uppercase;
+  color: var(--texture-1); margin-top: .35rem;
+  text-shadow: 0 0 6px var(--ground), 0 0 2px var(--ground);
+}
+.player.on-light .player__meta { color: #6a6a6a; text-shadow: 0 0 6px var(--ink); }
 .player__meta a { color: inherit; }
+
+/* the scrub bar: the page's own rule, filled to the position */
+.player__seek {
+  margin-top: .6rem; height: 12px; cursor: pointer; position: relative;
+  border: 0; padding: 0; background: transparent; width: 100%; display: block;
+}
+.player__seek .rail { position: absolute; inset: 5px 0 5px 0; background: var(--texture-2); }
+.player.on-light .player__seek .rail { background: #c4c4c4; }
+.player__seek .fill { position: absolute; inset: 5px auto 5px 0; background: var(--ink); }
+.player.on-light .player__seek .fill { background: var(--ground); }
+.player__seek .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); }
+.player.on-light .player__seek .head { background: var(--ground); }
+
+.player__time {
+  display: flex; justify-content: space-between;
+  font-size: .62rem; letter-spacing: .12em; margin-top: .25rem;
+  color: var(--texture-1);
+}
+.player.on-light .player__time { color: #6a6a6a; }
 
 .player__row { display: flex; gap: .4rem; margin-top: .6rem; }
 .player__row button {
@@ -606,8 +663,9 @@ html:not(.motion) .motion-toggle .state {
 .player.on-light .player__row button { border-color: #c4c4c4; }
 .player__row button:hover { background: var(--ink); color: var(--ground); }
 .player.on-light .player__row button:hover { background: var(--ground); color: var(--ink); }
+.player__row button[disabled] { opacity: .4; cursor: default; }
 
-@media (max-width: 620px) { .player__body { max-width: 12rem; } }
+@media (max-width: 620px) { .player__body { width: 14rem; } }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
@@ -1433,10 +1491,16 @@ cd rotector-selfbot</code></pre>
 
 /* ── the music player ──────────────────────────────────────────────────── */
 (function () {
-  /* Reads the same index.json the terminal app does, off the same orphan
-     branch, so there is one library and not two. Nothing is bundled with this
-     page: the manifest is a few hundred bytes and a track is only fetched once
+  /* Reads the same index.json the terminal app does, off the same repository,
+     so there is one library and not two. Nothing is bundled with this page:
+     the manifest is a few hundred bytes and a track is only fetched once
      somebody presses play.
+
+     The field behind the panel is driven by the envelope tools/peaks.py
+     measured and shipped beside the audio -- the same ~2 KB file the terminal
+     player reads. An AnalyserNode would give live spectrum for free, but then
+     the two surfaces would be showing different things from different sources,
+     and this way the picture is the same picture.
 
      It never autoplays. Browsers block it anyway, and unrequested sound is the
      rudest thing a page can do. */
@@ -1454,29 +1518,54 @@ cd rotector-selfbot</code></pre>
   var player = document.createElement('div');
   player.className = 'player';
   player.innerHTML =
-    '<div class="player__body">' +
-      '<div class="player__now">Loading the library\u2026</div>' +
-      '<div class="player__meta"></div>' +
-      '<div class="player__row">' +
-        '<button type="button" data-act="play">Play</button>' +
-        '<button type="button" data-act="next">Next</button>' +
+    '<div class="player__slot"><div class="player__clip">' +
+      '<div class="player__body">' +
+        '<canvas class="player__field" aria-hidden="true"></canvas>' +
+        '<div class="player__now">Loading the library…</div>' +
+        '<div class="player__meta"></div>' +
+        '<button type="button" class="player__seek" aria-label="Seek">' +
+          '<span class="rail"></span><span class="fill"></span><span class="head"></span>' +
+        '</button>' +
+        '<div class="player__time"><span class="at">0:00</span>' +
+          '<span class="of">--:--</span></div>' +
+        '<div class="player__row">' +
+          '<button type="button" data-act="prev">Prev</button>' +
+          '<button type="button" data-act="play">Play</button>' +
+          '<button type="button" data-act="next">Next</button>' +
+        '</div>' +
       '</div>' +
-    '</div>' +
+    '</div></div>' +
     '<button type="button" class="motion-toggle" data-act="open" ' +
       'aria-expanded="false">' +
       '<span class="state" aria-hidden="true"></span><span>Music</span></button>';
   dock.insertBefore(player, dock.firstChild);
 
   var body = player.querySelector('.player__body');
+  var canvas = player.querySelector('.player__field');
   var now = player.querySelector('.player__now');
   var meta = player.querySelector('.player__meta');
+  var seek = player.querySelector('.player__seek');
+  var fill = seek.querySelector('.fill');
+  var head = seek.querySelector('.head');
+  var atEl = player.querySelector('.player__time .at');
+  var ofEl = player.querySelector('.player__time .of');
   var openBtn = player.querySelector('[data-act="open"]');
+  var prevBtn = player.querySelector('[data-act="prev"]');
   var playBtn = player.querySelector('[data-act="play"]');
   var nextBtn = player.querySelector('[data-act="next"]');
 
   var audio = new Audio();
   audio.preload = 'none';
+  audio.crossOrigin = 'anonymous';
   var tracks = [], order = [], at = 0, loaded = false;
+  var envelope = null;          // {fps, levels, values} for the current track
+  var raf = null;
+
+  function clock(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '--:--';
+    var m = Math.floor(seconds / 60), s = Math.floor(seconds % 60);
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
 
   function shuffle(list) {
     for (var i = list.length - 1; i > 0; i--) {
@@ -1488,13 +1577,13 @@ cd rotector-selfbot</code></pre>
 
   function showTrack(track) {
     if (!track) { now.textContent = 'Nothing playing.'; meta.textContent = ''; return; }
-    now.textContent = track.title + (track.artist ? ' \u2014 ' + track.artist : '');
+    now.textContent = track.title + (track.artist ? ' — ' + track.artist : '');
     // the licence is shown rather than filed away: royalty-free is not the
     // same as free of obligations, and most of these want attribution
     meta.textContent = '';
     if (track.license) meta.appendChild(document.createTextNode(track.license));
     if (track.source) {
-      if (track.license) meta.appendChild(document.createTextNode('  \u00b7  '));
+      if (track.license) meta.appendChild(document.createTextNode('  ·  '));
       var link = document.createElement('a');
       link.href = track.source; link.textContent = 'source';
       link.rel = 'noopener'; link.target = '_blank';
@@ -1502,6 +1591,96 @@ cd rotector-selfbot</code></pre>
     }
   }
 
+  /* ---- the envelope, unpacked from the shipped 4-bit packing ---------- */
+  function loadEnvelope(track) {
+    envelope = null;
+    var stem = track.file.replace(/\.[^.]+$/, '');
+    fetch(RAW + '/peaks/' + encodeURIComponent(stem) + '.json', { cache: 'force-cache' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (body) {
+        if (!body || !body.data) return;
+        var raw = atob(body.data);
+        var values = new Uint8Array(raw.length * 2);
+        for (var i = 0; i < raw.length; i++) {
+          var byte = raw.charCodeAt(i);
+          values[i * 2] = byte >> 4;
+          values[i * 2 + 1] = byte & 15;
+        }
+        if (body.frames && body.frames <= values.length) {
+          values = values.subarray(0, body.frames);
+        }
+        envelope = { fps: body.fps || 20, levels: body.levels || 16, values: values };
+      })
+      .catch(function () { /* the picture is the least important thing here */ });
+  }
+
+  function level(seconds) {
+    if (!envelope || !envelope.values.length) return 0;
+    var i = Math.round(seconds * envelope.fps);
+    if (i < 0) i = 0;
+    if (i >= envelope.values.length) i = envelope.values.length - 1;
+    return envelope.values[i] / (envelope.levels - 1);
+  }
+
+  /* ---- the field ------------------------------------------------------ */
+  // The page's own divider: a fixed 24px period with bars at 0, 3, 9-10, 14
+  // and 21. Which columns are bars never changes; how bright they are is the
+  // audio. A barcode being lit, not a chart drawn in bars.
+  var PERIOD = 24, BARS = [[0, 1], [3, 1], [9, 2], [14, 1], [21, 1]];
+  var SPAN = 8;                 // seconds the field covers, left to right
+
+  function paint() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = body.clientWidth, h = body.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== Math.round(w * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var light = player.classList.contains('on-light');
+    var ink = light ? '0,0,0' : '255,255,255';
+    var position = audio.currentTime || 0;
+
+    for (var x = 0; x < w; x += PERIOD) {
+      for (var b = 0; b < BARS.length; b++) {
+        var px = x + BARS[b][0];
+        if (px >= w) continue;
+        // the left edge is SPAN seconds ago, the right edge is now
+        var when = position - (1 - px / w) * SPAN;
+        var alpha = 0.06 + level(when) * 0.34;
+        ctx.fillStyle = 'rgba(' + ink + ',' + alpha.toFixed(3) + ')';
+        ctx.fillRect(px, 0, BARS[b][1], h);
+      }
+    }
+  }
+
+  function frame() {
+    paint();
+    var duration = audio.duration;
+    if (isFinite(duration) && duration > 0) {
+      var pct = Math.max(0, Math.min(1, (audio.currentTime || 0) / duration));
+      fill.style.width = (pct * 100) + '%';
+      head.style.left = (pct * 100) + '%';
+      ofEl.textContent = clock(duration);
+    } else {
+      fill.style.width = '0%';
+      head.style.left = '0%';
+      ofEl.textContent = '--:--';
+    }
+    atEl.textContent = clock(audio.currentTime || 0);
+    raf = player.classList.contains('open') ? requestAnimationFrame(frame) : null;
+  }
+
+  function running(on) {
+    if (on && raf === null) raf = requestAnimationFrame(frame);
+    if (!on && raf !== null) { cancelAnimationFrame(raf); raf = null; }
+  }
+
+  /* ---- the library ---------------------------------------------------- */
   function load() {
     if (loaded) return Promise.resolve();
     loaded = true;
@@ -1513,16 +1692,16 @@ cd rotector-selfbot</code></pre>
         });
         order = shuffle(tracks.map(function (_, i) { return i; }));
         if (!tracks.length) {
-          now.textContent = 'No tracks on the music branch yet.';
+          now.textContent = 'No tracks in the library yet.';
           meta.textContent = '';
-          playBtn.disabled = nextBtn.disabled = true;
+          prevBtn.disabled = playBtn.disabled = nextBtn.disabled = true;
           return;
         }
         showTrack(tracks[order[0]]);
       })
       .catch(function (err) {
         loaded = false;
-        now.textContent = 'Could not reach the music branch.';
+        now.textContent = 'Could not reach the music library.';
         meta.textContent = String(err.message || err);
       });
   }
@@ -1532,15 +1711,18 @@ cd rotector-selfbot</code></pre>
     at = ((index % order.length) + order.length) % order.length;
     var track = tracks[order[at]];
     showTrack(track);
+    loadEnvelope(track);
     audio.src = RAW + '/tracks/' + encodeURIComponent(track.file);
     audio.play().then(function () { playBtn.textContent = 'Pause'; })
       .catch(function () { playBtn.textContent = 'Play'; });
   }
 
+  /* ---- controls, matching the terminal player ------------------------- */
   openBtn.addEventListener('click', function () {
     var open = !player.classList.contains('open');
     player.classList.toggle('open', open);
     openBtn.setAttribute('aria-expanded', String(open));
+    running(open);
     if (open) load();
   });
 
@@ -1562,8 +1744,25 @@ cd rotector-selfbot</code></pre>
     load().then(function () { play(at + 1); });
   });
 
+  // the rule every player has: back near the start means the previous track,
+  // back any further in means "start this one again"
+  prevBtn.addEventListener('click', function () {
+    load().then(function () {
+      if ((audio.currentTime || 0) > 3) audio.currentTime = 0;
+      else play(at - 1);
+    });
+  });
+
+  seek.addEventListener('click', function (event) {
+    var duration = audio.duration;
+    if (!isFinite(duration) || duration <= 0) return;
+    var box = seek.getBoundingClientRect();
+    audio.currentTime = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * duration;
+  });
+
   audio.addEventListener('ended', function () { play(at + 1); });
   audio.addEventListener('pause', function () { playBtn.textContent = 'Play'; });
+  audio.addEventListener('play', function () { playBtn.textContent = 'Pause'; });
 
   showTrack(null);
 })();

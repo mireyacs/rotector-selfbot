@@ -157,6 +157,22 @@ for recording in sorted((ROOT / "docs" / "screenshots").glob("*.webp")):
 ok("no recording ships without the page showing it")
 
 
+# --- the music player -----------------------------------------------------
+for piece in ("player__slot", "player__clip", "player__field", "player__seek",
+              "player__time", 'data-act="prev"', 'data-act="next"'):
+    assert piece in HTML, f"the player is missing {piece}"
+# opened by unrolling: grid-template-rows animates where height: auto cannot,
+# so the panel fits whatever the track title needs
+assert "grid-template-rows: 0fr" in HTML and ".player.open .player__slot" in HTML
+assert "transition: grid-template-rows" in HTML
+ok("the player opens by unrolling, and carries prev / seek / next")
+
+# the field is behind the content, not beside it
+assert ".player__body > *:not(.player__field) { position: relative; z-index: 1; }" in HTML
+assert "'/peaks/'" in HTML, "the field must read the shipped envelope"
+assert "mireyacs/openlofi" in HTML, "one library, not two"
+ok("the barcode field sits behind the panel and reads the same envelope as the app")
+
 if NODE is None:
     print("[skip] node not installed -- page scripts not executed")
 else:
@@ -256,6 +272,16 @@ console.log(JSON.stringify({narrow, wide}));
             f"to its unlit 22% again"
         )
     ok("resizing redraws the finished field: 14 findings, the sine and the bars")
+
+    # --- the player is silent and lazy until asked ------------------------
+    # It must not autoplay -- browsers block it and unrequested sound is the
+    # rudest thing a page can do -- and must not fetch a 3 MB track, or even
+    # the manifest, for somebody who never opened it.
+    harness = 'const PAGE_PATH = "PAGEPATH";\nconst fs = require(\'fs\');\nconst html = fs.readFileSync(PAGE_PATH,\'utf8\');\nconst S = html.slice(html.lastIndexOf(\'<script>\')+8, html.lastIndexOf(\'</script>\'));\nconst block = S.slice(S.indexOf(\'/* ── the music player\'), S.indexOf(\'/* ── scrolling, and the bar\'));\n\nlet played = 0, fetched = [];\nconst listeners = {};\nfunction el(tag) {\n  const node = {\n    tag, className: \'\', innerHTML: \'\', textContent: \'\', style: {},\n    dataset: {}, attrs: {}, children: [], disabled: false,\n    classList: { _s: new Set(),\n      add(c){this._s.add(c);}, remove(c){this._s.delete(c);},\n      toggle(c,on){ on===undefined ? (this._s.has(c)?this._s.delete(c):this._s.add(c)) : (on?this._s.add(c):this._s.delete(c)); return this._s.has(c); },\n      contains(c){return this._s.has(c);} },\n    setAttribute(k,v){this.attrs[k]=v;}, getAttribute(k){return this.attrs[k];},\n    appendChild(c){this.children.push(c); return c;},\n    insertBefore(c){this.children.unshift(c); return c;},\n    addEventListener(n,f){ (this._l=this._l||{})[n]=f; },\n    querySelector(sel){ return el(\'stub\'); },\n    getBoundingClientRect(){ return {left:0,width:100,top:0,height:12}; },\n    getContext(){ return { setTransform(){}, clearRect(){}, fillRect(){}, fillStyle:\'\' }; },\n    get clientWidth(){ return 300; }, get clientHeight(){ return 140; },\n  };\n  return node;\n}\nglobal.window = { devicePixelRatio: 1, addEventListener(){} };\nglobal.document = { querySelector: () => null, createElement: el, body: el(\'body\') };\nglobal.Audio = function () {\n  const a = el(\'audio\');\n  a.paused = true; a.currentTime = 0; a.duration = NaN; a.src = \'\';\n  a.play = () => { played++; return Promise.resolve(); };\n  a.pause = () => {};\n  return a;\n};\nglobal.fetch = (url) => { fetched.push(url); return Promise.resolve({ok:false, status:404}); };\nglobal.requestAnimationFrame = () => 1;\nglobal.cancelAnimationFrame = () => {};\nglobal.atob = s => Buffer.from(s, \'base64\').toString(\'binary\');\nglobal.Uint8Array = Uint8Array;\n\neval(block);\n\n\nconsole.log(JSON.stringify({ played: played, fetched: fetched.length }));\n'.replace("PAGEPATH", str(PAGE))
+    lazy = _node(harness)
+    assert lazy["played"] == 0, "the player started audio on page load"
+    assert lazy["fetched"] == 0, "the player hit the network on page load"
+    ok("the player plays nothing and fetches nothing until it is opened")
 
     # --- the hero field cycles, and the example scan counts with it -------
     harness = 'const PAGE_PATH = "PAGEPATH";\nconst fs = require(\'fs\');\nconst html = fs.readFileSync(PAGE_PATH,\'utf8\');\nconst whole = html.slice(html.lastIndexOf(\'<script>\')+8, html.lastIndexOf(\'</script>\'));\nconst script = whole.slice(0, whole.indexOf(\'/* ── motion: the switch\'));\n\nlet motionOn = true;\nlet ops = { rects: [], pts: 0, alphas: [] };\nconst ctx = { fillStyle:\'\', strokeStyle:\'\', globalAlpha:1, lineWidth:1,\n  setTransform(){}, fillRect(x,y,w,h){ ops.rects.push({x,w,h,a:this.globalAlpha}); ops.alphas.push(this.globalAlpha); },\n  beginPath(){}, moveTo(){ ops.pts++; }, lineTo(){ ops.pts++; }, stroke(){} };\nconst canvas = { getContext:()=>ctx, width:0, height:0,\n                 getBoundingClientRect:()=>({width:1400, height:900}) };\nconst counters = { \'count-members\': {textContent:\'10,833\'}, \'count-findings\': {textContent:\'14\'} };\nconst L = {};\nglobal.window = { devicePixelRatio:1,\n  matchMedia:()=>({matches:false, addEventListener(){}}),\n  addEventListener:(n,f)=>{ (L[n]=L[n]||[]).push(f); },\n  dispatchEvent(e){ (L[e.type]||[]).forEach(f=>f(e)); } };\nglobal.location = { hash:\'\' };\nglobal.document = {\n  getElementById: id => (id===\'field\' ? canvas : counters[id] || null),\n  querySelector:()=>null, querySelectorAll:()=>[], addEventListener(){},\n  documentElement:{ className:\'\', classList:{ add(){}, toggle(){}, contains:()=>motionOn } } };\nlet rafFn = null;\nglobal.requestAnimationFrame = fn => { rafFn = fn; return 1; };\nglobal.cancelAnimationFrame = ()=>{};\nglobal.setTimeout = fn => 1; global.clearTimeout = ()=>{};\neval(script);\n\nfunction tick(ts) { const f = rafFn; rafFn = null; ops = {rects:[],pts:0,alphas:[]}; if (f) f(ts); }\nfunction stats(){ const findings = ops.rects.filter(r=>r.w===9&&r.h===9).length;\n  // ignore the opaque background clear at the top of draw(); the field is\n  // everything narrow enough to be a bar or a mark\n  const field = ops.rects.filter(r => r.w <= 30).map(r => r.a);\n  const maxA = field.length ? Math.max(...field) : 0;\n  return { findings, maxA: +maxA.toFixed(3), members: counters[\'count-members\'].textContent,\n           found: counters[\'count-findings\'].textContent }; }\n\n\nconst out = { settled: stats() };\nL[\'rsb:motion\'].forEach(f => f({type:\'rsb:motion\', detail:true}));\ntick(0);    out.sweepStart = stats();\ntick(1100); out.sweepMid   = stats();\ntick(2200); out.sweepEnd   = stats();\nconst markXs = () => ops.rects.filter(r=>r.w===9&&r.h===9).map(r=>r.x).sort((a,b)=>a-b).join(\',\');\nconst first = markXs();\ntick(4900);                      // hold elapses\ntick(5200); out.fadeEarly = stats();\ntick(5700); out.fadeLate  = stats();\ntick(5800); out.reseed    = stats();          // fade done: rebuild + reset\ntick(8000); out.secondPass = stats();\nout.wallChanged = markXs() !== first;\nops = {rects:[],pts:0,alphas:[]};\nmotionOn = false;\nL[\'rsb:motion\'].forEach(f => f({type:\'rsb:motion\', detail:false}));\nout.stopped = stats();\nconsole.log(JSON.stringify(out));\n'.replace("PAGEPATH", str(PAGE))
