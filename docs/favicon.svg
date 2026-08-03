@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <title>rotector-selfbot</title>
+  <rect width="16" height="16" fill="#000000"/>
+  <rect x="0" y="0" width="1" height="16" fill="#ffffff" opacity=".62"/>
+  <rect x="2" y="0" width="1" height="16" fill="#ffffff" opacity=".62"/>
+  <rect x="5" y="0" width="2" height="16" fill="#ffffff"/>
+  <rect x="9" y="0" width="1" height="16" fill="#ffffff" opacity=".62"/>
+  <rect x="11" y="0" width="1" height="16" fill="#ffffff" opacity=".62"/>
+  <rect x="14" y="0" width="1" height="16" fill="#ffffff" opacity=".62"/>
+</svg>

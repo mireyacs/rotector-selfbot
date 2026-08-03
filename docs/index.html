@@ -20,6 +20,12 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="A dense field of hairline bars on black, one for roughly every fourteen members of a 10,833-member scan, with fourteen findings marked. Set over it: Check everyone. Then read the number that says who you missed.">
 <meta name="twitter:card" content="summary_large_image">
+<!-- One period of the page's own bar-field rule, with the heavy bar standing in
+     for a finding. Drawn by tools/favicon.py; the SVG is preferred where it is
+     understood and the .ico carries 16/32/48 for everything else. -->
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@300;400;500;700;800&display=swap" rel="stylesheet">
@@ -347,6 +353,55 @@ code { font-family: inherit; font-size: .92em; }
 p > code, li > code, td > code { border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
 .invert p > code, .invert li > code { border-bottom-color: #bbb; }
 
+/* ── platform picker ───────────────────────────────────────────────────── */
+/* The commands genuinely differ by OS, so the page guesses once from the user
+   agent and then gets out of the way. The guess is a guess -- a spoofed agent,
+   a Linux box reporting as Windows, someone reading on a phone to set up a
+   server later -- so the three are always one click apart and the page says
+   which one it picked rather than pretending it knows. */
+.os {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0 0 1.1rem;
+  border: 1px solid var(--rule);
+  width: fit-content;
+}
+.invert .os { border-color: #c4c4c4; }
+.os button {
+  appearance: none;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  border-radius: 0;
+  padding: .6rem .95rem;
+  font: inherit;
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .19em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background .18s cubic-bezier(.16,1,.3,1), color .18s cubic-bezier(.16,1,.3,1);
+}
+.invert .os button { border-right-color: #c4c4c4; }
+.os button:last-child { border-right: 0; }
+.os button[aria-selected="true"] { background: var(--ink); color: var(--ground); font-weight: 700; }
+.invert .os button[aria-selected="true"] { background: var(--ground); color: var(--ink); }
+.os button:hover:not([aria-selected="true"]) { background: rgba(255,255,255,.09); }
+.invert .os button:hover:not([aria-selected="true"]) { background: rgba(0,0,0,.07); }
+
+/* the detected line, and the per-platform blocks */
+.os-note { font-size: .62rem; letter-spacing: .17em; text-transform: uppercase;
+  color: var(--texture-1); margin: 0 0 1.1rem; }
+.invert .os-note { color: #6a6a6a; }
+.os-pane__name { font-size: .68rem; font-weight: 500; letter-spacing: .19em;
+  text-transform: uppercase; margin: 1.2rem 0 .2rem; }
+/* With scripting the picker replaces these headings; without it every platform
+   stays on the page, labelled, which is a worse layout and a working one. */
+.js .os-pane__name { display: none; }
+.js .os-pane[hidden] { display: none; }
+
 /* ── keys ──────────────────────────────────────────────────────────────── */
 .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 2rem; margin: 1.5rem 0 0; padding: 0; list-style: none; }
 .keys li { display: flex; gap: .85rem; align-items: baseline; padding: .55rem 0; border-top: 1px solid var(--rule); font-size: .82rem; }
@@ -669,9 +724,37 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
           <div>
             <h3>Install</h3>
             <p style="margin-top:.4rem">Python 3.11 or newer, because it reads its config with
-              <code>tomllib</code>. Nothing is installed globally.</p>
+              <code>tomllib</code>. Nothing is installed globally, and nothing is
+              compiled &mdash; every dependency ships a wheel for all three.</p>
+
+            <div class="os" role="tablist" aria-label="Operating system">
+              <button type="button" role="tab" id="os-tab-linux" aria-controls="os-linux" data-os="linux" aria-selected="true">Linux</button>
+              <button type="button" role="tab" id="os-tab-macos" aria-controls="os-macos" data-os="macos" aria-selected="false">macOS</button>
+              <button type="button" role="tab" id="os-tab-windows" aria-controls="os-windows" data-os="windows" aria-selected="false">Windows</button>
+            </div>
+            <p class="os-note" id="os-note" hidden></p>
+
+            <div class="os-pane" id="os-linux" data-os="linux" role="tabpanel" aria-labelledby="os-tab-linux">
+              <div class="os-pane__name">Linux</div>
 <pre><code>python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt</code></pre>
+            </div>
+            <div class="os-pane" id="os-macos" data-os="macos" role="tabpanel" aria-labelledby="os-tab-macos">
+              <div class="os-pane__name">macOS</div>
+<pre><code>python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt</code></pre>
+              <p style="margin-top:.9rem">If <code>python3</code> is older than 3.11, install a
+                newer one first &mdash; <code>brew install python@3.12</code> &mdash; and use that
+                to make the environment.</p>
+            </div>
+            <div class="os-pane" id="os-windows" data-os="windows" role="tabpanel" aria-labelledby="os-tab-windows">
+              <div class="os-pane__name">Windows</div>
+<pre><code>py -3.11 -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt</code></pre>
+              <p style="margin-top:.9rem">Use <b>Windows Terminal</b>, not the old console window.
+                The interface needs truecolour and mouse reporting, which
+                <code>conhost</code> does not provide.</p>
+            </div>
           </div>
         </li>
         <li>
@@ -681,7 +764,12 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
               <code>DISCORD_TOKEN</code> / <code>DISCORD_BOT_TOKEN</code> in the
               environment. <code>config.toml</code> is gitignored; the token is a
               full-access credential, so treat it like a password.</p>
+            <div class="os-pane" data-os="linux macos">
 <pre><code>cp config.example.toml config.toml</code></pre>
+            </div>
+            <div class="os-pane" data-os="windows">
+<pre><code>copy config.example.toml config.toml</code></pre>
+            </div>
             <p style="margin-top:.9rem">A Rotector API key is optional. Without one you
               get the standard rate limit, which is enough for normal use. Set both a
               user and a bot token and the user token wins, because it can reach
@@ -691,8 +779,14 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
         <li>
           <div>
             <h3>Run</h3>
+            <div class="os-pane" data-os="linux macos">
 <pre><code><span class="cmd">./.venv/bin/python -m rsb</span><span class="c"># the scanner</span>
 <span class="cmd">./.venv/bin/python -m rsb proxies</span><span class="c"># the proxy tester</span></code></pre>
+            </div>
+            <div class="os-pane" data-os="windows">
+<pre><code><span class="cmd">.\.venv\Scripts\python -m rsb</span><span class="c"># the scanner</span>
+<span class="cmd">.\.venv\Scripts\python -m rsb proxies</span><span class="c"># the proxy tester</span></code></pre>
+            </div>
             <p style="margin-top:.9rem">First run opens a setup wizard; after that,
               every setting is editable in-app with <code>ctrl+s</code>. Upgrading from
               an older version, <code>python -m rsb migrate</code> appends whatever
@@ -773,6 +867,11 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
   var MEMBERS = 10833;   // the README's real server
   var FINDINGS = 14;     // the handful that break the field
   var bars = [], marks = [], w = 0, h = 0, dpr = 1, raf = null, t0 = null;
+  // How far the scan pass has swept, 0..1. Remembered because resizing has to
+  // redraw the field it is *currently* showing: assigning canvas.width wipes
+  // the bitmap, and redrawing at 0 dimmed every bar to 22%, skipped all
+  // fourteen findings (their x is never <= 0) and ran the sine loop zero times.
+  var progress = 0;
   // where the stacked readout starts on narrow screens; the field stops above
   // it rather than running its marks behind the figures
   var floorY = null, ceilY = null;
@@ -815,12 +914,13 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
     // the readout, so nothing the visitor reads or clicks is struck through
     var acts = document.querySelector('.actions');
     ceilY = (w <= 980 && acts) ? acts.offsetTop + acts.offsetHeight + 22 : null;
-    draw(reduce.matches ? 1 : 0);
+    draw(reduce.matches ? 1 : progress);
   }
 
   // One authored moment: a single scan pass sweeps the field once on load and
   // leaves the findings standing. No looping strobe, nothing on hover.
   function draw(p) {
+    progress = p;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
 
@@ -884,10 +984,11 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
   resize();
   if (!reduce.matches) { t0 = null; raf = requestAnimationFrame(step); }
 
-  var rt;
+  var pending = false;
   window.addEventListener('resize', function () {
-    clearTimeout(rt);
-    rt = setTimeout(resize, 120);
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; resize(); });
   }, { passive: true });
 
   reduce.addEventListener('change', function () {
@@ -920,6 +1021,71 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
   // The routes are real; per-route coverage figures are not measured, so none
   // are shown. Inventing a number here would undercut the one claim the page
   // is built on.
+})();
+
+/* ── platform picker ───────────────────────────────────────────────────── */
+(function () {
+  var tabs = [].slice.call(document.querySelectorAll('.os [role="tab"]'));
+  var panes = [].slice.call(document.querySelectorAll('.os-pane'));
+  if (!tabs.length || !panes.length) return;
+
+  // Marks the document as scripted, which is what lets the CSS hide the
+  // per-platform headings. Without JS all three stay on the page, labelled:
+  // a worse layout, and a working one.
+  document.documentElement.className += ' js';
+
+  var note = document.getElementById('os-note');
+  var NAMES = { linux: 'Linux', macos: 'macOS', windows: 'Windows' };
+
+  // A guess, from the least unreliable thing available. userAgentData is not
+  // spoofed by the usual extensions and is not frozen the way navigator.platform
+  // now is, so it is asked first; everything after it is a fallback.
+  function detect() {
+    var hint = (navigator.userAgentData && navigator.userAgentData.platform) || '';
+    var raw = (hint || navigator.platform || navigator.userAgent || '').toLowerCase();
+    if (raw.indexOf('win') === 0 || raw.indexOf('windows') >= 0) return 'windows';
+    if (raw.indexOf('mac') >= 0 || raw.indexOf('darwin') >= 0 ||
+        raw.indexOf('iphone') >= 0 || raw.indexOf('ipad') >= 0) return 'macos';
+    if (raw.indexOf('android') >= 0 || raw.indexOf('linux') >= 0 ||
+        raw.indexOf('x11') >= 0 || raw.indexOf('bsd') >= 0) return 'linux';
+    return 'linux';
+  }
+
+  function show(os, guessed) {
+    tabs.forEach(function (tab) {
+      tab.setAttribute('aria-selected', String(tab.dataset.os === os));
+      tab.tabIndex = tab.dataset.os === os ? 0 : -1;
+    });
+    panes.forEach(function (pane) {
+      // data-os may list more than one, because only some commands differ
+      pane.hidden = pane.dataset.os.split(' ').indexOf(os) < 0;
+    });
+    if (note) {
+      note.hidden = false;
+      note.textContent = guessed
+        ? 'Detected ' + NAMES[os] + ' \u2014 pick another if that is wrong'
+        : 'Showing ' + NAMES[os];
+    }
+    try { localStorage.setItem('rsb-os', os); } catch (e) { /* private mode */ }
+  }
+
+  tabs.forEach(function (tab, index) {
+    tab.addEventListener('click', function () { show(tab.dataset.os, false); });
+    // a tablist is expected to move with the arrow keys, not just tab into
+    tab.addEventListener('keydown', function (event) {
+      var step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      var next = tabs[(index + step + tabs.length) % tabs.length];
+      next.focus();
+      show(next.dataset.os, false);
+    });
+  });
+
+  var chosen = null;
+  try { chosen = localStorage.getItem('rsb-os'); } catch (e) { /* private mode */ }
+  if (chosen && NAMES[chosen]) show(chosen, false);
+  else show(detect(), true);
 })();
 </script>
 </body>
