@@ -456,8 +456,36 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
   pre .c { display: block; }
 }
 
+/* ── scrolling and its bar ─────────────────────────────────────────────── */
+/* Smoothness is opt-in, added by script once the browser has finished the jump
+   a shared #setup link asks for. Landing on a section should *be* there, not
+   travel there past content the visitor did not ask to see; the animation is
+   for a choice made on the page. */
+html { scroll-behavior: auto; }
+html.smooth { scroll-behavior: smooth; }
+
+/* The page alternates black bands with two inverted white ones, so a single
+   scrollbar colour is wrong half the way down. `.on-light` is set by script to
+   whichever band fills most of the viewport. color-scheme carries the browsers
+   that style the bar themselves; the rest is spelled out below. */
+html { color-scheme: dark; scrollbar-width: thin; scrollbar-color: var(--texture-2) var(--ground); }
+html.on-light { color-scheme: light; scrollbar-color: #c4c4c4 var(--ink); }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--ground); }
+::-webkit-scrollbar-thumb { background: var(--texture-2); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--texture-1); }
+html.on-light::-webkit-scrollbar-track,
+html.on-light ::-webkit-scrollbar-track { background: var(--ink); }
+html.on-light::-webkit-scrollbar-thumb,
+html.on-light ::-webkit-scrollbar-thumb { background: #c4c4c4; }
+html.on-light::-webkit-scrollbar-thumb:hover,
+html.on-light ::-webkit-scrollbar-thumb:hover { background: #8d8d8d; }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
+  /* including the one motion a stylesheet can start on its own */
+  html, html.smooth { scroll-behavior: auto !important; }
 }
 </style>
 </head>
@@ -1021,6 +1049,59 @@ footer { padding: clamp(3rem, 6vw, 5rem) var(--gutter); }
   // The routes are real; per-route coverage figures are not measured, so none
   // are shown. Inventing a number here would undercut the one claim the page
   // is built on.
+})();
+
+/* ── scrolling, and the bar beside it ──────────────────────────────────── */
+(function () {
+  var root = document.documentElement;
+
+  /* Smooth scrolling is armed *after* the browser has settled wherever a
+     shared link pointed. Setting scroll-behavior in the stylesheet would
+     animate that arrival too: someone opening a link to #setup would watch the
+     whole page slide past on load, which is a worse answer to "show me this
+     section" than simply being there. Anchor clicks made afterwards are the
+     choice this motion is for, and CSS handles those on its own. */
+  function arm() { root.classList.add('smooth'); }
+  if (location.hash) {
+    // two frames after load: enough for the hash jump, and for a late webfont
+    // reflow to move it, before anything starts animating
+    window.addEventListener('load', function () {
+      requestAnimationFrame(function () { requestAnimationFrame(arm); });
+    });
+  } else {
+    arm();
+  }
+
+  /* The page runs black except for two inverted bands, so the scrollbar has to
+     change with it. Whichever bands are on screen are measured by how much of
+     the viewport each one covers, and the majority wins -- a threshold beats a
+     midpoint test, which would flip early on a band taller than the screen. */
+  var bands = [].slice.call(document.querySelectorAll('.hero, main > section'));
+  if (!bands.length) return;
+
+  function tone() {
+    var height = window.innerHeight || 0;
+    var light = 0, dark = 0;
+    for (var i = 0; i < bands.length; i++) {
+      var box = bands[i].getBoundingClientRect();
+      var seen = Math.min(height, box.bottom) - Math.max(0, box.top);
+      if (seen <= 0) continue;
+      if (bands[i].classList.contains('invert')) light += seen; else dark += seen;
+    }
+    root.classList.toggle('on-light', light > dark);
+  }
+
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; tone(); });
+  }
+
+  tone();
+  window.addEventListener('scroll', schedule, { passive: true });
+  window.addEventListener('resize', schedule, { passive: true });
+  window.addEventListener('load', tone);
 })();
 
 /* ── platform picker ───────────────────────────────────────────────────── */

@@ -84,6 +84,23 @@ assert "os-pane__name" in HTML, "each pane needs a heading for the no-JS case"
 ok("with no JavaScript all three stay visible and labelled")
 
 
+# --- scrolling, and the bar beside it -------------------------------------
+assert "html { scroll-behavior: auto; }" in HTML, (
+    "smoothness must not be on by default, or a shared #setup link animates"
+)
+assert "html.smooth { scroll-behavior: smooth; }" in HTML
+assert "html, html.smooth { scroll-behavior: auto !important; }" in HTML, (
+    "reduced motion has to switch scrolling off with everything else"
+)
+ok("smooth scrolling is a class, and reduced motion turns it back off")
+
+assert "scrollbar-color: var(--texture-2) var(--ground)" in HTML
+assert "html.on-light { color-scheme: light; scrollbar-color: #c4c4c4" in HTML
+assert "::-webkit-scrollbar-thumb { background: var(--texture-2)" in HTML
+assert "border-radius: 0" in HTML, "the bar is square like everything else"
+ok("the scrollbar is styled for both tones, in both engines, with no radius")
+
+
 if NODE is None:
     print("[skip] node not installed -- page scripts not executed")
 else:
@@ -135,9 +152,12 @@ const L = {};
 global.window = { devicePixelRatio:1,
   matchMedia:()=>({matches:false, addEventListener(){}}),
   addEventListener:(n,f)=>{L[n]=f;} };
+// the page ships several IIFEs in one block; eval runs them all, so the
+// stubs have to satisfy the scroll and picker code too
+global.location = { hash: '' };
 global.document = { getElementById:id=>(id==='field'?canvas:null),
   querySelector:()=>null, querySelectorAll:()=>[], addEventListener(){},
-  documentElement:{className:''} };
+  documentElement:{ className:'', classList:{ add(){}, toggle(){} } } };
 let rafFn = null;
 global.requestAnimationFrame = fn => { rafFn = fn; return 1; };
 global.cancelAnimationFrame = ()=>{};
@@ -180,5 +200,58 @@ console.log(JSON.stringify({narrow, wide}));
         "a debounced resize leaves the canvas cleared but not redrawn mid-drag"
     )
     ok("the resize redraw is coalesced per frame, not deferred past the drag")
+
+    # --- a shared link arrives, it does not travel -----------------------
+    block = SCRIPT[SCRIPT.index("/* \u2500\u2500 scrolling, and the bar beside it"):
+                   SCRIPT.index("/* \u2500\u2500 platform picker")]
+    harness = (
+        "const block = " + json.dumps(block) + ";\n"
+        r"""
+function band(invert, top, bottom) {
+  return { classList: { contains: c => invert && c === 'invert' },
+           getBoundingClientRect: () => ({ top, bottom }) };
+}
+function run(hash, bands, viewport) {
+  const cls = new Set();
+  const root = { classList: { add: c => cls.add(c),
+    toggle: (c, on) => { on ? cls.add(c) : cls.delete(c); } } };
+  const L = {}; let rafs = [];
+  global.location = { hash };
+  global.window = { innerHeight: viewport,
+                    addEventListener: (n,f) => { (L[n] = L[n] || []).push(f); } };
+  global.document = { documentElement: root, querySelectorAll: () => bands };
+  global.requestAnimationFrame = fn => { rafs.push(fn); return 1; };
+  eval(block);
+  const before = cls.has('smooth');
+  (L.load || []).forEach(f => f());
+  for (let i = 0; i < 6; i++) { const q = rafs; rafs = []; q.forEach(f => f()); }
+  return { before, after: cls.has('smooth'), light: cls.has('on-light') };
+}
+const V = 900;
+console.log(JSON.stringify({
+  plain:      run('',       [band(false, 0, 900)], V),
+  shared:     run('#setup', [band(false, 0, 900)], V),
+  mostlyDark: run('',       [band(false, -100, 700), band(true, 700, 1600)], V),
+  mostlyLight:run('',       [band(false, -900, 100), band(true, 100, 1200)], V),
+  tallLight:  run('',       [band(true, -2000, 3000)], V),
+}));
+"""
+    )
+    r = _node(harness)
+    assert r["plain"]["before"] is True, "with no hash, smoothness can be armed at once"
+    assert r["shared"]["before"] is False, (
+        "a shared #setup link would animate on arrival: smoothness was armed "
+        "before the browser finished its jump"
+    )
+    assert r["shared"]["after"] is True, "smoothness never armed after the jump"
+    ok("a shared section link arrives instantly; clicks afterwards are smooth")
+
+    assert r["mostlyDark"]["light"] is False
+    assert r["mostlyLight"]["light"] is True
+    assert r["tallLight"]["light"] is True, (
+        "a band taller than the viewport still has to set the tone"
+    )
+    ok("the scrollbar follows whichever band covers most of the viewport")
+
 
 print("\nall site checks passed.")
