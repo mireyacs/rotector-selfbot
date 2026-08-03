@@ -78,14 +78,21 @@ like a password.
 
 ### Choosing a backend
 
-Which service answers *"is this member flagged"* is set by `[scan] backend`:
+Which service answers *"is this member flagged"* is set by `[scan] backend`,
+either in the file or from `ctrl+s` → **Scan** → *backend*, which offers the
+valid names as a dropdown:
 
 ```toml
 [scan]
 backend = "rotector"   # or "okappiki"
 ```
 
-They are alternatives, not layers — a scan asks one of them.
+They are alternatives, not layers — a scan asks one of them. Switching from the
+settings screen takes effect immediately: the lookup client is rebuilt without
+signing in again, since the Discord side is unaffected. Results already on
+screen are cleared, because a Rotector verdict and an Okappiki one rest on
+different evidence and a table holding both would give no way to tell which row
+came from where.
 
 **`rotector`** (default) is the documented one. It batches 100 ids per request
 inside the published 50 requests / 10 s window, returns flag types whose

@@ -15,7 +15,9 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Input, Static, TabbedContent, TabPane
+from textual.widgets import (
+    Button, Checkbox, Input, Select, Static, TabbedContent, TabPane,
+)
 
 from ..config import Config, write_section
 from .dialogs import DismissOnOutsideClick
@@ -133,6 +135,20 @@ class SettingsScreen(DismissOnOutsideClick, ModalScreen[bool]):
                 yield Static(Text(setting.comment, style="dim"), classes="field-help")
             if isinstance(setting.default, bool):
                 yield Checkbox("enabled", bool(value), id=widget_id)
+            elif setting.choices:
+                current = _as_text(value)
+                if current not in setting.choices:
+                    # a hand-edited config can hold anything; keep it visible as
+                    # an option rather than silently showing a different value
+                    # than the file actually contains
+                    options = [(current or "(unset)", current)] + [
+                        (choice, choice) for choice in setting.choices
+                    ]
+                else:
+                    options = [(choice, choice) for choice in setting.choices]
+                yield Select(
+                    options, value=current, id=widget_id, allow_blank=False
+                )
             else:
                 secret = setting.name in ("token", "bot_token", "api_key")
                 yield Input(
@@ -159,7 +175,7 @@ class SettingsScreen(DismissOnOutsideClick, ModalScreen[bool]):
                     continue
                 raw = (
                     widget.value
-                    if isinstance(widget, Checkbox)
+                    if isinstance(widget, (Checkbox, Select))
                     else _coerce(widget.value, setting.default)
                 )
                 before = current_value(

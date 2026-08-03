@@ -542,6 +542,8 @@ class ScannerApp(App):
         #: ``config_path()`` to a real file, so a screenshot run would otherwise
         #: rewrite the operator's own config.
         self.persist_theme = persist_theme
+        #: display name of the signed-in account, for the subtitle
+        self._account_name = "?"
         self.http: DiscordHTTP | None = None
         self.gateway: DiscordGateway | None = None
         #: the active lookup backend; RotectorClient or OkappikiClient,
@@ -641,6 +643,26 @@ class ScannerApp(App):
     def attribution(self) -> str:
         """Credit for whichever service actually answered."""
         return ATTRIBUTIONS.get(self.config.scan.backend, ATTRIBUTION)
+
+    def _refresh_subtitle(self) -> None:
+        """Who we are, what we are asking, and how it is routed.
+
+        Rebuilt rather than set once at connect, because the backend can change
+        without reconnecting and a header still naming the old one would be
+        wrong in the one place a user checks to find out.
+        """
+        # an API key only exists on the Rotector side; "no API key" under a
+        # backend with no such concept would read as a misconfiguration
+        if self.config.scan.backend == "rotector":
+            keyed = " - API key" if self.config.rotector.api_key else " - no API key"
+        else:
+            keyed = ""
+        count = len(self.config.active_proxies())
+        routing = f" - {count} proxies" if count else ""
+        kind = " [bot]" if self.is_bot else ""
+        self.sub_title = (
+            f"{self._account_name}{kind} - {self.backend_name}{keyed}{routing}"
+        )
 
     def on_mount(self) -> None:
         ThemeMemory(self, self.config, self.persist_theme).install()
@@ -972,6 +994,7 @@ class ScannerApp(App):
     @work(exclusive=True, group="settings")
     async def open_settings(self) -> None:
         before = (self.config.active_token, self.config.is_bot)
+        backend_before = self.config.scan.backend
         changed = await self.push_screen_wait(SettingsScreen(self.config))
         if not changed:
             return
@@ -992,6 +1015,14 @@ class ScannerApp(App):
             self.reauthenticate()
             return
 
+        if self.config.scan.backend != backend_before and self.rotector is not None:
+            # Same reasoning as credentials: "restart to apply" would be
+            # indistinguishable from "did nothing". You pick Okappiki, the
+            # header starts saying Okappiki, and the scan keeps asking
+            # Rotector -- so the client is swapped now.
+            self.switch_backend(backend_before)
+            return
+
         overrides = self.config.env_overrides()
         note = ""
         if overrides:
@@ -1002,6 +1033,56 @@ class ScannerApp(App):
         self._set_status(
             f"Settings saved. Some changes need a restart to take effect.{note}",
             "yellow" if overrides else "",
+        )
+
+    @work(exclusive=True, group="backend")
+    async def switch_backend(self, previous: str) -> None:
+        """Swap the lookup client after ``scan.backend`` changed.
+
+        The Discord side is left alone -- same account, same servers, same
+        member lists. Only who gets asked about them changes, so there is no
+        reason to sign in again.
+
+        Results do go. A Rotector verdict and an Okappiki one are not the same
+        claim: they come from different services with different evidence, and
+        a table holding both would give no way to tell which row came from
+        where. Clearing says that plainly; leaving them would not.
+        """
+        self.workers.cancel_group(self, "scan")
+        if self._scan_task is not None and not self._scan_task.done():
+            self._scan_task.cancel()
+        self._end_run()
+
+        old, self.rotector = self.rotector, None
+        if old is not None:
+            try:
+                await old.aclose()
+            except Exception:  # noqa: BLE001 - it is going away regardless
+                pass
+
+        try:
+            self.rotector = build_backend(self.config, self.config.active_proxies())
+        except ValueError as exc:
+            # only reachable from a hand-edited config; the settings screen
+            # offers the valid names as a dropdown
+            self.config.scan.backend = previous
+            self.rotector = build_backend(self.config, self.config.active_proxies())
+            self._set_status(f"{exc} - staying on {self.backend_name}.", "bold red")
+            self._refresh_subtitle()
+            return
+
+        held = len(self.rows)
+        self.rows.clear()
+        self.selected.clear()
+        self._rebuild_table()
+        self._refresh_subtitle()
+        self.log_debug(f"backend switched to {self.config.scan.backend}")
+
+        dropped = f" {held:,} earlier result(s) cleared." if held else ""
+        self._set_status(
+            f"Now checking against {self.backend_name}.{dropped} "
+            f"Press 's' to scan.",
+            "yellow" if held else "",
         )
 
     # deliberately NOT the "connect" group: this worker *starts* a connect
@@ -1132,17 +1213,8 @@ class ScannerApp(App):
 
             self.my_id = str(me.get("id") or "")
             name = me.get("global_name") or me.get("username") or "?"
-            # an API key only exists on the Rotector side; saying "no API key"
-            # under a backend that has no such concept would just read as a
-            # misconfiguration
-            if self.config.scan.backend == "rotector":
-                keyed = "API key" if self.config.rotector.api_key else "no API key"
-                keyed = f" - {keyed}"
-            else:
-                keyed = ""
-            routing = f" - {len(proxies)} proxies" if proxies else ""
-            kind = " [bot]" if self.is_bot else ""
-            self.sub_title = f"{name}{kind} - {self.backend_name}{keyed}{routing}"
+            self._account_name = name
+            self._refresh_subtitle()
             if advisories:
                 self._advisories = advisories
             await self._load_sources()

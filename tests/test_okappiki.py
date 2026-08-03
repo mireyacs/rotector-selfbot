@@ -222,4 +222,116 @@ with tempfile.TemporaryDirectory() as tmp:
     assert restored.token == "x", "writing one section must not disturb another"
 ok("theme survives a write/read round trip without touching [discord]")
 
+# --- switching from the TUI actually swaps the client ---------------------
+# The failure this guards against is silent: the header and the attribution
+# read the backend off the config, so a save that updated the config but not
+# the client would have the UI claiming Okappiki while every lookup still went
+# to Rotector.
+import rsb.tui.app as appmod  # noqa: E402
+from rsb.discord.gateway import GuildMember  # noqa: E402
+from rsb.discord.http import Channel, Guild  # noqa: E402
+from rsb.migrate import SCHEMA  # noqa: E402
+from rsb.rotector import MemberReport  # noqa: E402
+from rsb.tui.app import Row, ScannerApp  # noqa: E402
+
+
+class _StubHTTP:
+    def __init__(self, token, **kw):
+        pass
+
+    async def me(self):
+        return {"username": "you", "global_name": "You", "id": "1"}
+
+    async def guilds(self):
+        return [Guild(id="1", name="g", owner=False, permissions=0,
+                      member_count=10, presence_count=2)]
+
+    async def relationships(self):
+        return []
+
+    async def private_channels(self):
+        return []
+
+    async def channels(self, gid):
+        return [Channel(id="c", name="general", type=0, position=0,
+                        everyone_can_view=True)]
+
+    async def aclose(self):
+        pass
+
+
+class _StubGateway:
+    def __init__(self, token, bot=False):
+        self.user = None
+
+    async def connect(self, timeout=45.0):
+        return {}
+
+    async def fetch_members(self, *a, **kw):
+        return {}
+
+    async def close(self):
+        pass
+
+
+async def _switch_from_the_ui():
+    appmod.DiscordHTTP = _StubHTTP
+    appmod.DiscordGateway = _StubGateway
+
+    config = _config("rotector")
+    config.token = "fake.test.token"
+    config.proxy.file = "/nonexistent"
+    app = ScannerApp(config, persist_theme=False)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if app.rotector is not None:
+                break
+        assert isinstance(app.rotector, RotectorClient), type(app.rotector)
+        assert "Rotector" in app.sub_title, app.sub_title
+        ok(f"opens on the configured backend: {app.sub_title!r}")
+
+        app.rows["1"] = Row(
+            member=GuildMember(id="1", username="a"),
+            report=MemberReport(discord_id="1"),
+        )
+        config.scan.backend = "okappiki"
+        app.switch_backend("rotector")
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if isinstance(app.rotector, OkappikiClient):
+                break
+
+        assert isinstance(app.rotector, OkappikiClient), type(app.rotector)
+        assert "Okappiki" in app.sub_title and "API key" not in app.sub_title
+        assert app.backend_name == "Okappiki"
+        assert "okappiki.com" in app.attribution
+        assert not app.rows, "results from the previous backend must not survive"
+        ok(f"switching swaps the client, the header and the attribution together")
+
+        # a hand-edited config can still hold a typo; it must not leave the app
+        # with no backend at all
+        config.scan.backend = "rotektor"
+        app.switch_backend("okappiki")
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if config.scan.backend == "okappiki":
+                break
+        assert isinstance(app.rotector, OkappikiClient), type(app.rotector)
+        assert config.scan.backend == "okappiki", "should revert to what worked"
+        ok("an invalid backend reverts and leaves a usable client in place")
+
+
+asyncio.run(_switch_from_the_ui())
+
+# and the settings screen offers the valid names rather than a free-text box
+backend_setting = next(
+    setting
+    for section in SCHEMA if section.name == "scan"
+    for setting in section.settings if setting.name == "backend"
+)
+assert backend_setting.choices == BACKENDS, backend_setting.choices
+ok("the settings screen renders scan.backend as a dropdown of the valid names")
+
 print("\nall okappiki backend checks passed.")

@@ -25,6 +25,11 @@ class Setting:
     name: str
     default: object
     comment: str = ""
+    #: the only values this setting accepts. The settings screen renders these
+    #: as a dropdown rather than a text box, which is the difference between
+    #: picking a backend and typing one and finding out at the next start that
+    #: it was spelled wrong.
+    choices: tuple[str, ...] = ()
 
 
 @dataclass
@@ -109,6 +114,7 @@ SCHEMA: list[Section] = [
                     "layers. Okappiki returns Okappiki, Rotector and mococo\n"
                     "findings in one response, but one member per request."
                 ),
+                choices=("rotector", "okappiki"),
             ),
             Setting("skip_bots", True, "Bots have no Roblox connections."),
             Setting("max_members", 0, "Cap members per source. 0 = no cap."),
