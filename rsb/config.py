@@ -100,6 +100,28 @@ class OkappikiConfig:
 
 
 @dataclass
+class VibeConfig:
+    """Music streamed from the project's ``music`` branch, for long scans.
+
+    The audio is not in this clone and never will be: an orphan branch costs
+    nothing until somebody turns the feature on. Playback is ffplay, which
+    ships with FFmpeg on all three platforms and streams a URL without
+    downloading it first.
+    """
+
+    enabled: bool = False
+    #: owner/name of the repository holding the music branch
+    repo: str = "mireyacs/rotector-selfbot"
+    #: the orphan branch the library lives on
+    branch: str = "music"
+    #: 0-100, handed straight to ffplay
+    volume: int = 60
+    shuffle: bool = True
+    #: start playing as soon as a scan does, and stop when it finishes
+    follow_scans: bool = False
+
+
+@dataclass
 class UpdateConfig:
     """Pulling new commits into the clone this runs from.
 
@@ -306,6 +328,7 @@ class Config:
     okappiki: OkappikiConfig = field(default_factory=OkappikiConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    vibe: VibeConfig = field(default_factory=VibeConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
@@ -382,6 +405,12 @@ class Config:
         for key in ("rate_limit", "window", "reserve", "cache_ttl", "concurrency"):
             if key in okp and okp[key] is not None:
                 setattr(self.okappiki, key, okp[key])
+
+        vibe = data.get("vibe") or {}
+        for key in ("enabled", "repo", "branch", "volume", "shuffle",
+                    "follow_scans"):
+            if key in vibe and vibe[key] is not None:
+                setattr(self.vibe, key, vibe[key])
 
         upd = data.get("update") or {}
         if upd.get("check_on_start") is not None:
@@ -571,6 +600,10 @@ class Config:
             problems.append(
                 "scan.max_concurrent_jobs must be between 1 and 8 "
                 f"(got {self.scan.max_concurrent_jobs})"
+            )
+        if not 0 <= self.vibe.volume <= 100:
+            problems.append(
+                f"vibe.volume must be between 0 and 100 (got {self.vibe.volume})"
             )
         if self.okappiki.reserve >= self.okappiki.rate_limit:
             problems.append("okappiki.reserve must be smaller than okappiki.rate_limit")

@@ -84,6 +84,7 @@ from .settings import (
     run_checks,
 )
 from ..update import apply as apply_update, check as check_update, preflight
+from ..vibe import Vibe, VibeError, player_available, missing_player_reason
 from .dialogs import (
     ExportDialog,
     RescanDialog,
@@ -554,6 +555,8 @@ class ScannerApp(App):
         ("ctrl+r", "reload_guilds", "Reload sources"),
         ("ctrl+s", "settings", "Settings"),
         ("ctrl+u", "check_updates", "Check for updates"),
+        ("v", "vibe", "Vibe mode"),
+        ("V", "vibe_skip", "Skip track"),
         ("ctrl+shift+r", "reload_code", "Reload code"),
         ("ctrl+b", "toggle_sources", "Sources pane"),
         ("ctrl+d", "toggle_detail", "Detail pane"),
@@ -577,6 +580,8 @@ class ScannerApp(App):
         #: ``config_path()`` to a real file, so a screenshot run would otherwise
         #: rewrite the operator's own config.
         self.persist_theme = persist_theme
+        #: music for long scans; built lazily, because most runs never ask
+        self.vibe: Vibe | None = None
         #: layout is written to the same file the theme is, so it is off for
         #: headless tooling for exactly the same reason
         self.persist_layout = persist_theme
@@ -1357,6 +1362,9 @@ class ScannerApp(App):
 
             self.restore_layout()
 
+            if self.config.vibe.enabled:
+                self.toggle_vibe()
+
             if self.config.update.check_on_start:
                 # after the sources are up, not before: a git fetch competing
                 # with sign-in would delay the thing the user is waiting for
@@ -2044,6 +2052,62 @@ class ScannerApp(App):
                 f"{message} Restart to finish applying it.", "yellow"
             )
         )
+
+    # -- vibe mode ---------------------------------------------------------
+
+    def action_vibe(self) -> None:
+        self.toggle_vibe()
+
+    def action_vibe_skip(self) -> None:
+        if self.vibe is None or not self.vibe.playing:
+            self._set_status("Vibe mode is not playing. Press 'v' to start it.")
+            return
+        self.skip_track()
+
+    @work(exclusive=True, group="vibe-skip")
+    async def skip_track(self) -> None:
+        if self.vibe is not None:
+            await self.vibe.skip()
+
+    @work(exclusive=True, group="vibe")
+    async def toggle_vibe(self) -> None:
+        """Start or stop the music.
+
+        Its own worker because loading the library is a network call, and a
+        keypress should not block the interface on somebody else's CDN. Nothing
+        here is ever fatal: music failing is a status line, never a scan.
+        """
+        if self.vibe is not None and self.vibe.playing:
+            await self.vibe.stop()
+            self._set_status("Vibe mode off.")
+            return
+
+        if not player_available():
+            self._set_status(missing_player_reason(), "yellow")
+            return
+
+        settings = self.config.vibe
+        if self.vibe is None:
+            self.vibe = Vibe(
+                repo=settings.repo,
+                branch=settings.branch,
+                volume=settings.volume,
+                shuffle=settings.shuffle,
+                on_change=self._vibe_changed,
+            )
+        self._set_activity("Loading the music library...")
+        try:
+            await self.vibe.start()
+        except VibeError as exc:
+            self._set_status(str(exc), "yellow")
+            return
+        self._set_status(self.vibe.describe())
+
+    def _vibe_changed(self, track) -> None:
+        """Announce the track, without stepping on a scan's own status."""
+        if track is None or self._scanning:
+            return
+        self._set_status(f"Vibe: {track.credit()}")
 
     # -- results table -----------------------------------------------------
 
@@ -3610,6 +3674,10 @@ class ScannerApp(App):
     # -- shutdown ----------------------------------------------------------
 
     async def on_unmount(self) -> None:
+        # ffplay is a child process; leaving it running after the UI is gone
+        # would keep playing into a terminal that no longer exists
+        if self.vibe is not None:
+            await self.vibe.stop()
         if self.gateway:
             await self.gateway.close()
         if self.http:

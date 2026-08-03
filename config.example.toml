@@ -84,6 +84,27 @@ concurrency = 2
 check_on_start = true
 
 
+# Music for long scans, streamed from the project's music branch. Nothing is
+# downloaded into this clone -- the audio lives on an orphan branch and is
+# played straight from its URL. Needs ffplay, which ships with FFmpeg.
+[vibe]
+# Start vibe mode with the app. 'v' toggles it either way.
+enabled = false
+
+# owner/name of the repo holding the music branch, and the branch itself.
+repo = "mireyacs/rotector-selfbot"
+branch = "music"
+
+# 0-100, handed straight to ffplay.
+volume = 60
+
+# Play the library in a random order.
+shuffle = true
+
+# Play while a scan runs, and stop when it finishes.
+follow_scans = false
+
+
 # Appearance. Set from inside the app rather than by hand.
 [ui]
 # Textual theme to open in, remembered when you pick one from the command

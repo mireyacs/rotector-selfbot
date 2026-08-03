@@ -560,6 +560,55 @@ html:not(.motion) .motion-toggle .state {
    above it, so a narrow screen gives back padding rather than legibility */
 @media (max-width: 620px) { .motion-toggle { padding: .5rem .7rem; gap: .45rem; } }
 
+/* ── the music player ──────────────────────────────────────────────────── */
+/* Sits beside the motion control and behaves like it: a hairline chip that
+   inverts with the band under it. Collapsed to a single button until asked,
+   because a player nobody opened should cost a row of pixels, not a panel.
+   Never autoplays -- browsers block it, and sound a visitor did not ask for
+   is the rudest thing a page can do. */
+.dock {
+  position: fixed;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  gap: .5rem;
+}
+/* the control moves into the dock, so it no longer positions itself */
+.dock .motion-toggle { position: static; right: auto; bottom: auto; }
+
+.player { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+.player__body {
+  display: none;
+  border: 1px solid var(--ink);
+  border-bottom: 0;
+  background: var(--ground);
+  padding: .7rem .8rem;
+  max-width: 19rem;
+}
+.player.open .player__body { display: block; }
+.player.on-light .player__body { background: var(--ink); color: var(--ground); border-color: var(--ground); }
+
+.player__now { font-size: .68rem; letter-spacing: .02em; line-height: 1.5; word-break: break-word; }
+.player__meta { font-size: .62rem; letter-spacing: .17em; text-transform: uppercase; color: var(--texture-1); margin-top: .35rem; }
+.player.on-light .player__meta { color: #6a6a6a; }
+.player__meta a { color: inherit; }
+
+.player__row { display: flex; gap: .4rem; margin-top: .6rem; }
+.player__row button {
+  appearance: none; background: transparent; color: inherit;
+  border: 1px solid var(--rule); border-radius: 0;
+  font: inherit; font-size: .62rem; font-weight: 700;
+  letter-spacing: .17em; text-transform: uppercase;
+  padding: .35rem .5rem; cursor: pointer;
+}
+.player.on-light .player__row button { border-color: #c4c4c4; }
+.player__row button:hover { background: var(--ink); color: var(--ground); }
+.player.on-light .player__row button:hover { background: var(--ground); color: var(--ink); }
+
+@media (max-width: 620px) { .player__body { max-width: 12rem; } }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
   /* including the one motion a stylesheet can start on its own */
@@ -1301,7 +1350,15 @@ cd rotector-selfbot</code></pre>
   }
 
   button.addEventListener('click', function () { apply(!on, true); });
-  document.body.appendChild(button);
+  // a shared dock, so the player can sit beside the control rather than
+  // both of them fighting over the same corner
+  var dock = document.querySelector('.dock');
+  if (!dock) {
+    dock = document.createElement('div');
+    dock.className = 'dock';
+    document.body.appendChild(dock);
+  }
+  dock.appendChild(button);
   apply(on, false);
 
   // a mid-session switch to reduced motion is honoured, unless it was set by hand
@@ -1374,6 +1431,143 @@ cd rotector-selfbot</code></pre>
   window.addEventListener('rsb:motion', sync);
 })();
 
+/* ── the music player ──────────────────────────────────────────────────── */
+(function () {
+  /* Reads the same index.json the terminal app does, off the same orphan
+     branch, so there is one library and not two. Nothing is bundled with this
+     page: the manifest is a few hundred bytes and a track is only fetched once
+     somebody presses play.
+
+     It never autoplays. Browsers block it anyway, and unrequested sound is the
+     rudest thing a page can do. */
+  var REPO = 'mireyacs/rotector-selfbot';
+  var BRANCH = 'music';
+  var RAW = 'https://raw.githubusercontent.com/' + REPO + '/' + BRANCH;
+
+  var dock = document.querySelector('.dock');
+  if (!dock) {
+    dock = document.createElement('div');
+    dock.className = 'dock';
+    document.body.appendChild(dock);
+  }
+
+  var player = document.createElement('div');
+  player.className = 'player';
+  player.innerHTML =
+    '<div class="player__body">' +
+      '<div class="player__now">Loading the library\u2026</div>' +
+      '<div class="player__meta"></div>' +
+      '<div class="player__row">' +
+        '<button type="button" data-act="play">Play</button>' +
+        '<button type="button" data-act="next">Next</button>' +
+      '</div>' +
+    '</div>' +
+    '<button type="button" class="motion-toggle" data-act="open" ' +
+      'aria-expanded="false">' +
+      '<span class="state" aria-hidden="true"></span><span>Music</span></button>';
+  dock.insertBefore(player, dock.firstChild);
+
+  var body = player.querySelector('.player__body');
+  var now = player.querySelector('.player__now');
+  var meta = player.querySelector('.player__meta');
+  var openBtn = player.querySelector('[data-act="open"]');
+  var playBtn = player.querySelector('[data-act="play"]');
+  var nextBtn = player.querySelector('[data-act="next"]');
+
+  var audio = new Audio();
+  audio.preload = 'none';
+  var tracks = [], order = [], at = 0, loaded = false;
+
+  function shuffle(list) {
+    for (var i = list.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = list[i]; list[i] = list[j]; list[j] = t;
+    }
+    return list;
+  }
+
+  function showTrack(track) {
+    if (!track) { now.textContent = 'Nothing playing.'; meta.textContent = ''; return; }
+    now.textContent = track.title + (track.artist ? ' \u2014 ' + track.artist : '');
+    // the licence is shown rather than filed away: royalty-free is not the
+    // same as free of obligations, and most of these want attribution
+    meta.textContent = '';
+    if (track.license) meta.appendChild(document.createTextNode(track.license));
+    if (track.source) {
+      if (track.license) meta.appendChild(document.createTextNode('  \u00b7  '));
+      var link = document.createElement('a');
+      link.href = track.source; link.textContent = 'source';
+      link.rel = 'noopener'; link.target = '_blank';
+      meta.appendChild(link);
+    }
+  }
+
+  function load() {
+    if (loaded) return Promise.resolve();
+    loaded = true;
+    return fetch(RAW + '/index.json', { cache: 'no-cache' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (body) {
+        tracks = (body.tracks || []).filter(function (t) {
+          return t && t.file && t.file.indexOf('/') < 0;
+        });
+        order = shuffle(tracks.map(function (_, i) { return i; }));
+        if (!tracks.length) {
+          now.textContent = 'No tracks on the music branch yet.';
+          meta.textContent = '';
+          playBtn.disabled = nextBtn.disabled = true;
+          return;
+        }
+        showTrack(tracks[order[0]]);
+      })
+      .catch(function (err) {
+        loaded = false;
+        now.textContent = 'Could not reach the music branch.';
+        meta.textContent = String(err.message || err);
+      });
+  }
+
+  function play(index) {
+    if (!tracks.length) return;
+    at = ((index % order.length) + order.length) % order.length;
+    var track = tracks[order[at]];
+    showTrack(track);
+    audio.src = RAW + '/tracks/' + encodeURIComponent(track.file);
+    audio.play().then(function () { playBtn.textContent = 'Pause'; })
+      .catch(function () { playBtn.textContent = 'Play'; });
+  }
+
+  openBtn.addEventListener('click', function () {
+    var open = !player.classList.contains('open');
+    player.classList.toggle('open', open);
+    openBtn.setAttribute('aria-expanded', String(open));
+    if (open) load();
+  });
+
+  playBtn.addEventListener('click', function () {
+    load().then(function () {
+      if (!tracks.length) return;
+      if (audio.paused) {
+        if (!audio.src) play(at); else audio.play().then(function () {
+          playBtn.textContent = 'Pause';
+        });
+      } else {
+        audio.pause();
+        playBtn.textContent = 'Play';
+      }
+    });
+  });
+
+  nextBtn.addEventListener('click', function () {
+    load().then(function () { play(at + 1); });
+  });
+
+  audio.addEventListener('ended', function () { play(at + 1); });
+  audio.addEventListener('pause', function () { playBtn.textContent = 'Play'; });
+
+  showTrack(null);
+})();
+
 /* ── scrolling, and the bar beside it ──────────────────────────────────── */
 (function () {
   var root = document.documentElement;
@@ -1416,16 +1610,18 @@ cd rotector-selfbot</code></pre>
     /* The motion control is fixed in a corner, so the majority answer above is
        the wrong one for it: what matters is the single band it is sitting on
        top of. Hit-tested by its own centre, which is cheap and exact. */
-    var toggle = document.querySelector('.motion-toggle');
-    if (!toggle) return;
-    var box = toggle.getBoundingClientRect();
-    var middle = box.top + box.height / 2;
-    var over = null;
-    for (var j = 0; j < bands.length; j++) {
-      var edge = bands[j].getBoundingClientRect();
-      if (middle >= edge.top && middle <= edge.bottom) over = bands[j];
+    var chips = [].slice.call(document.querySelectorAll('.motion-toggle, .player'));
+    if (!chips.length) return;
+    for (var k = 0; k < chips.length; k++) {
+      var box = chips[k].getBoundingClientRect();
+      var middle = box.top + box.height / 2;
+      var over = null;
+      for (var j = 0; j < bands.length; j++) {
+        var edge = bands[j].getBoundingClientRect();
+        if (middle >= edge.top && middle <= edge.bottom) over = bands[j];
+      }
+      chips[k].classList.toggle('on-light', !!over && over.classList.contains('invert'));
     }
-    toggle.classList.toggle('on-light', !!over && over.classList.contains('invert'));
   }
 
   var pending = false;

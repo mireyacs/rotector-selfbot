@@ -307,9 +307,14 @@ function run(hash, bands, viewport) {
   global.location = { hash };
   global.window = { innerHeight: viewport,
                     addEventListener: (n,f) => { (L[n] = L[n] || []).push(f); } };
-  // querySelector is the toggle hit-test; no control in this harness
-  global.document = { documentElement: root, querySelectorAll: () => bands,
-                      querySelector: () => null };
+  // the tone code queries twice: once for the bands, once for the chips that
+  // sit on top of them. No chips in this harness, so that one is empty.
+  global.document = {
+    documentElement: root,
+    querySelectorAll: sel =>
+      sel.indexOf('motion-toggle') >= 0 || sel.indexOf('.player') >= 0 ? [] : bands,
+    querySelector: () => null,
+  };
   global.requestAnimationFrame = fn => { rafs.push(fn); return 1; };
   eval(block);
   const before = cls.has('smooth');
