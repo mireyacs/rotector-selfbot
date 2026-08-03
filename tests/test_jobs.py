@@ -284,4 +284,100 @@ async def _popup():
 
 asyncio.run(_popup())
 
+
+# --- the results pane reads through to the active job ---------------------
+
+async def _tabs():
+    import rsb.tui.app as appmod
+    from rsb.discord.gateway import GuildMember
+    from rsb.discord.http import Channel, Guild
+    from rsb.rotector import MemberReport
+    from rsb.tui.app import Row, ScannerApp
+
+    class _HTTP:
+        def __init__(self, token, **kw): pass
+        async def me(self): return {"username": "you", "global_name": "You", "id": "1"}
+        async def guilds(self):
+            return [Guild(id="1", name="Hub", owner=False, permissions=0,
+                          member_count=10, presence_count=2)]
+        async def relationships(self): return []
+        async def private_channels(self): return []
+        async def channels(self, gid):
+            return [Channel(id="c", name="general", type=0, position=0,
+                            everyone_can_view=True)]
+        async def aclose(self): pass
+
+    class _Gateway:
+        def __init__(self, token, bot=False):
+            self.user = None; self.on_reconnect = None; self.on_reconnected = None
+        async def connect(self, timeout=45.0): return {}
+        async def fetch_members(self, *a, **kw): return {}
+        async def close(self): pass
+
+    appmod.DiscordHTTP = _HTTP
+    appmod.DiscordGateway = _Gateway
+
+    config = Config()
+    config.token = "fake.test.token"
+    config.proxy.file = "/nonexistent"
+    config.update.check_on_start = False
+    app = ScannerApp(config, persist_theme=False)
+
+    async with app.run_test(size=(140, 44)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if app.rotector is not None:
+                break
+
+        strip = app.query_one("#job-tabs")
+        assert "visible" not in strip.classes, "one tab is chrome saying nothing"
+
+        hub = source(name="Hub", ident="1")
+        first = app.job_for(hub, "rotector")
+        app.queue.active_id = first.id
+        first.rows["100"] = Row(member=GuildMember(id="100", username="alice"),
+                                report=MemberReport(discord_id="100"))
+        second = app.job_for(hub, "okappiki")
+        app.refresh_tabs()
+        await pilot.pause(0.5)
+
+        assert first.id != second.id, "one source on two backends is one job"
+        assert "visible" in strip.classes, "the strip appears once there is a choice"
+        ok("the same server on two backends gets two tabs")
+
+        # the pane reads through, so switching swaps what every call site sees
+        app.show_job(second.id)
+        await pilot.pause(0.4)
+        assert len(app.rows) == 0, len(app.rows)
+        app.show_job(first.id)
+        await pilot.pause(0.4)
+        assert len(app.rows) == 1, len(app.rows)
+        ok("switching tabs swaps the results the whole app reads")
+
+        # selection and view state belong to the tab that made them
+        app.selected.add("100")
+        app.search_term = "alice"
+        app.show_job(second.id)
+        await pilot.pause(0.3)
+        assert not app.selected and app.search_term == "", (
+            "a selection followed the tab switch; a bulk action would have "
+            "offered members the visible scan never looked at"
+        )
+        app.show_job(first.id)
+        await pilot.pause(0.3)
+        assert app.selected == {"100"} and app.search_term == "alice"
+        ok("selection, filter and search stay with the tab that made them")
+
+        # re-scanning a finished source lands back in its own tab
+        app.queue.finish(first.id)
+        again = app.job_for(hub, "rotector")
+        assert again is first, (
+            "a completed source got a second tab; a merge would have found "
+            "nothing to merge with"
+        )
+        ok("re-scanning a finished source reuses its tab, so a merge still merges")
+
+
+asyncio.run(_tabs())
+
 print("\nall scan queue checks passed.")

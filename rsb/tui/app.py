@@ -17,6 +17,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import (
+    Tab,
+    Tabs,
     DataTable,
     RichLog,
     Footer,
@@ -71,6 +73,7 @@ from ..purge import (
 from .commands import BindingCommands, ScrollableFooter, StatusStrip
 from .theme import ThemeMemory, evidence_style
 from ..backend import ATTRIBUTIONS, backend_label, build_backend
+from ..jobs import BudgetPool, JobQueue, JobState, ScanJob
 from ..okappiki import SOURCES
 from ..hotreload import HotReloader
 from .settings import (
@@ -96,6 +99,7 @@ from .dialogs import (
     PurgeConfirmDialog,
     PurgePlanDialog,
     UpdateDialog,
+    JobsDialog,
 )
 from ..proxy import AllRoutesFailed
 from ..rotector import MemberReport, RotectorError
@@ -511,6 +515,8 @@ class ScannerApp(App):
     }
     #guilds { height: 1fr; }
     #results { height: 1fr; }
+    #job-tabs { height: 2; display: none; }
+    #job-tabs.visible { display: block; }
 
     #summary {
         height: auto;
@@ -555,6 +561,7 @@ class ScannerApp(App):
         ("ctrl+r", "reload_guilds", "Reload sources"),
         ("ctrl+s", "settings", "Settings"),
         ("ctrl+u", "check_updates", "Check for updates"),
+        ("ctrl+j", "jobs", "Scan queue"),
         ("v", "vibe", "Vibe mode"),
         ("V", "vibe_skip", "Skip track"),
         ("ctrl+shift+r", "reload_code", "Reload code"),
@@ -597,10 +604,16 @@ class ScannerApp(App):
         self.sources: list[ScanSource] = []
         #: True when authenticated as a bot application: servers only
         self.is_bot = False
-        self.rows: dict[str, Row] = {}
-        #: member ids ticked for a bulk action, kept across pages and
-        #: filter changes so a selection is not silently lost
-        self.selected: set[str] = set()
+        # Results live on jobs, not on the app. Each tab is one job, so the
+        # same server can be scanned twice at once -- once per backend -- and
+        # the two answers never land on top of each other. `rows`, `selected`,
+        # `filter_mode`, `search_term` and `_page` below are properties onto
+        # whichever job the tab strip is showing, which is what let every one
+        # of the fifty-odd call sites stay exactly as it was.
+        self.queue = JobQueue(max_concurrent=config.scan.max_concurrent_jobs)
+        self.budget = BudgetPool()
+        #: somewhere for results to live before the first scan is queued
+        self.queue.add(ScanJob(source=None, backend=config.scan.backend))
         #: set by the stop key to interrupt a bulk run mid-way
         self._bulk_stop = False
         self._bulk_running = False
@@ -666,6 +679,9 @@ class ScannerApp(App):
             yield PaneDivider()
             with Vertical(id="results-pane"):
                 yield Static("RESULTS", classes="pane-title", id="results-title")
+                # one tab per scan job; hidden until there is more than one,
+                # because a single tab is a row of chrome saying nothing
+                yield Tabs(id="job-tabs")
                 yield Static("", id="summary")
                 yield Input(placeholder="Filter by name or ID...", id="search")
                 yield DataTable(id="results", cursor_type="row", zebra_stripes=True)
@@ -677,6 +693,54 @@ class ScannerApp(App):
         yield ProgressBar(id="progress", show_eta=False)
         yield StatusStrip()
         yield ScrollableFooter()
+
+    # -- the active job's results ------------------------------------------
+    # Read through to whichever tab is showing. Deliberately properties rather
+    # than a copy synced on switch: a copy would drift the moment a background
+    # scan published into a job that is not on screen.
+
+    @property
+    def rows(self) -> dict:
+        return self.queue.active.rows
+
+    @rows.setter
+    def rows(self, value: dict) -> None:
+        self.queue.active.rows = value
+
+    @property
+    def selected(self) -> set:
+        """Ticked members. Per job, because a selection belongs to the results
+        it was made in -- carrying it across a tab switch would offer a bulk
+        action over members the visible scan never looked at."""
+        return self.queue.active.selected
+
+    @selected.setter
+    def selected(self, value: set) -> None:
+        self.queue.active.selected = value
+
+    @property
+    def filter_mode(self):
+        return self.queue.active.filter_mode
+
+    @filter_mode.setter
+    def filter_mode(self, value) -> None:
+        self.queue.active.filter_mode = value
+
+    @property
+    def search_term(self) -> str:
+        return self.queue.active.search_term
+
+    @search_term.setter
+    def search_term(self, value: str) -> None:
+        self.queue.active.search_term = value
+
+    @property
+    def _page(self) -> int:
+        return self.queue.active.page
+
+    @_page.setter
+    def _page(self, value: int) -> None:
+        self.queue.active.page = value
 
     @property
     def backend_name(self) -> str:
@@ -1636,6 +1700,18 @@ class ScannerApp(App):
     ) -> None:
         assert self.http and self.gateway and self.rotector
         self.current_source = source
+
+        # this scan gets its own tab, keyed on the source *and* the backend --
+        # scanning one server against both is the point, and the two answers
+        # must not share a table
+        job = self.job_for(source, self.config.scan.backend)
+        self.queue.active_id = job.id
+        job.expected = source.member_count
+        job.note = ""
+        job.error = None
+        self.queue.start(job.id)
+        self.refresh_tabs()
+
         merging = mode.startswith("merge")
         carried = len(self.rows) if merging else 0
         if not merging:
@@ -1980,6 +2056,15 @@ class ScannerApp(App):
                 retry=lambda: self.scan_source(source, lookup=lookup, mode=mode),
             )
         finally:
+            # whatever happened, the job stops being "running" -- a tab left
+            # marked live after its scan ended is a lie the strip keeps telling
+            if job.state is JobState.RUNNING:
+                if self._stopping:
+                    self.queue.cancel(job.id)
+                else:
+                    self.queue.finish(job.id)
+            job.note = ""
+            self.refresh_tabs()
             progress.remove_class("visible")
             task = self._scan_task
             if task is not None and not task.done():
@@ -2108,6 +2193,120 @@ class ScannerApp(App):
         if track is None or self._scanning:
             return
         self._set_status(f"Vibe: {track.credit()}")
+
+    # -- job tabs ----------------------------------------------------------
+
+    def refresh_tabs(self) -> None:
+        """Rebuild the strip from the queue, keeping the active tab active.
+
+        Hidden while there is only one job: a single tab is a row of chrome
+        that says nothing, and the results pane is short enough already.
+        """
+        try:
+            strip = self.query_one("#job-tabs", Tabs)
+        except Exception:  # noqa: BLE001 - called before compose in tests
+            return
+        jobs = self.queue.jobs
+        strip.set_class(len(jobs) > 1, "visible")
+
+        # Reconciled in place rather than cleared and rebuilt: Tabs.clear() is
+        # deferred, so adding straight after it collides with the tabs that
+        # have not been removed yet -- and rebuilding every refresh would make
+        # the strip flicker on every progress tick.
+        existing = {tab.id: tab for tab in strip.query(Tab)}
+        wanted: list[str] = []
+        for job in jobs:
+            tab_id = f"job-{job.id}"
+            wanted.append(tab_id)
+            label = self._tab_label(job)
+            tab = existing.get(tab_id)
+            if tab is None:
+                strip.add_tab(Tab(label, id=tab_id))
+            elif str(tab.label) != label:
+                tab.label = label
+        for tab_id in existing:
+            if tab_id not in wanted:
+                strip.remove_tab(tab_id)
+
+        active = f"job-{self.queue.active_id}"
+        if self.queue.active_id is not None and strip.active != active:
+            strip.active = active
+
+    def _tab_label(self, job) -> str:
+        from ..jobs import JobState
+
+        mark = {
+            JobState.RUNNING: "* ", JobState.PAUSED: "|| ",
+            JobState.FAILED: "! ", JobState.CANCELLED: "- ",
+        }.get(job.state, "")
+        name = job.source_name if job.source is not None else "No scan yet"
+        return f"{mark}{name} \u00b7 {job.backend}"
+
+    @on(Tabs.TabActivated, "#job-tabs")
+    def _tab_activated(self, event: Tabs.TabActivated) -> None:
+        if event.tab is None or not event.tab.id:
+            return
+        job_id = int(event.tab.id.removeprefix("job-"))
+        if job_id == self.queue.active_id:
+            return
+        self.show_job(job_id)
+
+    def show_job(self, job_id: int) -> None:
+        """Point the results pane at another job.
+
+        Everything downstream reads through the properties, so this is a
+        rebuild rather than a copy -- and a background scan publishing into a
+        job that is not on screen stays correct because nothing was copied.
+        """
+        job = self.queue.get(job_id)
+        if job is None:
+            return
+        self.queue.active_id = job_id
+        self._shown.clear()
+        self._matching = 0
+        self.query_one("#results-title", Static).update(
+            f"RESULTS - {job.title}" if job.source is not None else "RESULTS"
+        )
+        search = self.query_one("#search", Input)
+        search.value = job.search_term
+        self._rebuild_table()
+        self.refresh_tabs()
+
+    def job_for(self, source, backend: str):
+        """The job for this source and backend, made if it does not exist.
+
+        The same source on a *different* backend is the feature, so only the
+        pair is treated as one job. The empty starting tab is reused rather
+        than left behind as a dead first tab.
+        """
+        # Any job for this pair, finished or not. duplicate_of only considers
+        # unfinished ones, which is right for "is this already queued" and
+        # wrong here: a re-scan of a completed source has to land back in that
+        # source's own tab, or a merge finds nothing to merge with.
+        source_id = getattr(source, "id", "")
+        for job in self.queue.jobs:
+            if getattr(job.source, "id", None) == source_id and job.backend == backend:
+                return job
+        blank = next(
+            (j for j in self.queue.jobs if j.source is None and not j.rows), None
+        )
+        if blank is not None:
+            blank.source = source
+            blank.backend = backend
+            return blank
+        job = ScanJob(source=source, backend=backend)
+        job.filter_mode = self.filter_mode
+        return self.queue.add(job)
+
+    def action_jobs(self) -> None:
+        self.open_jobs()
+
+    @work(exclusive=True, group="jobs")
+    async def open_jobs(self) -> None:
+        acted = await self.push_screen_wait(JobsDialog(self.queue, self.budget))
+        self.refresh_tabs()
+        if acted:
+            self._set_status(self.queue.summary())
 
     # -- results table -----------------------------------------------------
 
