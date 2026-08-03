@@ -26,7 +26,7 @@ from textual.widgets import (
     Static,
 )
 
-from ..config import Config
+from ..config import Config, write_section
 from ..discord import (
     DiscordAuthError,
     DiscordGateway,
@@ -303,11 +303,31 @@ class DetailDivider(Static):
 
     MIN_HEIGHT = 3
     MAX_HEIGHT = 40
+    #: what a double click puts it back to
+    DEFAULT_HEIGHT = 14
 
     def __init__(self) -> None:
         super().__init__(id="detail-divider", markup=False)
         self._dragging = False
         self._moved = False
+
+    def on_click(self, event) -> None:
+        """Double click resets the pane to its default height.
+
+        The count lives on Click, not on MouseDown, so this cannot be decided
+        before the drag starts -- which means the first click of the pair has
+        already run the toggle below. Undone here rather than deferred: a
+        single click that waited to see whether a second was coming would put a
+        visible lag on the common action to serve the rare one.
+        """
+        if event.chain < 2:
+            return
+        if self.app._detail_hidden:
+            self.app.action_toggle_detail()
+        self.app.set_detail_height(self.DEFAULT_HEIGHT)
+        self.app.remember_layout()
+        self.app.notify("Detail pane reset to its default height.")
+        event.stop()
 
     def on_mouse_down(self, event) -> None:
         self._dragging = True
@@ -377,9 +397,21 @@ class PaneDivider(Static):
     MIN_WIDTH = 24
     MAX_WIDTH = 90
 
+    #: what a double click puts it back to
+    DEFAULT_WIDTH = 56
+
     def __init__(self) -> None:
         super().__init__("\u2502", id="divider")
         self._dragging = False
+
+    def on_click(self, event) -> None:
+        """Double click resets the pane to its default width."""
+        if event.chain < 2:
+            return
+        self.app.set_pane_width(self.DEFAULT_WIDTH)
+        self.app.remember_layout()
+        self.app.notify("Sources pane reset to its default width.")
+        event.stop()
 
     def on_mouse_down(self, event) -> None:
         self._dragging = True
@@ -545,6 +577,10 @@ class ScannerApp(App):
         #: ``config_path()`` to a real file, so a screenshot run would otherwise
         #: rewrite the operator's own config.
         self.persist_theme = persist_theme
+        #: layout is written to the same file the theme is, so it is off for
+        #: headless tooling for exactly the same reason
+        self.persist_layout = persist_theme
+        self._layout_timer = None
         #: display name of the signed-in account, for the subtitle
         self._account_name = "?"
         self.http: DiscordHTTP | None = None
@@ -788,6 +824,63 @@ class ScannerApp(App):
     @on(SourceTable.GroupClicked)
     def _group_clicked(self, event: SourceTable.GroupClicked) -> None:
         self._toggle_group(event.title)
+        self.remember_layout()
+
+    # -- remembered layout -------------------------------------------------
+
+    def remember_layout(self) -> None:
+        """Write the current layout to [ui], a beat after it settles.
+
+        Debounced for the same reason the theme is: a drag fires a resize on
+        every pointer move, and rewriting config.toml a hundred times across
+        one gesture would be absurd. Failures are swallowed -- a layout that
+        cannot be saved is not worth interrupting a scan for, and the pane is
+        the size you dragged it to either way.
+        """
+        if not self.persist_layout:
+            return
+        # A Config built in code rather than loaded from a file still resolves
+        # config_path() to a real path -- ./config.toml when one is there -- so
+        # a test or a tool that resizes a pane would rewrite the operator's
+        # config. Only a config that came *from* a file is written back to.
+        if self.config.source is None:
+            return
+        if self._layout_timer is not None:
+            self._layout_timer.stop()
+        self._layout_timer = self.set_timer(1.5, self._write_layout)
+
+    def _write_layout(self) -> None:
+        self._layout_timer = None
+        ui = self.config.ui
+        ui.pane_width = self._pane_width
+        ui.detail_height = self._detail_height
+        ui.sources_hidden = self._sources_hidden
+        ui.detail_hidden = self._detail_hidden
+        ui.collapsed = sorted(self._collapsed)
+        try:
+            write_section(self.config.config_path(), "ui", {
+                "theme": ui.theme,
+                "pane_width": ui.pane_width,
+                "detail_height": ui.detail_height,
+                "sources_hidden": ui.sources_hidden,
+                "detail_hidden": ui.detail_hidden,
+                "collapsed": ui.collapsed,
+            })
+        except OSError as exc:
+            self.log_debug(f"could not save the layout: {exc}", "warn")
+
+    def restore_layout(self) -> None:
+        """Put the panes back where they were left."""
+        ui = self.config.ui
+        if ui.pane_width:
+            self.set_pane_width(ui.pane_width)
+        if ui.detail_height:
+            self.set_detail_height(ui.detail_height)
+        self._collapsed = set(ui.collapsed or ())
+        if ui.sources_hidden and not self._sources_hidden:
+            self.action_toggle_sources()
+        if ui.detail_hidden and not self._detail_hidden:
+            self.action_toggle_detail()
 
     # -- collapsible panes -------------------------------------------------
 
@@ -807,6 +900,7 @@ class ScannerApp(App):
         self.log_debug(
             f"sources pane {'hidden' if self._sources_hidden else 'shown'}"
         )
+        self.remember_layout()
 
     def set_detail_height(self, height: int) -> None:
         """Resize the detail pane, clamped so neither pane vanishes."""
@@ -822,6 +916,7 @@ class ScannerApp(App):
         )
         detail.styles.height = height
         self._detail_height = height
+        self.remember_layout()
 
     def action_grow_detail(self) -> None:
         self.set_detail_height(self._detail_height + 3)
@@ -895,6 +990,7 @@ class ScannerApp(App):
         )
         pane.styles.width = width
         self._pane_width = width
+        self.remember_layout()
 
     def action_widen_pane(self) -> None:
         self.set_pane_width(self._pane_width + 4)
@@ -1258,6 +1354,8 @@ class ScannerApp(App):
             if advisories:
                 self._advisories = advisories
             await self._load_sources()
+
+            self.restore_layout()
 
             if self.config.update.check_on_start:
                 # after the sources are up, not before: a git fetch competing

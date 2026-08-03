@@ -113,9 +113,26 @@ class UpdateConfig:
 
 @dataclass
 class UiConfig:
+    """Appearance and layout, remembered between runs.
+
+    All of it is written by the app rather than typed: a pane you dragged to a
+    width should still be that width tomorrow, and re-folding the same six
+    source groups every launch is the kind of small tax that makes a tool feel
+    like it is not listening.
+    """
+
     #: Textual theme to open in. Empty means whatever Textual defaults to.
     #: Set from the command palette's Theme command rather than by hand.
     theme: str = ""
+    #: sources pane width in columns; 0 means the built-in default
+    pane_width: int = 0
+    #: detail pane height in rows; 0 means the built-in default
+    detail_height: int = 0
+    #: panes folded away
+    sources_hidden: bool = False
+    detail_hidden: bool = False
+    #: source group titles left folded
+    collapsed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -373,6 +390,10 @@ class Config:
         ui = data.get("ui") or {}
         if ui.get("theme") is not None:
             self.ui.theme = str(ui["theme"]).strip()
+        for key in ("pane_width", "detail_height", "sources_hidden",
+                    "detail_hidden", "collapsed"):
+            if key in ui and ui[key] is not None:
+                setattr(self.ui, key, ui[key])
 
         scan = data.get("scan") or {}
         for key in ("backend", "max_concurrent_jobs", "skip_bots", "max_members",

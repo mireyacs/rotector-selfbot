@@ -91,6 +91,13 @@ check_on_start = true
 # project page.
 theme = ""
 
+# Layout, remembered as you change it. Written by the app, not by hand.
+pane_width = 0        # sources pane width; 0 = the default
+detail_height = 0     # detail pane height; 0 = the default
+sources_hidden = false
+detail_hidden = false
+collapsed = []        # source groups left folded
+
 
 # What a scan collects and what the results table lists.
 [scan]

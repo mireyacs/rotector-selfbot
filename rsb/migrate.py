@@ -108,6 +108,11 @@ SCHEMA: list[Section] = [
                     "the default. \"ten-thousand\" matches the project page."
                 ),
             ),
+            Setting("pane_width", 0, "Sources pane width. 0 = the default."),
+            Setting("detail_height", 0, "Detail pane height. 0 = the default."),
+            Setting("sources_hidden", False, "Open with the sources pane folded."),
+            Setting("detail_hidden", False, "Open with the detail pane folded."),
+            Setting("collapsed", [], "Source groups left folded away."),
         ],
     ),
     Section(

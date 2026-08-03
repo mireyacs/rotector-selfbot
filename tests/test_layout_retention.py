@@ -11,7 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import rsb.tui.app as appmod
 from rsb.config import Config
-from rsb.discord.http import GROUP_DM_CHANNEL, Guild, PrivateChannel
+from rsb.discord.http import (
+    GROUP_DM_CHANNEL, Channel, Guild, PrivateChannel,
+)
 from rsb.export import MARKER, ExportRow, RETENTION_HOURS, export, purge_expired
 from rsb.migrate import SCHEMA, migrate_config, missing_settings
 from rsb.rotector import MemberReport
@@ -309,3 +311,115 @@ print()
 test_migration()
 print()
 asyncio.run(test_ui())
+
+# --------------------------------------------------------------------------
+# layout remembered between runs
+# --------------------------------------------------------------------------
+
+async def test_layout_is_remembered_and_resettable():
+    """Pane sizes, folded panes and folded groups survive a restart.
+
+    And the guard that matters: a Config built in code rather than loaded from
+    a file must never be written back to. config_path() falls back to
+    ./config.toml when one exists, so without this a test resizing a pane
+    rewrote the operator's own config -- which is exactly what happened.
+    """
+    import rsb.tui.app as appmod
+    from rsb.tui.app import DetailDivider, PaneDivider, ScannerApp
+
+    class _HTTP:
+        def __init__(self, token, **kw): pass
+        async def me(self): return {"username": "you", "global_name": "You", "id": "1"}
+        async def guilds(self):
+            return [Guild(id="1", name="g", owner=False, permissions=0,
+                          member_count=10, presence_count=2)]
+        async def relationships(self): return []
+        async def private_channels(self): return []
+        async def channels(self, gid):
+            return [Channel(id="c", name="general", type=0, position=0,
+                            everyone_can_view=True)]
+        async def aclose(self): pass
+
+    class _Gateway:
+        def __init__(self, token, bot=False):
+            self.user = None; self.on_reconnect = None; self.on_reconnected = None
+        async def connect(self, timeout=45.0): return {}
+        async def fetch_members(self, *a, **kw): return {}
+        async def close(self): pass
+
+    appmod.DiscordHTTP = _HTTP
+    appmod.DiscordGateway = _Gateway
+
+    base = Path(tempfile.mkdtemp())
+    path = base / "config.toml"
+    path.write_text(
+        '[discord]\n# a comment the operator wrote\ntoken = "fake.test.token"\n',
+        encoding="utf-8",
+    )
+
+    config = Config.load(path)
+    config.proxy.file = "/nonexistent"
+    config.update.check_on_start = False
+    app = ScannerApp(config)
+    async with app.run_test(size=(120, 40)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if app.rotector is not None:
+                break
+        app.set_pane_width(72)
+        app.set_detail_height(22)
+        app._toggle_group("SERVERS")
+        await pilot.pause(2.3)          # past the debounce
+
+    saved = Config.load(path)
+    assert saved.ui.pane_width == 72, saved.ui.pane_width
+    assert saved.ui.detail_height == 22, saved.ui.detail_height
+    assert "SERVERS" in saved.ui.collapsed, saved.ui.collapsed
+    assert saved.token == "fake.test.token", "saving the layout disturbed [discord]"
+    body = path.read_text(encoding="utf-8")
+    assert "# a comment the operator wrote" in body, "the operator's comment was lost"
+    ok("pane sizes and folded groups are written to [ui], comments intact")
+
+    # next launch puts them back
+    second = ScannerApp(Config.load(path))
+    second.config.proxy.file = "/nonexistent"
+    second.config.update.check_on_start = False
+    async with second.run_test(size=(120, 40)) as pilot:
+        for _ in range(50):
+            await pilot.pause(0.1)
+            if second.rotector is not None:
+                break
+        await pilot.pause(0.6)
+        assert second._pane_width == 72, second._pane_width
+        assert second._detail_height == 22, second._detail_height
+        assert "SERVERS" in second._collapsed, second._collapsed
+        ok("a second launch restores the panes and the folded groups")
+
+        # and a double click puts one back to its default
+        second.set_pane_width(PaneDivider.DEFAULT_WIDTH)
+        second.set_detail_height(DetailDivider.DEFAULT_HEIGHT)
+        assert second._pane_width == 56 and second._detail_height == 14
+        ok("the named defaults are what a double click resets to")
+
+    # a Config that never came from a file is never written back to
+    bare = Config()
+    bare.token = "fake.test.token"
+    bare.proxy.file = "/nonexistent"
+    bare.update.check_on_start = False
+    assert bare.source is None
+    third = ScannerApp(bare)
+    async with third.run_test(size=(120, 40)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if third.rotector is not None:
+                break
+        third.set_pane_width(99)
+        await pilot.pause(2.0)
+        assert bare.ui.pane_width == 0, (
+            "a Config built in code was written back to; config_path() would "
+            "have aimed that at ./config.toml"
+        )
+    ok("a Config built in code is never persisted, whatever the panes do")
+
+
+asyncio.run(test_layout_is_remembered_and_resettable())
