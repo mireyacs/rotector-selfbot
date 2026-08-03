@@ -532,9 +532,11 @@ figure img.swapping { opacity: .35; }
   background: var(--ground);
   color: var(--ink);
   font: inherit;
-  font-size: .62rem;
+  /* Action, the same step .btn uses -- this is a button face, and Micro is
+     explicitly not for anything a visitor has to read */
+  font-size: .78rem;
   font-weight: 700;
-  letter-spacing: .17em;
+  letter-spacing: .13em;
   text-transform: uppercase;
   border-radius: 0;
   cursor: pointer;
@@ -547,7 +549,9 @@ figure img.swapping { opacity: .35; }
 html:not(.motion) .motion-toggle .state {
   -webkit-mask: linear-gradient(90deg, #000 0 9px); mask: linear-gradient(90deg, #000 0 9px);
 }
-@media (max-width: 620px) { .motion-toggle { font-size: .58rem; padding: .45rem .6rem; } }
+/* tighter, not smaller: the ramp has no step below Micro and this sits two
+   above it, so a narrow screen gives back padding rather than legibility */
+@media (max-width: 620px) { .motion-toggle { padding: .5rem .7rem; gap: .45rem; } }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

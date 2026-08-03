@@ -114,6 +114,14 @@ assert "border-radius: 0" in HTML, "the bar is square like everything else"
 ok("the scrollbar is styled for both tones, in both engines, with no radius")
 
 
+# every literal font-size has to be a step DESIGN.md documents; the ramp is
+# eight steps precisely so a ninth is drift rather than a decision
+RAMP = {".62rem", ".68rem", ".78rem", ".82rem", "1rem", "1.02rem", "1.2rem", "1.5rem"}
+sizes = set(re.findall(r"font-size: ([0-9.]+rem)", HTML))
+stray = {size for size in sizes if size not in RAMP}
+assert not stray, f"font sizes off the documented ramp: {sorted(stray)}"
+ok(f"all {len(sizes)} literal font sizes sit on the documented type ramp")
+
 # --- motion, and the switch that stops it ---------------------------------
 # Everything that moves is gated on one class, so a single control can stop
 # the lot -- WCAG 2.2.2 asks for exactly that of anything moving on its own.
