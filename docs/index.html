@@ -681,17 +681,22 @@ html:not(.motion) .motion-toggle .state {
 /* The chip is the width of its icon when shut and grows to fit the word when
    open, so a closed player is a mark in the corner rather than a label
    competing with the motion control beside it. */
+/* Widened on grid-template-columns rather than max-width, the same way the
+   panel above unrolls on grid-template-rows: animating a width or a margin
+   makes the browser re-lay-out the dock on every frame, and the chip sits next
+   to the motion control, so the thrash would be visible on both. The gap lives
+   inside the animated cell as padding, so there is no second margin animating
+   alongside it. */
 .player__open .word {
-  display: inline-block;
-  max-width: 0;
+  display: grid;
+  grid-template-columns: 0fr;
   opacity: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  transition: max-width .34s cubic-bezier(.16, 1, .3, 1), opacity .18s linear,
-              margin-left .34s cubic-bezier(.16, 1, .3, 1);
-  margin-left: 0;
+  transition: grid-template-columns .34s cubic-bezier(.16, 1, .3, 1),
+              opacity .18s linear;
 }
-.player.open .player__open .word { max-width: 6rem; opacity: 1; margin-left: .55rem; }
+.player__open .word > span { overflow: hidden; white-space: nowrap; min-width: 0; }
+.player.open .player__open .word { grid-template-columns: 1fr; opacity: 1; }
+.player.open .player__open .word > span { padding-left: .55rem; }
 .player__open { gap: 0; }
 
 /* play and pause, drawn as masks so they invert with the chip like everything
@@ -1581,7 +1586,7 @@ cd rotector-selfbot</code></pre>
     '<button type="button" class="motion-toggle player__open" data-act="open" ' +
       'aria-expanded="false" aria-label="Music player">' +
       '<span class="state" aria-hidden="true"></span>' +
-      '<span class="word">Music</span></button>';
+      '<span class="word"><span>Music</span></span></button>';
   dock.insertBefore(player, dock.firstChild);
 
   var body = player.querySelector('.player__body');
