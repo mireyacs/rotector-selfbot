@@ -542,6 +542,13 @@ figure img.swapping { opacity: .35; }
   cursor: pointer;
 }
 .motion-toggle:hover, .motion-toggle:focus-visible { background: var(--ink); color: var(--ground); }
+/* over an inverted band it inverts too, the same way the scrollbar does --
+   a black chip on a white section would be the one thing on the page that
+   ignores which side of the fold it is on */
+.motion-toggle.on-light { background: var(--ink); color: var(--ground); border-color: var(--ground); }
+.motion-toggle.on-light:hover, .motion-toggle.on-light:focus-visible {
+  background: var(--ground); color: var(--ink);
+}
 /* the two-bar/▶ glyph is drawn, not typed, so it inherits the invert */
 .motion-toggle .state { display: block; width: 9px; height: 11px; background: currentColor;
   -webkit-mask: linear-gradient(90deg, #000 0 3px, transparent 3px 6px, #000 6px 9px);
@@ -602,11 +609,11 @@ html:not(.motion) .motion-toggle .state {
   <div class="rail rail--r">
     <div class="row">
       <div class="label">Example scan &mdash; members read</div>
-      <b>10,833</b>
+      <b id="count-members">10,833</b>
     </div>
     <div class="row">
       <div class="label">Findings</div>
-      <b>14</b>
+      <b id="count-findings">14</b>
     </div>
     <div class="row">
       <div class="label">Coverage</div>
@@ -1026,18 +1033,25 @@ cd rotector-selfbot</code></pre>
 
   var MEMBERS = 10833;   // the README's real server
   var FINDINGS = 14;     // the handful that break the field
-  var bars = [], marks = [], w = 0, h = 0, dpr = 1, raf = null, t0 = null;
+  var bars = [], marks = [], w = 0, h = 0, dpr = 1, raf = null;
   // How far the scan pass has swept, 0..1. Remembered because resizing has to
   // redraw the field it is *currently* showing: assigning canvas.width wipes
   // the bitmap, and redrawing at 0 dimmed every bar to 22%, skipped all
   // fourteen findings (their x is never <= 0) and ran the sine loop zero times.
   var progress = 0;
+  // how much of the wall is standing: 1 while it is up, falling to 0 as one
+  // pass is taken down and the next is laid out
+  var veil = 1;
   // where the stacked readout starts on narrow screens; the field stops above
   // it rather than running its marks behind the figures
   var floorY = null, ceilY = null;
 
-  function build() {
-    var rand = mulberry32(0x5EED);
+  //: the wall the page opens on, and the one tools/thumbnail.py draws. Later
+  //: passes lay out a fresh one, but the first paint is always this.
+  var SEED_BARS = 0x5EED, SEED_MARKS = 0xF1A6;
+
+  function build(barSeed, markSeed) {
+    var rand = mulberry32(barSeed === undefined ? SEED_BARS : barSeed);
     bars = [];
     // one bar per ~14 members, so the wall is the population, not decoration
     var count = Math.max(120, Math.round(MEMBERS / 14));
@@ -1053,7 +1067,7 @@ cd rotector-selfbot</code></pre>
       });
     }
     marks = [];
-    var mrand = mulberry32(0xF1A6);
+    var mrand = mulberry32(markSeed === undefined ? SEED_MARKS : markSeed);
     for (var j = 0; j < FINDINGS; j++) {
       marks.push({ x: 0.04 + mrand() * 0.92, phase: mrand() });
     }
@@ -1074,13 +1088,14 @@ cd rotector-selfbot</code></pre>
     // the readout, so nothing the visitor reads or clicks is struck through
     var acts = document.querySelector('.actions');
     ceilY = (w <= 980 && acts) ? acts.offsetTop + acts.offsetHeight + 22 : null;
-    draw(reduce.matches ? 1 : progress);
+    draw(reduce.matches ? 1 : progress, reduce.matches ? 1 : veil);
   }
 
   // One authored moment: a single scan pass sweeps the field once on load and
   // leaves the findings standing. No looping strobe, nothing on hover.
-  function draw(p) {
+  function draw(p, fade) {
     progress = p;
+    veil = fade === undefined ? 1 : fade;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
 
@@ -1097,13 +1112,13 @@ cd rotector-selfbot</code></pre>
     for (var i = 0; i < bars.length; i++) {
       var b = bars[i], x = Math.round(b.x * w) + 0.5;
       var lit = b.x <= p;
-      ctx.globalAlpha = (lit ? b.a : b.a * 0.22) * ceiling;
+      ctx.globalAlpha = (lit ? b.a : b.a * 0.22) * ceiling * veil;
       ctx.fillStyle = '#fff';
       ctx.fillRect(x, top, b.w, span);
     }
 
     // the sine trace: one continuous curve across the wall
-    ctx.globalAlpha = 0.34;
+    ctx.globalAlpha = 0.34 * veil;
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -1119,54 +1134,101 @@ cd rotector-selfbot</code></pre>
       var mk = marks[m];
       if (mk.x > p) continue;
       var mxr = Math.round(mk.x * w) + 0.5;
-      ctx.globalAlpha = (0.5 + 0.5 * Math.pow(Math.abs(mk.x - 0.5) * 2, 1.2)) * (narrow ? 0.85 : 1);
+      ctx.globalAlpha = (0.5 + 0.5 * Math.pow(Math.abs(mk.x - 0.5) * 2, 1.2)) * (narrow ? 0.85 : 1) * veil;
       ctx.fillStyle = '#fff';
       if (narrow && markRoom < 70) continue;
       ctx.fillRect(mxr - 1, markTop, 2, markRoom);
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = veil;
       var my = markTop + markRoom * (0.18 + mk.phase * 0.64);
       ctx.fillRect(mxr - 4, Math.round(my), 9, 9);
-      ctx.globalAlpha = 0.28;
+      ctx.globalAlpha = 0.28 * veil;
       ctx.fillRect(mxr - 14, Math.round(my) + 4, 29, 1);
     }
     ctx.globalAlpha = 1;
   }
 
-  function step(ts) {
-    if (t0 === null) t0 = ts;
-    var p = Math.min(1, (ts - t0) / 2200);
-    // exponential ease-out from an already-visible default
-    draw(1 - Math.pow(1 - p, 3));
-    if (p < 1) { raf = requestAnimationFrame(step); return; }
-    // With motion running the pass repeats rather than stopping: the field
-    // rests at full for a beat, then sweeps again. The findings are never
-    // unlit for long, because a wall that keeps losing its marks reads as
-    // broken rather than alive.
-    raf = null;
-    if (document.documentElement.classList.contains('motion')) {
-      sweepAgain();
+  /* The example scan in the right-hand rail is the same scan the wall is: the
+     count runs up as the pass sweeps, and a finding is added the moment its
+     mark is reached. Not a live region, so nothing is announced mid-count --
+     the figure a reader lands on is the one that settles. */
+  var membersEl = document.getElementById('count-members');
+  var findingsEl = document.getElementById('count-findings');
+
+  function readout(p) {
+    if (!membersEl || !findingsEl) return;
+    membersEl.textContent = Math.round(MEMBERS * p).toLocaleString('en-US');
+    var found = 0;
+    for (var i = 0; i < marks.length; i++) { if (marks[i].x <= p) found++; }
+    findingsEl.textContent = String(found);
+  }
+
+  /* One pass is: sweep the wall up, hold it, take it down, lay out a different
+     one. The fade matters -- cutting straight from a finished wall to a fresh
+     one reads as a glitch, where a wall that dims and is replaced reads as the
+     next sample. */
+  var SWEEP_MS = 2200, HOLD_MS = 2600, FADE_MS = 900;
+  var phase = 'sweep', phaseAt = null;
+
+  function ease(p) { return 1 - Math.pow(1 - p, 3); }
+
+  function frame(ts) {
+    if (phaseAt === null) phaseAt = ts;
+    var elapsed = ts - phaseAt;
+
+    if (phase === 'sweep') {
+      var p = Math.min(1, elapsed / SWEEP_MS);
+      draw(ease(p), 1);
+      readout(ease(p));
+      if (p >= 1) { phase = 'hold'; phaseAt = ts; }
+    } else if (phase === 'hold') {
+      // nothing to redraw; the finished wall simply stands
+      if (elapsed >= HOLD_MS) { phase = 'fade'; phaseAt = ts; }
+    } else {
+      var f = Math.min(1, elapsed / FADE_MS);
+      draw(1, 1 - f);
+      if (f >= 1) {
+        // a different wall every pass, still built by the same generator
+        build((Math.random() * 4294967295) >>> 0, (Math.random() * 4294967295) >>> 0);
+        readout(0);
+        phase = 'sweep';
+        phaseAt = ts;
+      }
     }
+
+    if (running()) raf = requestAnimationFrame(frame);
+    else { raf = null; settle(); }
   }
 
-  var restTimer = null;
-  function sweepAgain() {
-    clearTimeout(restTimer);
-    restTimer = setTimeout(function () {
-      if (!document.documentElement.classList.contains('motion')) return;
-      t0 = null;
-      raf = requestAnimationFrame(step);
-    }, 2600);
+  function running() {
+    return !reduce.matches && document.documentElement.classList.contains('motion');
   }
 
-  // the toggle tells the canvas to pick the loop back up
+  // where the field rests when nothing is animating: one whole wall, the
+  // example scan at its real figures
+  function settle() {
+    phase = 'sweep';
+    phaseAt = null;
+    draw(1, 1);
+    readout(1);
+  }
+
+  function start() {
+    if (raf !== null) return;
+    phase = 'sweep';
+    phaseAt = null;
+    raf = requestAnimationFrame(frame);
+  }
+
   window.addEventListener('rsb:motion', function (event) {
-    if (event.detail) { if (raf === null) sweepAgain(); }
-    else { clearTimeout(restTimer); if (raf) { cancelAnimationFrame(raf); raf = null; } draw(1); }
+    if (event.detail) start();
+    else { if (raf) cancelAnimationFrame(raf); raf = null; settle(); }
   });
 
   build();
   resize();
-  if (!reduce.matches) { t0 = null; raf = requestAnimationFrame(step); }
+  settle();
+  // the motion script decides whether this runs; it fires rsb:motion on load
+
 
   var pending = false;
   window.addEventListener('resize', function () {
@@ -1176,8 +1238,8 @@ cd rotector-selfbot</code></pre>
   }, { passive: true });
 
   reduce.addEventListener('change', function () {
-    if (raf) cancelAnimationFrame(raf);
-    if (reduce.matches) { draw(1); } else { t0 = null; raf = requestAnimationFrame(step); }
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+    if (reduce.matches) settle(); else start();
   });
 
   // rails: real-shaped id and readout texture, never mistaken for content
@@ -1350,6 +1412,20 @@ cd rotector-selfbot</code></pre>
       if (bands[i].classList.contains('invert')) light += seen; else dark += seen;
     }
     root.classList.toggle('on-light', light > dark);
+
+    /* The motion control is fixed in a corner, so the majority answer above is
+       the wrong one for it: what matters is the single band it is sitting on
+       top of. Hit-tested by its own centre, which is cheap and exact. */
+    var toggle = document.querySelector('.motion-toggle');
+    if (!toggle) return;
+    var box = toggle.getBoundingClientRect();
+    var middle = box.top + box.height / 2;
+    var over = null;
+    for (var j = 0; j < bands.length; j++) {
+      var edge = bands[j].getBoundingClientRect();
+      if (middle >= edge.top && middle <= edge.bottom) over = bands[j];
+    }
+    toggle.classList.toggle('on-light', !!over && over.classList.contains('invert'));
   }
 
   var pending = false;

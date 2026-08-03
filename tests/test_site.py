@@ -257,6 +257,30 @@ console.log(JSON.stringify({narrow, wide}));
         )
     ok("resizing redraws the finished field: 14 findings, the sine and the bars")
 
+    # --- the hero field cycles, and the example scan counts with it -------
+    harness = 'const PAGE_PATH = "PAGEPATH";\nconst fs = require(\'fs\');\nconst html = fs.readFileSync(PAGE_PATH,\'utf8\');\nconst whole = html.slice(html.lastIndexOf(\'<script>\')+8, html.lastIndexOf(\'</script>\'));\nconst script = whole.slice(0, whole.indexOf(\'/* ── motion: the switch\'));\n\nlet motionOn = true;\nlet ops = { rects: [], pts: 0, alphas: [] };\nconst ctx = { fillStyle:\'\', strokeStyle:\'\', globalAlpha:1, lineWidth:1,\n  setTransform(){}, fillRect(x,y,w,h){ ops.rects.push({x,w,h,a:this.globalAlpha}); ops.alphas.push(this.globalAlpha); },\n  beginPath(){}, moveTo(){ ops.pts++; }, lineTo(){ ops.pts++; }, stroke(){} };\nconst canvas = { getContext:()=>ctx, width:0, height:0,\n                 getBoundingClientRect:()=>({width:1400, height:900}) };\nconst counters = { \'count-members\': {textContent:\'10,833\'}, \'count-findings\': {textContent:\'14\'} };\nconst L = {};\nglobal.window = { devicePixelRatio:1,\n  matchMedia:()=>({matches:false, addEventListener(){}}),\n  addEventListener:(n,f)=>{ (L[n]=L[n]||[]).push(f); },\n  dispatchEvent(e){ (L[e.type]||[]).forEach(f=>f(e)); } };\nglobal.location = { hash:\'\' };\nglobal.document = {\n  getElementById: id => (id===\'field\' ? canvas : counters[id] || null),\n  querySelector:()=>null, querySelectorAll:()=>[], addEventListener(){},\n  documentElement:{ className:\'\', classList:{ add(){}, toggle(){}, contains:()=>motionOn } } };\nlet rafFn = null;\nglobal.requestAnimationFrame = fn => { rafFn = fn; return 1; };\nglobal.cancelAnimationFrame = ()=>{};\nglobal.setTimeout = fn => 1; global.clearTimeout = ()=>{};\neval(script);\n\nfunction tick(ts) { const f = rafFn; rafFn = null; ops = {rects:[],pts:0,alphas:[]}; if (f) f(ts); }\nfunction stats(){ const findings = ops.rects.filter(r=>r.w===9&&r.h===9).length;\n  // ignore the opaque background clear at the top of draw(); the field is\n  // everything narrow enough to be a bar or a mark\n  const field = ops.rects.filter(r => r.w <= 30).map(r => r.a);\n  const maxA = field.length ? Math.max(...field) : 0;\n  return { findings, maxA: +maxA.toFixed(3), members: counters[\'count-members\'].textContent,\n           found: counters[\'count-findings\'].textContent }; }\n\n\nconst out = { settled: stats() };\nL[\'rsb:motion\'].forEach(f => f({type:\'rsb:motion\', detail:true}));\ntick(0);    out.sweepStart = stats();\ntick(1100); out.sweepMid   = stats();\ntick(2200); out.sweepEnd   = stats();\nconst markXs = () => ops.rects.filter(r=>r.w===9&&r.h===9).map(r=>r.x).sort((a,b)=>a-b).join(\',\');\nconst first = markXs();\ntick(4900);                      // hold elapses\ntick(5200); out.fadeEarly = stats();\ntick(5700); out.fadeLate  = stats();\ntick(5800); out.reseed    = stats();          // fade done: rebuild + reset\ntick(8000); out.secondPass = stats();\nout.wallChanged = markXs() !== first;\nops = {rects:[],pts:0,alphas:[]};\nmotionOn = false;\nL[\'rsb:motion\'].forEach(f => f({type:\'rsb:motion\', detail:false}));\nout.stopped = stats();\nconsole.log(JSON.stringify(out));\n'.replace("PAGEPATH", str(PAGE))
+    c = _node(harness)
+
+    assert c["settled"]["findings"] == 14 and c["settled"]["members"] == "10,833", c["settled"]
+    ok("with motion off the field rests whole, at the figures it reports")
+
+    assert c["sweepStart"]["members"] == "0" and c["sweepStart"]["found"] == "0"
+    assert c["sweepMid"]["found"] not in ("0", "14"), c["sweepMid"]
+    assert c["sweepEnd"]["members"] == "10,833" and c["sweepEnd"]["found"] == "14"
+    ok(f"the example scan counts up with the pass: 0 -> {c['sweepMid']['members']} -> 10,833")
+
+    assert c["fadeEarly"]["maxA"] < 1, "the wall is not fading before the next one"
+    assert c["fadeLate"]["maxA"] < c["fadeEarly"]["maxA"], (c["fadeEarly"], c["fadeLate"])
+    ok(f"the wall fades out first: {c['fadeEarly']['maxA']} then {c['fadeLate']['maxA']}")
+
+    assert c["reseed"]["members"] == "0" and c["reseed"]["found"] == "0"
+    assert c["wallChanged"], "every pass lays out the same wall; positions are fixed"
+    ok("each pass lays out a different wall and restarts the count")
+
+    assert c["stopped"]["findings"] == 14 and c["stopped"]["maxA"] == 1
+    assert c["stopped"]["members"] == "10,833" and c["stopped"]["found"] == "14"
+    ok("stopping the motion leaves one whole wall and the real figures")
+
     # and the redraw is per frame rather than 120ms after letting go, or the
     # canvas is simply blank for the length of a drag
     assert "requestAnimationFrame(function () { pending = false; resize(); })" in SCRIPT
@@ -283,7 +307,9 @@ function run(hash, bands, viewport) {
   global.location = { hash };
   global.window = { innerHeight: viewport,
                     addEventListener: (n,f) => { (L[n] = L[n] || []).push(f); } };
-  global.document = { documentElement: root, querySelectorAll: () => bands };
+  // querySelector is the toggle hit-test; no control in this harness
+  global.document = { documentElement: root, querySelectorAll: () => bands,
+                      querySelector: () => null };
   global.requestAnimationFrame = fn => { rafs.push(fn); return 1; };
   eval(block);
   const before = cls.has('smooth');

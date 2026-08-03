@@ -42,8 +42,11 @@ PAGE = (ROOT / "docs" / "index.html").read_text(encoding="utf-8")
 ASSUMPTIONS = {
     "member count": f"MEMBERS = {MEMBERS}",
     "finding count": f"FINDINGS = {FINDINGS}",
-    "bar seed": f"mulberry32(0x{SEED_BARS:X})",
-    "mark seed": f"mulberry32(0x{SEED_MARKS:X})",
+    # the page lays out a fresh wall on every pass after the first, but the
+    # *first* is still built from these -- which is the whole reason the
+    # thumbnail can claim to be the page's own field rather than one like it
+    "bar seed": f"SEED_BARS = 0x{SEED_BARS:X}",
+    "mark seed": f"SEED_MARKS = 0x{SEED_MARKS:X}",
     "id-rail seed": f"mulberry32(0x{SEED_IDS:X})",
     "one bar per ~14 members": "MEMBERS / 14",
     "density envelope": "Math.pow(Math.abs(x - 0.5) * 2, 1.5)",
