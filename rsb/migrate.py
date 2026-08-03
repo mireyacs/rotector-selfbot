@@ -68,9 +68,48 @@ SCHEMA: list[Section] = [
         ],
     ),
     Section(
+        "okappiki",
+        "The Okappiki backend, used only when scan.backend is \"okappiki\".\n"
+        "Undocumented upstream: no published rate limit, and no batch\n"
+        "endpoint, so one request covers one member. The defaults are slow\n"
+        "on purpose.",
+        [
+            Setting("rate_limit", 5, "Requests per window. 5/second by default."),
+            Setting("window", 1.0, "Rate limit window, in seconds."),
+            Setting("reserve", 0, "Request units held back as safety headroom."),
+            Setting("cache_ttl", 3600, "In-memory cache lifetime, clamped under 24h."),
+            Setting("concurrency", 2, "Concurrent in-flight requests."),
+        ],
+    ),
+    Section(
+        "ui",
+        "Appearance. Set from inside the app rather than by hand.",
+        [
+            Setting(
+                "theme",
+                "",
+                (
+                    "Textual theme to open in, remembered when you pick one\n"
+                    "from the command palette's Theme command. Empty means\n"
+                    "the default. \"ten-thousand\" matches the project page."
+                ),
+            ),
+        ],
+    ),
+    Section(
         "scan",
         "What a scan collects and what the results table lists.",
         [
+            Setting(
+                "backend",
+                "rotector",
+                (
+                    "Which service answers \"is this member flagged\":\n"
+                    "\"rotector\" or \"okappiki\". They are alternatives, not\n"
+                    "layers. Okappiki returns Okappiki, Rotector and mococo\n"
+                    "findings in one response, but one member per request."
+                ),
+            ),
             Setting("skip_bots", True, "Bots have no Roblox connections."),
             Setting("max_members", 0, "Cap members per source. 0 = no cap."),
             Setting(

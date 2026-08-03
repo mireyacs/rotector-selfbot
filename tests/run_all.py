@@ -9,7 +9,8 @@ OFFLINE = {"test_units.py", "test_progress.py", "test_gateway_scrape.py",
            "test_gateway_resilience.py", "test_bulk_actions.py",
            "test_cards_html.py", "test_bot_token.py",
            "test_caution_notice.py",
-           "test_settings_appeal.py", "test_thumbnail.py"}
+           "test_settings_appeal.py", "test_thumbnail.py",
+           "test_okappiki.py", "test_theme_persist.py"}
 NETWORK = {"test_live_api.py", "test_tui.py", "test_routing.py",
            "test_proxy_tui.py", "test_streaming.py",
            "test_moderation_tui.py", "test_sources.py",

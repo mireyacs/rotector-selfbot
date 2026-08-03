@@ -25,9 +25,10 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from .eta import estimate_scan_seconds
 from .proxy import AllRoutesFailed, RoutePool
 from .ratelimit import RateLimiter, batch_cost
-from .verdict import Verdict, verdict_for_flag
+from .verdict import Signal, Verdict, verdict_for_flag
 
 BASE_URL = "https://roscoe.rotector.com"
 MAX_BATCH = 100
@@ -95,18 +96,36 @@ class RobloxAccount:
 
 @dataclass
 class MemberReport:
-    """Everything Rotector knows about one Discord member."""
+    """Everything the active backend knows about one Discord member.
+
+    Rotector fills ``accounts`` and ``servers``. A backend that answers per
+    source rather than per Roblox account -- see :mod:`rsb.okappiki` -- fills
+    ``signals`` instead, and may fill both when a source does name an account.
+    """
 
     discord_id: str
     accounts: list[RobloxAccount] = field(default_factory=list)
     servers: list[TrackedServer] = field(default_factory=list)
     error: str | None = None
+    #: per-source findings; always empty under the Rotector backend
+    signals: list[Signal] = field(default_factory=list)
 
     @property
     def verdict(self) -> Verdict:
-        if not self.accounts:
+        found = [acc.verdict for acc in self.accounts]
+        found += [sig.verdict for sig in self.signals]
+        if not found:
             return Verdict.UNKNOWN
-        return max(acc.verdict for acc in self.accounts)
+        return max(found)
+
+    @property
+    def flagged_signals(self) -> list[Signal]:
+        """Only the sources that actually said something, worst first."""
+        return sorted(
+            (sig for sig in self.signals if sig.flagged),
+            key=lambda sig: sig.verdict,
+            reverse=True,
+        )
 
     @property
     def worst_account(self) -> RobloxAccount | None:
@@ -179,6 +198,15 @@ class RotectorClient:
     def capacity_units_per_sec(self) -> float:
         """Combined request-unit throughput across every usable route."""
         return self.pool.capacity_units_per_sec()
+
+    def estimate_seconds(self, members: int) -> float | None:
+        """How long scanning ``members`` should take on this backend.
+
+        Lives on the client because the arithmetic is the backend's: this one
+        batches a hundred ids per request and makes a second pass over whoever
+        turns out to have a linked account.
+        """
+        return estimate_scan_seconds(members, self.capacity_units_per_sec())
 
     async def __aenter__(self) -> "RotectorClient":
         return self

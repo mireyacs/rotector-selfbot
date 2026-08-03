@@ -166,6 +166,10 @@ async def main():
         cfg = Config()
         cfg.token = STUB_TOKEN
         cfg.proxy.file = "/nonexistent"
+        # shot in this theme, and persistence is off besides: a bare Config()
+        # still resolves config_path() to ./config.toml if one is there, and a
+        # screenshot run must not rewrite the operator's own config.
+        cfg.ui.theme = THEME_NAME
         return cfg
 
     # 1. results, mid-scan feel
@@ -186,20 +190,20 @@ async def main():
         table.move_cursor(row=0)
         await pilot.pause(0.3)
 
-    await shot(appmod.ScannerApp(config()), "results", "RESULTS", results)
+    await shot(appmod.ScannerApp(config(), persist_theme=False), "results", "RESULTS", results)
 
     # 2. sources pane, grouped
     async def sources(app, pilot):
         app.query_one("#guilds", appmod.DataTable).focus()
         app._set_status("4 servers, 2 group DMs, friends and requests. Press s to scan.")
         await pilot.pause(0.3)
-    await shot(appmod.ScannerApp(config()), "sources", "SOURCES", sources)
+    await shot(appmod.ScannerApp(config(), persist_theme=False), "sources", "SOURCES", sources)
 
     # 3. settings editor
     async def settings(app, pilot):
         app.push_screen(SettingsScreen(app.config))
         await pilot.pause(0.8)
-    await shot(appmod.ScannerApp(config()), "settings", "SETTINGS", settings)
+    await shot(appmod.ScannerApp(config(), persist_theme=False), "settings", "SETTINGS", settings)
 
     # 4. proxy tester
     async def proxies(app, pilot):
@@ -241,7 +245,7 @@ async def main():
         await pilot.pause(0.3)
 
     cfg = config()
-    await shot(ProxyTesterApp(cfg), "proxies", "PROXY TESTER", proxies)
+    await shot(ProxyTesterApp(cfg, persist_theme=False), "proxies", "PROXY TESTER", proxies)
 
     print(f"\n{len(list(OUT.glob('*.svg')))} screenshots in {OUT.relative_to(ROOT)}")
 

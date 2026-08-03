@@ -15,6 +15,7 @@ relaxed:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import IntEnum
 
 ATTRIBUTION = "Data: Rotector (https://rotector.com) - appeals at rotector.com"
@@ -152,3 +153,42 @@ def source_names(sources: list[int] | None) -> str:
     if not sources:
         return "unknown"
     return ", ".join(SOURCE_NAMES.get(s, str(s)) for s in sources)
+
+
+# --------------------------------------------------------------------------
+# multi-source findings
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class Signal:
+    """One named source's answer about one Discord account.
+
+    Rotector answers per *Roblox account*, which is why a report normally
+    carries :class:`~rsb.rotector.RobloxAccount` objects. A backend that
+    aggregates several services answers per *source* instead, and some of those
+    sources -- Okappiki's own list, mococo -- flag a Discord id with no Roblox
+    link attached at all. Those findings have nowhere to live on an account, so
+    they live here, and ``MemberReport.verdict`` takes the worst of both.
+
+    ``verdict`` is set by whoever builds the signal rather than derived, because
+    what a flag *means* differs per source: only Rotector publishes flag types
+    with documented actionability, so only Rotector's can reach THREAT.
+    """
+
+    #: the service that said it: "rotector", "okappiki", "mococo"
+    source: str
+    flagged: bool
+    verdict: Verdict
+    #: the source's own words, unedited. Undocumented services phrase these
+    #: however they like, so it is shown rather than parsed.
+    reason: str = ""
+    #: mococo publishes a numeric score; the others do not
+    score: int | None = None
+    roblox_id: int | None = None
+    roblox_username: str | None = None
+    flag_type: int | None = None
+
+    @property
+    def label(self) -> str:
+        return self.source.title()

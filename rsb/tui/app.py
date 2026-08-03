@@ -36,7 +36,7 @@ from ..discord import (
     GuildMember,
 )
 from ..discord.http import DiscordForbidden, DiscordHTTPError, DiscordNotFound
-from ..eta import RateEstimator, estimate_scan_seconds, format_duration
+from ..eta import RateEstimator, format_duration
 from ..export import DEFAULT_COLUMNS, export as render_export, ExportRow
 from ..moderation import (
     BULK_SCOPES,
@@ -69,7 +69,9 @@ from ..purge import (
     plan_purge,
 )
 from .commands import BindingCommands, ScrollableFooter, StatusStrip
-from .theme import evidence_style, register as register_theme
+from .theme import ThemeMemory, evidence_style
+from ..backend import ATTRIBUTIONS, backend_label, build_backend
+from ..okappiki import SOURCES
 from ..hotreload import HotReloader
 from .settings import (
     Check as _Check,
@@ -93,8 +95,7 @@ from .dialogs import (
     PurgePlanDialog,
 )
 from ..proxy import AllRoutesFailed
-from ..ratelimit import RateLimiter
-from ..rotector import MemberReport, RotectorClient, RotectorError
+from ..rotector import MemberReport, RotectorError
 from ..verdict import (
     ATTRIBUTION,
     Verdict,
@@ -534,12 +535,18 @@ class ScannerApp(App):
         ("q,ctrl+c", "quit", "Quit"),
     ]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, persist_theme: bool = True) -> None:
         super().__init__()
         self.config = config
+        #: False for headless tooling. A bare ``Config()`` still resolves
+        #: ``config_path()`` to a real file, so a screenshot run would otherwise
+        #: rewrite the operator's own config.
+        self.persist_theme = persist_theme
         self.http: DiscordHTTP | None = None
         self.gateway: DiscordGateway | None = None
-        self.rotector: RotectorClient | None = None
+        #: the active lookup backend; RotectorClient or OkappikiClient,
+        #: chosen by scan.backend and interchangeable from here on
+        self.rotector = None
 
         self.sources: list[ScanSource] = []
         #: True when authenticated as a bot application: servers only
@@ -625,8 +632,18 @@ class ScannerApp(App):
         yield StatusStrip()
         yield ScrollableFooter()
 
+    @property
+    def backend_name(self) -> str:
+        """What the active lookup service is called, for anything user-facing."""
+        return backend_label(self.config.scan.backend)
+
+    @property
+    def attribution(self) -> str:
+        """Credit for whichever service actually answered."""
+        return ATTRIBUTIONS.get(self.config.scan.backend, ATTRIBUTION)
+
     def on_mount(self) -> None:
-        register_theme(self)
+        ThemeMemory(self, self.config, self.persist_theme).install()
 
         guilds = self.query_one("#guilds", DataTable)
         for (name, _), width in zip(SOURCE_SORTS, (32, 10, 9)):
@@ -851,14 +868,22 @@ class ScannerApp(App):
         text.append("Pick a server on the left and press ", style="bold")
         text.append(" s ", style="reverse bold")
         text.append(" to scan it.\n\n", style="bold")
-        text.append(
-            "Members are read from the guild member list over the gateway, then "
-            "checked against Rotector in batches of 100, inside the documented "
-            "50 requests / 10 s window.\n\n"
-        )
+        if self.config.scan.backend == "okappiki":
+            text.append(
+                "Members are read from the guild member list over the gateway, "
+                "then checked against Okappiki one at a time - it publishes no "
+                "batch endpoint and no rate limit, so the pace is set "
+                "conservatively in config.toml.\n\n"
+            )
+        else:
+            text.append(
+                "Members are read from the guild member list over the gateway, "
+                "then checked against Rotector in batches of 100, inside the "
+                "documented 50 requests / 10 s window.\n\n"
+            )
         text.append("Verdicts are not a clean bill of health. ", style="bold yellow")
         text.append("NO DETECTIONS", style="bold")
-        text.append(" means Rotector has not flagged the account ")
+        text.append(f" means {self.backend_name} has not flagged the account ")
         text.append("yet", style="italic")
         text.append(" - it does not mean the user is safe. Only ")
         text.append("THREAT", style="bold red")
@@ -866,7 +891,7 @@ class ScannerApp(App):
             " (flag types Flagged and Confirmed) is documented as safe to act on "
             "automatically.\n\n"
         )
-        text.append(ATTRIBUTION, style="dim")
+        text.append(self.attribution, style="dim")
         return text
 
     # -- connection --------------------------------------------------------
@@ -1083,20 +1108,8 @@ class ScannerApp(App):
                     f"{'bot' if says_bot else 'user'}", "warn"
                 )
 
-            limiter = RateLimiter(
-                limit=self.config.rotector.rate_limit,
-                window=self.config.rotector.window,
-                reserve=self.config.rotector.reserve,
-            )
             proxies = self.config.active_proxies()
-            self.rotector = RotectorClient(
-                api_key=self.config.rotector.api_key,
-                limiter=limiter,
-                cache_ttl=self.config.rotector.cache_ttl,
-                concurrency=self.config.rotector.concurrency,
-                proxies=proxies,
-                direct_as_fallback=self.config.proxy.direct_as_fallback,
-            )
+            self.rotector = build_backend(self.config, proxies)
 
             self._set_activity("Opening gateway connection...")
             self.gateway = DiscordGateway(
@@ -1119,10 +1132,17 @@ class ScannerApp(App):
 
             self.my_id = str(me.get("id") or "")
             name = me.get("global_name") or me.get("username") or "?"
-            keyed = "API key" if self.config.rotector.api_key else "no API key"
+            # an API key only exists on the Rotector side; saying "no API key"
+            # under a backend that has no such concept would just read as a
+            # misconfiguration
+            if self.config.scan.backend == "rotector":
+                keyed = "API key" if self.config.rotector.api_key else "no API key"
+                keyed = f" - {keyed}"
+            else:
+                keyed = ""
             routing = f" - {len(proxies)} proxies" if proxies else ""
             kind = " [bot]" if self.is_bot else ""
-            self.sub_title = f"{name}{kind} - {keyed}{routing}"
+            self.sub_title = f"{name}{kind} - {self.backend_name}{keyed}{routing}"
             if advisories:
                 self._advisories = advisories
             await self._load_sources()
@@ -1963,11 +1983,50 @@ class ScannerApp(App):
                     text.append(f"{message}\n")
                     for evidence in (detail.get("evidence") or [])[:6]:
                         text.append(f"      - {evidence}\n", style="dim")
-        else:
+        elif not report.signals:
             text.append(
-                "No Roblox account linked to this Discord user is known to Rotector.\n",
+                "No Roblox account linked to this Discord user is known to "
+                f"{self.backend_name}.\n",
                 style="dim",
             )
+
+        if report.signals:
+            answered = len(report.signals)
+            # the verdict line already left a blank; only space off a block
+            # that actually printed something above this one
+            gap = "\n" if report.accounts else ""
+            text.append(f"{gap}Sources ({answered} answered)\n", style="bold")
+            text.append(
+                "Okappiki asks several services and returns them together. Only "
+                "Rotector publishes flag types with documented actionability, so "
+                "only its findings reach THREAT; the others are unverified and "
+                "read as CAUTION - a person decides.\n",
+                style="dim",
+            )
+            for sig in sorted(report.signals, key=lambda s: -int(s.verdict)):
+                text.append(f"  {sig.label:<9} ")
+                if sig.flagged:
+                    text.append(
+                        verdict_label(sig.verdict), style=verdict_style(sig.verdict)
+                    )
+                else:
+                    text.append("no detections", style="dim")
+                if sig.score is not None:
+                    text.append(f"  score {sig.score}", style="dim")
+                if sig.roblox_username:
+                    text.append(f"  {sig.roblox_username}")
+                text.append("\n")
+                if sig.reason:
+                    # the source's own words; undocumented services phrase these
+                    # however they like, so they are shown rather than parsed
+                    text.append(f"    {sig.reason}\n", style="dim")
+            missing = [s for s in SOURCES if s not in {g.source for g in report.signals}]
+            if missing:
+                text.append(
+                    f"  {', '.join(missing)} did not answer - not the same as "
+                    f"answering \"not flagged\".\n",
+                    style="yellow",
+                )
 
         if report.servers:
             text.append(f"\nTracked server memberships ({len(report.servers)})\n", style="bold")
@@ -1989,7 +2048,7 @@ class ScannerApp(App):
             if len(report.servers) > 12:
                 text.append(f"  ... and {len(report.servers) - 12} more\n", style="dim")
 
-        text.append(f"\n{ATTRIBUTION}", style="dim")
+        text.append(f"\n{self.attribution}", style="dim")
         return text
 
     # -- actions -----------------------------------------------------------
@@ -3105,7 +3164,9 @@ class ScannerApp(App):
                 style="dim",
             )
 
-        seconds = estimate_scan_seconds(members, self.rotector.capacity_units_per_sec())
+        # the backend owns this arithmetic: Rotector batches a hundred ids per
+        # request, Okappiki takes one, and the two differ by ~100x
+        seconds = self.rotector.estimate_seconds(members)
         if seconds is None:
             text.append("Press 's' to scan.\n")
         else:
@@ -3118,11 +3179,18 @@ class ScannerApp(App):
                 text.append(f"across {routes}/{total} usable routes\n", style="dim")
             if source.needs_gateway:
                 text.append(
-                    "\nRotector lookups only; reading the member list from the "
-                    "gateway happens first and is not included. Assumes a "
-                    "typical share of members have a linked Roblox account -- "
+                    f"\n{self.backend_name} lookups only; reading the member list "
+                    "from the gateway happens first and is not included. Assumes "
+                    "a typical share of members have a linked Roblox account -- "
                     "the live estimate corrects itself once the scan starts.\n",
                     style="dim",
+                )
+            if self.config.scan.backend == "okappiki":
+                text.append(
+                    f"Okappiki has no batch endpoint, so this is one request per "
+                    f"member -- {members:,} of them. Rotector checks the same "
+                    f"list a hundred ids at a time.\n",
+                    style="yellow",
                 )
 
         actions = _ACTIONS.get(source.kind, {})

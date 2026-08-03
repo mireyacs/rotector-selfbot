@@ -27,7 +27,7 @@ from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Stati
 from ..config import Config
 from ..eta import format_duration
 from ..proxy import DIRECT_NAME, ProbeResult, parse_proxy, probe_proxy, summarise_pool
-from .theme import register as register_theme
+from .theme import ThemeMemory
 
 _VERDICT_STYLE = {
     "OK": "bold green",
@@ -68,9 +68,11 @@ class ProxyTesterApp(App):
         ("q,ctrl+c", "quit", "Quit"),
     ]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, persist_theme: bool = True) -> None:
         super().__init__()
         self.config = config
+        #: False for headless tooling; see ScannerApp for why it matters
+        self.persist_theme = persist_theme
         self.entries: list[str] = []
         self.results: dict[str, ProbeResult] = {}
         # (window reset, probes we made) per entry, so a retest inside the same
@@ -93,7 +95,7 @@ class ProxyTesterApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        register_theme(self)
+        ThemeMemory(self, self.config, self.persist_theme).install()
 
         table = self.query_one("#table", DataTable)
         table.add_column("Proxy", width=32)

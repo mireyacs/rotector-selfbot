@@ -42,6 +42,34 @@ class RotectorConfig:
 
 
 @dataclass
+class OkappikiConfig:
+    """The Okappiki backend, which is an alternative to Rotector, not an addition.
+
+    Nothing here is documented upstream. The endpoint publishes no rate-limit
+    headers and takes one Discord id per request -- there is no batch form --
+    so a ten-thousand-member server is ten thousand requests, and the defaults
+    below are deliberately slow. Raise them only if you learn what the real
+    ceiling is.
+    """
+
+    #: requests per window. 5/second by default: conservative for a service
+    #: with no published limits sitting behind Cloudflare.
+    rate_limit: int = 5
+    window: float = 1.0
+    reserve: int = 0
+    #: in-memory cache lifetime, matching the Rotector side
+    cache_ttl: int = 3600
+    concurrency: int = 2
+
+
+@dataclass
+class UiConfig:
+    #: Textual theme to open in. Empty means whatever Textual defaults to.
+    #: Set from the command palette's Theme command rather than by hand.
+    theme: str = ""
+
+
+@dataclass
 class ProxyConfig:
     """Routing Rotector traffic over proxies.
 
@@ -64,8 +92,17 @@ class ProxyConfig:
     probe_concurrency: int = 10
 
 
+#: the lookup backends a scan can run against
+BACKENDS = ("rotector", "okappiki")
+
+
 @dataclass
 class ScanConfig:
+    #: which service answers "is this member flagged": "rotector" or "okappiki".
+    #: They are alternatives -- a scan asks one of them, not both. Okappiki's
+    #: own response happens to include a Rotector verdict alongside its two
+    #: other sources, so switching does not lose Rotector's answer.
+    backend: str = "rotector"
     #: skip bot accounts, which have no Roblox connections
     skip_bots: bool = True
     #: cap members pulled per guild; 0 means no cap
@@ -191,6 +228,8 @@ class Config:
     token_from_env: bool = False
     bot_token_from_env: bool = False
     rotector: RotectorConfig = field(default_factory=RotectorConfig)
+    okappiki: OkappikiConfig = field(default_factory=OkappikiConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
@@ -263,8 +302,17 @@ class Config:
             if key in rot and rot[key] not in (None, ""):
                 setattr(self.rotector, key, rot[key])
 
+        okp = data.get("okappiki") or {}
+        for key in ("rate_limit", "window", "reserve", "cache_ttl", "concurrency"):
+            if key in okp and okp[key] is not None:
+                setattr(self.okappiki, key, okp[key])
+
+        ui = data.get("ui") or {}
+        if ui.get("theme") is not None:
+            self.ui.theme = str(ui["theme"]).strip()
+
         scan = data.get("scan") or {}
-        for key in ("skip_bots", "max_members", "hide_no_detections",
+        for key in ("backend", "skip_bots", "max_members", "hide_no_detections",
                     "hide_unknown", "on_rescan"):
             if key in scan and scan[key] is not None:
                 setattr(self.scan, key, scan[key])
@@ -422,6 +470,13 @@ class Config:
             )
         if self.rotector.reserve >= self.rotector.rate_limit:
             problems.append("rotector.reserve must be smaller than rotector.rate_limit")
+        if self.scan.backend not in BACKENDS:
+            problems.append(
+                f"scan.backend must be one of {', '.join(BACKENDS)} "
+                f"(got {self.scan.backend!r})"
+            )
+        if self.okappiki.reserve >= self.okappiki.rate_limit:
+            problems.append("okappiki.reserve must be smaller than okappiki.rate_limit")
         return problems
 
 

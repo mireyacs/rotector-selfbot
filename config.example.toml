@@ -53,8 +53,43 @@ cache_ttl = 3600
 concurrency = 3
 
 
+# The Okappiki backend, used only when scan.backend is "okappiki".
+# Undocumented upstream: no published rate limit, and no batch endpoint, so one
+# request covers one member. A 10,000-member server is 10,000 requests, where
+# Rotector checks the same list a hundred ids at a time. The defaults are slow
+# on purpose; raise them only if you learn what the real ceiling is.
+[okappiki]
+# Requests per window. 5/second by default.
+rate_limit = 5
+
+# Rate limit window, in seconds.
+window = 1.0
+
+# Request units held back as safety headroom.
+reserve = 0
+
+# In-memory cache lifetime, clamped under 24h.
+cache_ttl = 3600
+
+# Concurrent in-flight requests.
+concurrency = 2
+
+
+# Appearance. Set from inside the app rather than by hand.
+[ui]
+# Textual theme to open in, remembered when you pick one from the command
+# palette's Theme command. Empty means the default. "ten-thousand" matches the
+# project page.
+theme = ""
+
+
 # What a scan collects and what the results table lists.
 [scan]
+# Which service answers "is this member flagged": "rotector" or "okappiki".
+# They are alternatives, not layers. Okappiki returns Okappiki, Rotector and
+# mococo findings in one response, but one member per request.
+backend = "rotector"
+
 # Bots have no Roblox connections.
 skip_bots = true
 

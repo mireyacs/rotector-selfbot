@@ -76,6 +76,58 @@ export ROTECTOR_API_KEY='...'        # optional
 `config.toml` is gitignored. The token is a full-access credential — treat it
 like a password.
 
+### Choosing a backend
+
+Which service answers *"is this member flagged"* is set by `[scan] backend`:
+
+```toml
+[scan]
+backend = "rotector"   # or "okappiki"
+```
+
+They are alternatives, not layers — a scan asks one of them.
+
+**`rotector`** (default) is the documented one. It batches 100 ids per request
+inside the published 50 requests / 10 s window, returns flag types whose
+actionability is specified, and supports an API key.
+
+**`okappiki`** goes to `okappiki.com`, which queries three services and returns
+them together: its own list, Rotector, and mococo. Choosing it does not give up
+Rotector's answer — it asks a different service for it.
+
+Two things to know before switching, both of which are the reason it is not the
+default:
+
+- **No batch endpoint.** One request covers one member. A 10,000-member server
+  is 10,000 requests against Rotector's ~218 for the same list. At the default
+  5 requests/second that is roughly half an hour where Rotector takes about a
+  minute. The scan estimate reflects this honestly; it is not a surprise you
+  discover at member 4,000.
+- **Nothing is documented.** The endpoint publishes no rate limit, no version
+  and no schema. The defaults under `[okappiki]` are deliberately slow, and the
+  client treats every field as optional because an unflagged member's record is
+  literally `{"flagged": false}` and nothing else.
+
+Verdicts are tiered by how much the source can support:
+
+| Source | Flagged result | Why |
+|---|---|---|
+| `rotector` | **THREAT** (flag types 1 and 2) | the only source publishing flag types documented as safe to act on |
+| `okappiki` | **CAUTION** | unverified sighting, no flag type to grade it by |
+| `mococo` | **CAUTION** | as above; its `score_sum` is shown, not interpreted |
+
+A source that does not appear in a response is recorded as *not having
+answered*, which the detail pane says out loud — it is not the same as that
+source saying "not flagged", and collapsing the two would let an outage read as
+a clean result.
+
+### Choosing a theme
+
+`ctrl+p` → **Theme** switches the colour scheme, and the choice is remembered in
+`[ui] theme` a couple of seconds after it settles — long enough that arrowing
+through the list to look does not save whatever you scrolled past. `ten-thousand`
+is the project page's own black-and-white palette.
+
 ### Using a bot token instead
 
 A bot application's token works too, under `[discord] bot_token` (or
