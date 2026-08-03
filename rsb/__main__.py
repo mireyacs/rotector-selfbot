@@ -6,7 +6,24 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import Config, candidate_paths
+#: The floor is set by ``tomllib``, which entered the standard library in 3.11,
+#: and by ``asyncio.wait_for`` raising the builtin ``TimeoutError`` from the
+#: same version. Checked before the first import that would fail, so an older
+#: interpreter gets a sentence naming the problem rather than a
+#: ModuleNotFoundError for a module the reader has never heard of.
+MIN_PYTHON = (3, 11)
+
+if sys.version_info < MIN_PYTHON:
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    wanted = ".".join(str(part) for part in MIN_PYTHON)
+    raise SystemExit(
+        f"rotector-selfbot needs Python {wanted} or newer; this is {running} "
+        f"({sys.executable}).\n"
+        f"Create the virtualenv with a newer interpreter, e.g.\n"
+        f"    python{wanted} -m venv .venv"
+    )
+
+from .config import Config, candidate_paths  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

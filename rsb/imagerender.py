@@ -32,22 +32,54 @@ except ImportError:  # pragma: no cover - exercised by the availability test
 #: rows per image; a page that stays readable and openable
 DEFAULT_ROWS_PER_IMAGE = 60
 
-#: candidate monospace faces, in preference order
+#: Candidate monospace faces, in preference order, covering all three
+#: platforms. The table is drawn on a fixed character grid, so a proportional
+#: fallback would put every column out of line -- worth carrying a long list
+#: for. Bare filenames come last: Pillow searches the system font directories
+#: for those, which is what finds a face on a distribution nobody listed.
 FONT_CANDIDATES = [
+    # Linux
     "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
     "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
     "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
     "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    # macOS
+    "/System/Library/Fonts/SFNSMono.ttf",
     "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Monaco.ttf",
+    "/Library/Fonts/Courier New.ttf",
+    # Windows
     "C:/Windows/Fonts/consola.ttf",
+    "C:/Windows/Fonts/lucon.ttf",
+    "C:/Windows/Fonts/cour.ttf",
+    # whatever the platform can find by name
+    "DejaVuSansMono.ttf",
+    "LiberationMono-Regular.ttf",
+    "Consolas",
+    "Menlo",
 ]
 BOLD_CANDIDATES = [
+    # Linux
     "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Bold.ttf",
     "/usr/share/fonts/google-noto/NotoSansMono-Bold.ttf",
     "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
     "/usr/share/fonts/liberation-mono/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    # macOS -- Menlo's bold lives inside the same collection, at index 1
+    "/System/Library/Fonts/SFNSMonoBold.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+    # Windows
+    "C:/Windows/Fonts/consolab.ttf",
+    "C:/Windows/Fonts/courbd.ttf",
+    # by name
+    "DejaVuSansMono-Bold.ttf",
+    "LiberationMono-Bold.ttf",
+    "Consolas Bold",
 ]
 
 
@@ -99,13 +131,34 @@ VERDICT_COLOURS: dict[Verdict, tuple] = verdict_colours()
 
 
 def _load_font(size: int, bold: bool = False):
-    for path in BOLD_CANDIDATES if bold else FONT_CANDIDATES:
+    """The best monospace face this machine has, at ``size``.
+
+    Falls back through the candidate list, then to whatever Pillow bundles.
+    ``load_default(size)`` matters more than it looks: without a size argument
+    Pillow hands back a fixed ~11px bitmap face, so an export on a machine with
+    no listed font came out with headings the same size as body text and
+    columns that no longer lined up. With one, the fallback is at least drawn
+    at the size the layout was measured for.
+    """
+    candidates = BOLD_CANDIDATES if bold else FONT_CANDIDATES
+    for path in candidates:
         try:
-            return ImageFont.truetype(path, size)
+            font = ImageFont.truetype(path, size)
         except (OSError, ValueError):
             continue
-    # last resort: Pillow's built-in bitmap face
-    return ImageFont.load_default()
+        # a .ttc collection holds several faces; Menlo keeps bold at index 1
+        if bold and str(path).endswith(".ttc"):
+            try:
+                return ImageFont.truetype(path, size, index=1)
+            except (OSError, ValueError):
+                pass
+        return font
+
+    # Pillow's own, sized where the version allows it
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1 takes no size
+        return ImageFont.load_default()
 
 
 def available() -> bool:

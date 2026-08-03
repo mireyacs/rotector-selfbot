@@ -82,7 +82,7 @@ async def main():
         app.action_save()
         await pilot.pause(0.2)
         assert "No working proxies" in app._status_text, app._status_text
-        assert proxy_file.read_text().count("127.0.0.1") == 2, "file was overwritten"
+        assert proxy_file.read_text(encoding="utf-8").count("127.0.0.1") == 2, "file was overwritten"
         ok("save refuses when nothing works, leaving the list file intact")
 
         # add a malformed entry
@@ -117,7 +117,7 @@ async def main():
         app.results["127.0.0.1:2"].rate_remaining = 49
         app.action_save()
         await pilot.pause(0.2)
-        saved = proxy_file.read_text()
+        saved = proxy_file.read_text(encoding="utf-8")
         assert "127.0.0.1:2" in saved and DIRECT_NAME not in saved
         assert saved.startswith("#"), "saved file should carry an explanatory header"
         ok("save writes only working proxies, with a header, excluding 'direct'")

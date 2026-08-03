@@ -1,0 +1,18 @@
+# Normalise line endings on checkout so a Windows clone with core.autocrlf=true
+# does not end up with a config file written half in CRLF and half in LF -- the
+# settings screen rewrites individual sections with "\n", and mixing the two in
+# one file makes every later diff unreadable.
+*               text=auto eol=lf
+
+# Binary, and must not be touched: a "text" conversion corrupts them silently.
+*.png           binary
+*.ttf           binary
+*.ttc           binary
+*.otf           binary
+*.woff          binary
+*.woff2         binary
+*.ico           binary
+
+# Generated from the real renderers -- see tools/screenshots.py and
+# tools/exports.py. Marked so a diff shows "changed" rather than pages of XML.
+docs/screenshots/*.svg  -diff

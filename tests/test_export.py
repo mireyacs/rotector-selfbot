@@ -119,20 +119,20 @@ def test_full_export():
     ok(f"wrote {len(names)} files: {names}")
 
     payload = json.loads(
-        next(f for f in manifest.files if f.suffix == ".json").read_text()
+        next(f for f in manifest.files if f.suffix == ".json").read_text(encoding="utf-8")
     )
     assert len(payload["members"]) == 120
     assert payload["attribution"] and "rotector.com" in payload["attribution"]
     assert "24 hours" in payload["expires_at"]
     ok("JSON carries every member, the attribution, and the 24h expiry")
 
-    text = next(f for f in manifest.files if f.suffix == ".txt").read_text()
+    text = next(f for f in manifest.files if f.suffix == ".txt").read_text(encoding="utf-8")
     assert "User 0" in text and "Condo Activity" in text
     assert "rotector.com" in text
     assert "Scope:     filter: Threats only" in text, "scope not recorded"
     ok("TXT report is readable, records the scope, and carries attribution")
 
-    readme = (manifest.directory / "README.txt").read_text()
+    readme = (manifest.directory / "README.txt").read_text(encoding="utf-8")
     assert "Delete this folder within 24 hours" in readme
     assert "appeal" in readme.lower()
     ok("README states the retention limit and the appeal route")
@@ -180,7 +180,7 @@ def test_config_round_trip():
     saved = cfg.save_export_settings()
     assert saved == path
 
-    body = path.read_text()
+    body = path.read_text(encoding="utf-8")
     assert "# leading comment" in body and "# inline comment" in body
     ok("saving from the UI preserves comments elsewhere in the file")
 
@@ -197,7 +197,7 @@ def test_config_round_trip():
 
     missing = tmp / "new" / "config.toml"
     write_section(missing, "export", {"formats": ["csv"]})
-    assert tomllib.loads(missing.read_text())["export"]["formats"] == ["csv"]
+    assert tomllib.loads(missing.read_text(encoding="utf-8"))["export"]["formats"] == ["csv"]
     ok("writing to a config file that does not exist yet creates it")
 
 

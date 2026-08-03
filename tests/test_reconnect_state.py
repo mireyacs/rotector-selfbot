@@ -166,7 +166,7 @@ asyncio.run(_app_recovers_the_status_bar())
 # `except CancelledError: raise` followed by a second CancelledError handler
 # silently makes the second one dead code, which is exactly how the cleanup
 # got skipped.
-source = (Path(__file__).resolve().parent.parent / "rsb/tui/app.py").read_text()
+source = (Path(__file__).resolve().parent.parent / "rsb/tui/app.py").read_text(encoding="utf-8")
 scan = source[source.index("async def scan_source"):]
 scan = scan[: scan.index("\n    # -- results table")]
 assert scan.count("except asyncio.CancelledError") == 1, (

@@ -41,10 +41,45 @@ and *Confirmed*) is documented as safe to act on automatically.
 
 ## Install
 
+Needs **Python 3.11 or newer** — that is where `tomllib` entered the standard
+library. Running on anything older stops with a message saying so rather than a
+`ModuleNotFoundError` for a module you have never heard of.
+
+**Linux / macOS**
+
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python -m rsb
 ```
+
+**Windows** (PowerShell)
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\python -m rsb
+```
+
+Use **Windows Terminal** rather than the old `conhost` console window — the UI
+needs a terminal with truecolour and mouse reporting, which the legacy console
+does not provide.
+
+Everything is pure Python and the dependencies ship wheels for all three
+platforms, so there is nothing to compile. Two things vary by machine rather
+than by OS:
+
+- **PNG export needs Pillow** and a monospace font. The renderer looks through
+  the usual locations on each platform (DejaVu/Liberation/Noto on Linux, Menlo
+  and SF Mono on macOS, Consolas on Windows) and falls back to Pillow's own
+  face at the right size if it finds none.
+- **Updating needs `git` on `PATH`.** Without it the app says so and carries on;
+  nothing else depends on it.
+
+Config is read from `./config.toml` first, then from
+`%APPDATA%\rotector-selfbot\` on Windows or `~/.config/rotector-selfbot/`
+elsewhere. `~/.config` is still searched on Windows too, so an existing install
+keeps working.
 
 ## Configure
 

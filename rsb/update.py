@@ -24,6 +24,7 @@ installs dependencies.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +78,21 @@ class UpdateStatus:
         return f"{self.behind} new commit{plural} on {self.upstream}."
 
 
+def _env() -> dict:
+    """The caller's environment, with prompting turned off.
+
+    Inherited rather than replaced. A hand-built environment looks tidy and
+    breaks git on Windows, where the process needs ``SYSTEMROOT`` to resolve
+    anything and finds the user's home through ``USERPROFILE`` rather than
+    ``HOME`` -- and it would silently drop proxy settings, credential helpers
+    and ``GIT_*`` overrides on every platform.
+
+    ``GIT_TERMINAL_PROMPT=0`` is the one thing overridden: a credential prompt
+    on a headless fetch would hang the check with no way to answer it.
+    """
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+
 async def _git(*args: str, cwd: Path = ROOT, timeout: float = LOCAL_TIMEOUT):
     """Run git, returning (returncode, stdout, stderr) and never raising."""
     binary = shutil.which("git")
@@ -88,11 +104,12 @@ async def _git(*args: str, cwd: Path = ROOT, timeout: float = LOCAL_TIMEOUT):
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            # git must never stop to ask: a credential prompt on a headless
-            # fetch would hang the check with no way to answer it
-            env={"GIT_TERMINAL_PROMPT": "0", "PATH": _path_env(), "HOME": _home()},
+            env=_env(),
         )
-    except OSError as exc:
+    # NotImplementedError is the one Windows raises when the running event loop
+    # cannot spawn subprocesses at all; it is not an OSError, and letting it out
+    # would take the app down over a routine update check.
+    except (OSError, NotImplementedError) as exc:
         return 127, "", f"{type(exc).__name__}: {exc}"
 
     try:
@@ -102,19 +119,11 @@ async def _git(*args: str, cwd: Path = ROOT, timeout: float = LOCAL_TIMEOUT):
         return 124, "", f"git {args[0]} timed out after {timeout:.0f}s"
     return (
         process.returncode or 0,
+        # git speaks whatever the repository holds; decoding is best-effort
+        # rather than a reason to fail an update check
         out.decode("utf-8", "replace").strip(),
         err.decode("utf-8", "replace").strip(),
     )
-
-
-def _path_env() -> str:
-    import os
-    return os.environ.get("PATH", "/usr/bin:/bin")
-
-
-def _home() -> str:
-    import os
-    return os.environ.get("HOME", str(Path.home()))
 
 
 def git_available() -> bool:

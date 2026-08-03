@@ -149,13 +149,16 @@ async def _updating():
 
         # a dirty tree is refused rather than trampled
         readme = clone / "README.md"
-        readme.write_text(readme.read_text() + "\nlocal work in progress\n")
+        readme.write_text(
+            readme.read_text(encoding="utf-8") + "\nlocal work in progress\n",
+            encoding="utf-8",
+        )
         dirty = await check(clone)
         assert dirty.dirty and not dirty.can_apply
         applied, message = await apply(clone)
         assert not applied, "a dirty tree must not be fast-forwarded"
         assert "uncommitted" in message.lower(), message
-        assert readme.read_text().endswith("local work in progress\n"), "edit lost"
+        assert readme.read_text(encoding="utf-8").endswith("local work in progress\n"), "edit lost"
         assert _run("git", "rev-parse", "HEAD", cwd=clone).stdout.strip() != head
         ok("uncommitted work blocks the update and survives it untouched")
 

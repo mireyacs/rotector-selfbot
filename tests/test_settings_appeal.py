@@ -50,7 +50,7 @@ def test_every_setting_round_trips():
 
     workdir = Path(tempfile.mkdtemp())
     path = workdir / "config.toml"
-    path.write_text("")
+    path.write_text("", encoding="utf-8")
     migrate_config(path)
 
     cfg = Config()
@@ -81,7 +81,7 @@ def test_every_setting_round_trips():
         "[appeal]\n"
         'invite = "https://discord.gg/appeals"\n'
         "include_in_reason = true\n"
-    )
+    , encoding="utf-8")
     fresh = Config()
     fresh._apply_file(path)
     assert fresh.moderation.bulk_delay == 4.5, fresh.moderation.bulk_delay
@@ -208,7 +208,7 @@ async def test_swapping_to_a_bot_token_applies_immediately():
 
     workdir = Path(tempfile.mkdtemp())
     path = workdir / "config.toml"
-    path.write_text('[discord]\ntoken = "user.tok.en"\n')
+    path.write_text('[discord]\ntoken = "user.tok.en"\n', encoding="utf-8")
     cfg = Config()
     cfg._apply_file(path)
     cfg.source = path
@@ -233,7 +233,7 @@ async def test_swapping_to_a_bot_token_applies_immediately():
         await wait_for(lambda: not isinstance(app.screen, SettingsScreen), pilot,
                        "the screen to close")
 
-        saved = tomllib.loads(path.read_text())
+        saved = tomllib.loads(path.read_text(encoding="utf-8"))
         assert saved["discord"]["token"] == ""
         assert saved["discord"]["bot_token"] == "bot.tok.en"
         ok("the file is written: token cleared, bot_token set")
@@ -261,7 +261,7 @@ async def test_environment_override_is_reported():
 
     workdir = Path(tempfile.mkdtemp())
     path = workdir / "config.toml"
-    path.write_text('[discord]\ntoken = "user.tok.en"\n')
+    path.write_text('[discord]\ntoken = "user.tok.en"\n', encoding="utf-8")
     cfg = Config()
     cfg._apply_file(path)
     cfg.source = path

@@ -231,7 +231,7 @@ async def main():
 
         import json as _json
         payload = _json.loads(
-            next(f for f in folders[0].iterdir() if f.suffix == ".json").read_text()
+            next(f for f in folders[0].iterdir() if f.suffix == ".json").read_text(encoding="utf-8")
         )
         assert len(payload["members"]) == shown_now, (
             f"export wrote {len(payload['members'])} rows, but the filter shows "
@@ -242,7 +242,7 @@ async def main():
               f"scope {payload['scope']!r}")
 
         import tomllib as _tomllib
-        remembered = _tomllib.loads((workdir / "config.toml").read_text())
+        remembered = _tomllib.loads((workdir / "config.toml").read_text(encoding="utf-8"))
         assert remembered["export"]["segment_size"] == 1
         assert set(remembered["export"]["formats"]) == {
             "csv", "txt", "json", "png", "html"

@@ -120,7 +120,7 @@ async def test_wizard_and_settings():
             if not isinstance(app.screen, SetupWizard):
                 break
 
-        saved = tomllib.loads((workdir / "config.toml").read_text())
+        saved = tomllib.loads((workdir / "config.toml").read_text(encoding="utf-8"))
         assert saved["discord"]["token"] == GOOD_TOKEN
         assert saved["rotector"]["api_key"] == "testkey"
         assert saved["scan"]["hide_no_detections"] is True
@@ -173,7 +173,7 @@ async def test_wizard_and_settings():
             if not isinstance(app.screen, SettingsScreen):
                 break
 
-        saved = tomllib.loads((workdir / "config.toml").read_text())
+        saved = tomllib.loads((workdir / "config.toml").read_text(encoding="utf-8"))
         assert saved["rotector"]["rate_limit"] == 75
         assert saved["scan"]["skip_bots"] is False
         assert saved["export"]["formats"] == ["csv", "json"]

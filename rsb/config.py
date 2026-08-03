@@ -19,13 +19,50 @@ from pathlib import Path
 CONFIG_NAME = "config.toml"
 
 
-def _config_dir() -> Path:
+APP_DIR = "rotector-selfbot"
+
+
+def _xdg_dir() -> Path:
+    """The XDG location, which is also the historical one on every platform."""
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(base) / "rotector-selfbot"
+    return Path(base) / APP_DIR
+
+
+def _native_dir() -> Path | None:
+    """Where this platform conventionally keeps a config, if not XDG.
+
+    Windows puts application data under ``%APPDATA%``, not in a dotted folder
+    in the profile root. macOS is left on XDG deliberately: a terminal program
+    with a TOML config belongs in ``~/.config`` there by convention, and
+    ``~/Library/Application Support`` is for things a user never opens.
+    """
+    if os.name != "nt":
+        return None
+    appdata = os.environ.get("APPDATA")
+    return Path(appdata) / APP_DIR if appdata else None
+
+
+def _config_dir() -> Path:
+    """Where a new config is written when there is no existing one."""
+    return _native_dir() or _xdg_dir()
 
 
 def candidate_paths() -> list[Path]:
-    return [Path.cwd() / CONFIG_NAME, _config_dir() / CONFIG_NAME]
+    """Every location a config is read from, best first.
+
+    The XDG path stays in the list on Windows even though it is no longer
+    where a new file is written: an existing install already has one there,
+    and quietly failing to find it would look like the settings were lost.
+    """
+    seen: list[Path] = []
+    for path in (
+        Path.cwd() / CONFIG_NAME,
+        _config_dir() / CONFIG_NAME,
+        _xdg_dir() / CONFIG_NAME,
+    ):
+        if path not in seen:
+            seen.append(path)
+    return seen
 
 
 @dataclass
@@ -368,11 +405,18 @@ class Config:
                 setattr(self.proxy, key, proxy[key])
 
     def config_path(self) -> Path:
-        """Where settings changed in the UI get written back."""
+        """Where settings changed in the UI get written back.
+
+        An existing file always wins, wherever it is, so a Windows install that
+        predates the ``%APPDATA%`` default keeps being written to rather than
+        being shadowed by a second config it never reads.
+        """
         if self.source:
             return self.source
-        local = Path.cwd() / CONFIG_NAME
-        return local if local.is_file() else _config_dir() / CONFIG_NAME
+        for path in candidate_paths():
+            if path.is_file():
+                return path
+        return _config_dir() / CONFIG_NAME
 
     def save_export_settings(self) -> Path:
         """Persist the [export] section, leaving the rest of the file intact."""
