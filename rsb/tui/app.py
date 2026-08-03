@@ -83,6 +83,7 @@ from .settings import (
     SetupWizard,
     run_checks,
 )
+from ..update import apply as apply_update, check as check_update, preflight
 from .dialogs import (
     ExportDialog,
     RescanDialog,
@@ -93,6 +94,7 @@ from .dialogs import (
     ModerationDialog,
     PurgeConfirmDialog,
     PurgePlanDialog,
+    UpdateDialog,
 )
 from ..proxy import AllRoutesFailed
 from ..rotector import MemberReport, RotectorError
@@ -519,6 +521,7 @@ class ScannerApp(App):
         ("B", "bulk_action", "Bulk action"),
         ("ctrl+r", "reload_guilds", "Reload sources"),
         ("ctrl+s", "settings", "Settings"),
+        ("ctrl+u", "check_updates", "Check for updates"),
         ("ctrl+shift+r", "reload_code", "Reload code"),
         ("ctrl+b", "toggle_sources", "Sources pane"),
         ("ctrl+d", "toggle_detail", "Detail pane"),
@@ -638,6 +641,24 @@ class ScannerApp(App):
     def backend_name(self) -> str:
         """What the active lookup service is called, for anything user-facing."""
         return backend_label(self.config.scan.backend)
+
+    def export_palette(self):
+        """Colours for an export, or None to keep the fixed dark look.
+
+        Read at export time rather than cached, so an export always matches the
+        theme that is on screen when it is taken rather than the one that was
+        set at startup.
+        """
+        if not self.config.export.follow_theme:
+            return None
+        from ..palette import from_theme
+
+        theme = self.available_themes.get(self.theme)
+        if theme is None:
+            return None
+        return from_theme(
+            theme.to_color_system().generate(), name=self.theme, dark=theme.dark
+        )
 
     @property
     def attribution(self) -> str:
@@ -1237,6 +1258,11 @@ class ScannerApp(App):
             if advisories:
                 self._advisories = advisories
             await self._load_sources()
+
+            if self.config.update.check_on_start:
+                # after the sources are up, not before: a git fetch competing
+                # with sign-in would delay the thing the user is waiting for
+                self.check_updates()
         except DiscordAuthError as exc:
             self._fatal(str(exc))
             self.offer_diagnostics(str(exc))
@@ -1859,6 +1885,63 @@ class ScannerApp(App):
             # bar spinning on whatever step was interrupted.
             self._end_run()
 
+    # -- updates -----------------------------------------------------------
+
+    def action_check_updates(self) -> None:
+        """Asked for explicitly, so it reports every outcome."""
+        self.check_updates(announce=True)
+
+    @work(exclusive=True, group="update")
+    async def check_updates(self, announce: bool = False) -> None:
+        """Look for new commits, and offer them.
+
+        ``announce`` separates the two callers. The startup check is
+        speculative and stays quiet unless there is something to say -- nobody
+        asked it a question. Ctrl+U asked, so it answers either way, including
+        the "git is not installed" and "not a clone" cases, which are exactly
+        the ones a silent no-op would leave someone guessing about.
+        """
+        reason = preflight()
+        if reason:
+            if announce:
+                self._set_status(reason, "yellow")
+            return
+
+        if announce:
+            self._set_activity("Checking for updates...")
+        status = await check_update()
+
+        if not status.available:
+            if announce:
+                self._set_status(status.describe(), "" if status.usable else "yellow")
+            else:
+                # a failed background check is a log line, not an interruption
+                self._end_run()
+                self.log_debug(f"update check: {status.describe()}", "net")
+            return
+
+        self._end_run()
+        self.log_debug(f"update available: {status.describe()}", "net")
+        if not await self.push_screen_wait(UpdateDialog(status)):
+            self._set_status(status.describe() + " Press ctrl+u to update.")
+            return
+
+        self._set_activity(f"Updating to {status.upstream}...")
+        ok, message = await apply_update()
+        if not ok:
+            self._set_status(message, "bold red")
+            return
+
+        # The code on disk has moved under a running process. Hot reload picks
+        # up what it safely can; the UI modules it deliberately excludes need a
+        # restart, so say so rather than implying the update is fully live.
+        self._set_status(f"{message} Reloading...")
+        self.reload_code(
+            then=lambda: self._set_status(
+                f"{message} Restart to finish applying it.", "yellow"
+            )
+        )
+
     # -- results table -----------------------------------------------------
 
     def _passes(self, row: Row) -> bool:
@@ -2343,6 +2426,7 @@ class ScannerApp(App):
                 preserve=choice.preserve,
                 png_style=choice.png_style,
                 profiles=profiles,
+                palette=self.export_palette(),
             )
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"Export failed: {exc}", "bold red")

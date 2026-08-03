@@ -128,12 +128,43 @@ answered*, which the detail pane says out loud — it is not the same as that
 source saying "not flagged", and collapsing the two would let an outage read as
 a clean result.
 
+### Staying up to date
+
+The install is a `git clone`, so an update is a fast-forward of the working
+copy. The app checks shortly after startup and on `ctrl+u`, and when there is
+something new it shows a dialog listing the commits before anything is applied:
+
+- **Nothing is pulled without confirming.** Checking is a read — `git fetch`
+  touches no tracked file. Applying moves the code that is about to run, which
+  is worth a keypress.
+- **Git has to be there.** No git on `PATH`, or no `.git` to pull into, and the
+  feature says so in a sentence rather than failing obscurely. `ctrl+u` reports
+  that; the startup check stays quiet about it.
+- **A modified working copy is never touched.** The merge is `--ff-only`
+  against an explicitly fetched upstream, so it either advances cleanly or
+  declines. Local edits are yours; commit or stash them and check again.
+
+After a successful update the app hot-reloads what it safely can and says to
+restart to finish — the UI modules are deliberately excluded from hot reload.
+Set `[update] check_on_start = false` to only ever check on `ctrl+u`.
+
 ### Choosing a theme
 
 `ctrl+p` → **Theme** switches the colour scheme, and the choice is remembered in
 `[ui] theme` a couple of seconds after it settles — long enough that arrowing
 through the list to look does not save whatever you scrolled past. `ten-thousand`
 is the project page's own black-and-white palette.
+
+Exports can follow it. With `[export] follow_theme = true` the PNG and the HTML
+are drawn in whatever theme is on screen when you export, instead of the fixed
+dark look:
+
+![PNG table export](docs/screenshots/export-png.png)
+
+Verdict colours do **not** follow the theme, in either format. The accent on a
+THREAT row is the finding, not decoration, and a monochrome theme would drain
+exactly the distinction a reader is scanning for — so the chrome moves and the
+evidence stays put. That is what the images above show.
 
 ### Using a bot token instead
 

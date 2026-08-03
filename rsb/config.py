@@ -63,6 +63,18 @@ class OkappikiConfig:
 
 
 @dataclass
+class UpdateConfig:
+    """Pulling new commits into the clone this runs from.
+
+    Checking is a read and is on by default; applying always waits for the
+    dialog. Neither happens at all without git on PATH and a .git to pull into.
+    """
+
+    #: look for new commits shortly after startup
+    check_on_start: bool = True
+
+
+@dataclass
 class UiConfig:
     #: Textual theme to open in. Empty means whatever Textual defaults to.
     #: Set from the command palette's Theme command rather than by hand.
@@ -128,6 +140,10 @@ class ExportConfig:
     directory: str = "exports"
     #: "table" for the results grid, "cards" for per-member profile images
     png_style: str = "table"
+    #: draw exports in the app's current theme instead of the fixed dark one.
+    #: Chrome only -- verdict colours stay put, because the accent on a THREAT
+    #: row is the finding rather than decoration.
+    follow_theme: bool = False
     #: keep exports past the 24h retention window instead of clearing them.
     #: Rotector's terms forbid retaining their responses that long, so leaving
     #: this off means old export folders are swept up automatically.
@@ -230,6 +246,7 @@ class Config:
     rotector: RotectorConfig = field(default_factory=RotectorConfig)
     okappiki: OkappikiConfig = field(default_factory=OkappikiConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
@@ -307,6 +324,10 @@ class Config:
             if key in okp and okp[key] is not None:
                 setattr(self.okappiki, key, okp[key])
 
+        upd = data.get("update") or {}
+        if upd.get("check_on_start") is not None:
+            self.update.check_on_start = bool(upd["check_on_start"])
+
         ui = data.get("ui") or {}
         if ui.get("theme") is not None:
             self.ui.theme = str(ui["theme"]).strip()
@@ -319,7 +340,7 @@ class Config:
 
         export = data.get("export") or {}
         for key in ("formats", "scope", "segment_size", "columns", "directory",
-                    "png_style"):
+                    "png_style", "follow_theme"):
             if key in export and export[key] is not None:
                 setattr(self.export, key, export[key])
 

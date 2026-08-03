@@ -1132,3 +1132,104 @@ class BulkPickDialog(DismissOnOutsideClick, ModalScreen[str | None]):
                 self.dismiss(key)
                 return
         self.dismiss(None)
+
+
+class UpdateDialog(DismissOnOutsideClick, ModalScreen[bool]):
+    """Offer an update, and show what is in it before it is applied.
+
+    Pulling means the next reload runs code that is not on this machine yet, so
+    the commit subjects are listed rather than summarised as a count. Clicking
+    away means "not now", which is the safe reading for running new code.
+
+    The dialog is also the place the *un*available cases are explained -- no
+    git, not a clone, a dirty tree -- because "check for updates" quietly doing
+    nothing is the one outcome that leaves somebody wondering.
+    """
+
+    CSS = "UpdateDialog { align: center middle; }" + _DIALOG_CSS
+    BINDINGS = [("escape", "cancel", "Close")]
+
+    def _dismiss_from_outside(self) -> None:
+        self.dismiss(False)
+
+    def __init__(self, status) -> None:
+        super().__init__()
+        self.status = status
+
+    def compose(self) -> ComposeResult:
+        from ..update import MAX_LISTED, requirements_changed
+
+        status = self.status
+        with Vertical(id="panel"):
+            yield Static("Update", classes="title")
+
+            summary = Text()
+            if not status.usable:
+                summary.append("Updates are unavailable here.\n", style="bold yellow")
+                summary.append(status.reason)
+            elif not status.behind:
+                summary.append("Already up to date.\n", style="bold green")
+                summary.append(
+                    f"{status.branch} matches {status.upstream}.", style="dim"
+                )
+            else:
+                plural = "" if status.behind == 1 else "s"
+                summary.append(f"{status.behind}", style="bold")
+                summary.append(f" new commit{plural} on ")
+                summary.append(f"{status.upstream}", style="bold")
+                summary.append(".\n")
+                summary.append(
+                    "Updating fast-forwards this working copy. Nothing is "
+                    "applied until you press Update.",
+                    style="dim",
+                )
+            yield Static(summary)
+
+            if status.commits:
+                yield Static("Incoming", classes="section")
+                listing = Text()
+                for sha, subject in status.commits[:MAX_LISTED]:
+                    listing.append(f"  {sha}  ", style="dim")
+                    listing.append(f"{subject}\n")
+                if len(status.commits) > MAX_LISTED:
+                    listing.append(
+                        f"  ... and {len(status.commits) - MAX_LISTED} more\n",
+                        style="dim",
+                    )
+                yield Static(listing)
+
+            if status.usable and status.dirty:
+                warn = Text()
+                warn.append("This working copy has local changes.\n",
+                            style="bold yellow")
+                warn.append(
+                    "Updating is refused while tracked files are modified, "
+                    "because a fast-forward cannot keep both your edits and "
+                    "the new commits. Commit or stash them, then check again.",
+                    style="dim",
+                )
+                yield Static(warn)
+
+            if status.can_apply and requirements_changed(status):
+                note = Text()
+                note.append(
+                    "Some of these look like dependency changes -- re-run "
+                    "pip install -r requirements.txt afterwards.",
+                    style="yellow",
+                )
+                yield Static(note)
+
+            with Horizontal(id="buttons"):
+                if status.can_apply:
+                    yield Button("Not now", variant="default", id="cancel")
+                    yield Button("Update", variant="primary", id="confirm")
+                else:
+                    yield Button("Close", variant="default", id="cancel")
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#confirm")
+    def _confirm(self) -> None:
+        self.dismiss(True)

@@ -87,6 +87,15 @@ SCHEMA: list[Section] = [
         ],
     ),
     Section(
+        "update",
+        "Pulling new commits into the clone this runs from. Needs git on\n"
+        "PATH. Checking is a read; applying always asks first.",
+        [
+            Setting("check_on_start", True,
+                    "Look for new commits shortly after startup."),
+        ],
+    ),
+    Section(
         "ui",
         "Appearance. Set from inside the app rather than by hand.",
         [
@@ -184,6 +193,13 @@ SCHEMA: list[Section] = [
                 '"table" draws the results grid, "cards" draws a\n'
                 "Discord-style profile per member with avatar and banner,\n"
                 '"both" writes the table and every card.',
+            ),
+            Setting(
+                "follow_theme",
+                False,
+                "Draw exports in the app's current theme instead of the\n"
+                "fixed dark one. Chrome only -- verdict colours stay put,\n"
+                "because the accent on a THREAT row is the finding.",
             ),
             Setting(
                 "preserve",

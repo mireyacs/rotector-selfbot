@@ -75,6 +75,15 @@ cache_ttl = 3600
 concurrency = 2
 
 
+# Pulling new commits into the clone this runs from. Needs git on
+# PATH. Checking is a read; applying always asks first, in a dialog
+# listing the commits. A working copy with uncommitted changes is
+# never touched.
+[update]
+# Look for new commits shortly after startup. Ctrl+U checks on demand.
+check_on_start = true
+
+
 # Appearance. Set from inside the app rather than by hand.
 [ui]
 # Textual theme to open in, remembered when you pick one from the command
@@ -157,6 +166,11 @@ directory = "exports"
 # "table" draws the results grid; "cards" draws a
 # Discord-style profile per member, with avatar and banner.
 png_style = "table"
+
+# Draw exports in the app's current theme instead of the fixed dark one.
+# Chrome only -- verdict colours stay put, because the accent on a
+# THREAT row is the finding rather than decoration.
+follow_theme = false
 
 # Keep exports past the 24h retention window.
 # Off means old export folders are cleared automatically --

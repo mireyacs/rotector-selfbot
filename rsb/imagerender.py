@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .export import COLUMNS, ExportRow, valid_columns
+from .palette import DEFAULT as DEFAULT_PALETTE, ExportPalette
 from .verdict import ATTRIBUTION, Verdict, category_name, flag_name, verdict_label
 
 try:  # optional
@@ -52,7 +53,12 @@ BOLD_CANDIDATES = [
 
 @dataclass(frozen=True)
 class Theme:
-    """Dark, to match the terminal it mirrors."""
+    """RGB tuples for Pillow, taken from an :class:`ExportPalette`.
+
+    Kept as its own type because everything below draws with tuples and a
+    per-pixel hex parse would be wasteful. ``Theme()`` with no arguments is the
+    palette's default, which is the fixed dark look exports have always had.
+    """
 
     background: tuple = (18, 20, 24)
     panel: tuple = (28, 32, 38)
@@ -62,15 +68,34 @@ class Theme:
     muted: tuple = (138, 146, 156)
     heading: tuple = (255, 166, 43)
 
+    @classmethod
+    def from_palette(cls, palette: ExportPalette | None) -> "Theme":
+        if palette is None:
+            return cls()
+        return cls(
+            background=palette.background_rgb,
+            panel=palette.panel_rgb,
+            stripe=palette.stripe_rgb,
+            grid=palette.grid_rgb,
+            text=palette.text_rgb,
+            muted=palette.muted_rgb,
+            heading=palette.heading_rgb,
+        )
 
-#: verdict -> row accent, mirroring the UI's styles
-VERDICT_COLOURS: dict[Verdict, tuple] = {
-    Verdict.THREAT: (244, 63, 94),
-    Verdict.CAUTION: (250, 204, 21),
-    Verdict.INFO: (56, 189, 248),
-    Verdict.NO_DETECTIONS: (74, 222, 128),
-    Verdict.UNKNOWN: (138, 146, 156),
-}
+
+def verdict_colours(palette: ExportPalette | None = None) -> dict[Verdict, tuple]:
+    """Verdict -> row accent, mirroring the UI's styles.
+
+    These do not follow the theme even when the chrome does: the accent is the
+    finding, and a monochrome theme would drain the one distinction the reader
+    is looking for.
+    """
+    source = palette or DEFAULT_PALETTE
+    return {verdict: source.verdict_rgb(verdict) for verdict in Verdict}
+
+
+#: the default accents, for callers that draw without a palette
+VERDICT_COLOURS: dict[Verdict, tuple] = verdict_colours()
 
 
 def _load_font(size: int, bold: bool = False):
@@ -115,6 +140,7 @@ def render_png(
     max_column_chars: int = 44,
     style: str = "table",
     profiles: dict | None = None,
+    palette: ExportPalette | None = None,
 ) -> list[Path]:
     """Draw ``rows`` as images.
 
@@ -128,7 +154,8 @@ def render_png(
         raise RuntimeError(unavailable_reason())
     if style in ("cards", "both"):
         cards = render_cards(
-            rows, directory, stem, profiles or {}, title=title, subtitle=subtitle
+            rows, directory, stem, profiles or {},
+            title=title, subtitle=subtitle, palette=palette,
         )
         if style == "cards":
             return cards
@@ -138,7 +165,8 @@ def render_png(
     columns = valid_columns(columns)
     font = _load_font(font_size)
     bold = _load_font(font_size, bold=True)
-    theme = Theme()
+    theme = Theme.from_palette(palette)
+    accents = verdict_colours(palette)
 
     cell_w = max(1.0, font.getlength("0"))
     line_h = font_size + 8
@@ -203,7 +231,7 @@ def render_png(
         for row_index, row in enumerate(chunk):
             if row_index % 2:
                 draw.rectangle([0, y - 2, image_w, y + line_h - 2], fill=theme.stripe)
-            accent = VERDICT_COLOURS.get(row.report.verdict, theme.text)
+            accent = accents.get(row.report.verdict, theme.text)
             # a bar in the margin, so severity reads before any text does
             draw.rectangle([0, y - 2, 3, y + line_h - 2], fill=accent)
 
@@ -309,11 +337,16 @@ def _initials(name: str) -> str:
     return (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper()
 
 
-def render_card(row: ExportRow, profile, theme: Theme | None = None):
+def render_card(
+    row: ExportRow,
+    profile,
+    theme: Theme | None = None,
+    palette: ExportPalette | None = None,
+):
     """One member as a Discord-profile-shaped card."""
-    theme = theme or Theme()
+    theme = theme or Theme.from_palette(palette)
     verdict = row.report.verdict
-    accent = VERDICT_COLOURS.get(verdict, theme.muted)
+    accent = verdict_colours(palette).get(verdict, theme.muted)
 
     name_font = _sans(22, bold=True)
     tag_font = _sans(14)
@@ -493,6 +526,7 @@ def render_cards(
     *,
     title: str = "",
     subtitle: str = "",
+    palette: ExportPalette | None = None,
 ) -> list[Path]:
     """One card per member, each its own file."""
     if not PIL_AVAILABLE:
@@ -500,7 +534,12 @@ def render_cards(
     written: list[Path] = []
     width = len(str(max(1, len(rows))))
     for index, row in enumerate(rows, start=1):
-        card = render_card(row, profiles.get(row.discord_id))
+        card = render_card(
+            row,
+            profiles.get(row.discord_id),
+            theme=Theme.from_palette(palette),
+            palette=palette,
+        )
         safe = "".join(
             c if c.isalnum() or c in "-_" else "-" for c in row.username
         )[:24] or row.discord_id

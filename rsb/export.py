@@ -353,6 +353,7 @@ def export(
     preserve: bool = False,
     png_style: str = "table",
     profiles: dict | None = None,
+    palette=None,
 ) -> ExportManifest:
     """Render ``rows`` into a dedicated folder and describe what was written."""
     stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -396,6 +397,7 @@ def export(
                 subtitle=f"{scope}  -  generated {stamp}",
                 style=png_style,
                 profiles=profiles,
+                palette=palette,
             )
         else:
             formats = [f for f in formats if f != "png"]
@@ -413,6 +415,7 @@ def export(
             stamp=stamp,
             scope=scope,
             profiles=profiles,
+            palette=palette,
         )
 
     relative = [

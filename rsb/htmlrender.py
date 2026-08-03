@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .export import COLUMNS, ExportRow, valid_columns
+from .palette import DEFAULT as DEFAULT_PALETTE, ExportPalette
 from .verdict import (
     ATTRIBUTION,
     Verdict,
@@ -38,61 +39,61 @@ VERDICT_CSS = {
 }
 
 _STYLE = """
-:root { color-scheme: dark; }
+%ROOT%
 * { box-sizing: border-box; }
 body {
   margin: 0; padding: 24px;
-  background: #121418; color: #dee2e6;
+  background: var(--bg); color: var(--fg);
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 h1 { margin: 0 0 4px; font-size: 20px; }
-.sub { color: #8a929c; margin-bottom: 18px; }
+.sub { color: var(--muted); margin-bottom: 18px; }
 .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px;
-       flex-wrap: wrap; position: sticky; top: 0; background: #121418;
+       flex-wrap: wrap; position: sticky; top: 0; background: var(--bg);
        padding: 8px 0; z-index: 5; }
 input[type=search], select {
-  background: #1c2026; color: #dee2e6; border: 1px solid #343a42;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--grid);
   border-radius: 6px; padding: 7px 10px; font: inherit; min-width: 220px;
 }
 button {
-  background: #1c2026; color: #dee2e6; border: 1px solid #343a42;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--grid);
   border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer;
 }
-button.on { background: #2b62d9; border-color: #2b62d9; color: #fff; }
-.count { color: #8a929c; margin-left: auto; }
+button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.count { color: var(--muted); margin-left: auto; }
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #23272e;
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule);
          vertical-align: top; }
-th { position: sticky; top: 52px; background: #1c2026; cursor: pointer;
+th { position: sticky; top: 52px; background: var(--panel); cursor: pointer;
      user-select: none; white-space: nowrap; }
-th:hover { background: #262b33; }
-tr:nth-child(even) td { background: #171a1f; }
+th:hover { background: var(--grid); }
+tr:nth-child(even) td { background: var(--stripe); }
 td.verdict { font-weight: 600; white-space: nowrap; }
 td.wrap { max-width: 460px; }
 .cards { display: grid; gap: 16px;
          grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
-.card { background: #1c2026; border-radius: 10px; overflow: hidden;
-        border: 1px solid #23272e; }
+.card { background: var(--panel); border-radius: 10px; overflow: hidden;
+        border: 1px solid var(--rule); }
 .banner { height: 84px; background: #5865f2; background-size: cover;
           background-position: center; }
 .card .top { display: flex; gap: 12px; padding: 0 16px; margin-top: -34px; }
-.avatar { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #1c2026;
+.avatar { width: 68px; height: 68px; border-radius: 50%; border: 4px solid var(--panel);
           background: #5865f2; flex: none; display: grid; place-items: center;
           font-weight: 700; font-size: 22px; color: #fff; overflow: hidden; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
 .who { padding-top: 38px; min-width: 0; }
 .who .name { font-size: 17px; font-weight: 700; }
-.who .handle { color: #8a929c; font-size: 12px; word-break: break-all; }
+.who .handle { color: var(--muted); font-size: 12px; word-break: break-all; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
-         font-size: 11px; font-weight: 700; color: #0c0e11; }
-.card section { padding: 10px 16px; border-top: 1px solid #23272e; }
+         font-size: 11px; font-weight: 700; color: var(--on-badge); }
+.card section { padding: 10px 16px; border-top: 1px solid var(--rule); }
 .card h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em;
-           color: #8a929c; text-transform: uppercase; }
+           color: var(--muted); text-transform: uppercase; }
 .card .line { margin-bottom: 3px; word-wrap: break-word; }
-.muted { color: #8a929c; }
-a { color: #7aa2f7; }
-footer { margin-top: 24px; color: #8a929c; font-size: 12px;
-         border-top: 1px solid #23272e; padding-top: 12px; }
+.muted { color: var(--muted); }
+a { color: var(--link); }
+footer { margin-top: 24px; color: var(--muted); font-size: 12px;
+         border-top: 1px solid var(--rule); padding-top: 12px; }
 .hidden { display: none !important; }
 """
 
@@ -166,7 +167,7 @@ def _initials(name: str) -> str:
 
 def _card(row: ExportRow, profile) -> str:
     verdict = row.report.verdict
-    colour = VERDICT_CSS.get(verdict, "#8a929c")
+    colour = VERDICT_CSS.get(verdict, "var(--muted)")
     esc = html.escape
 
     banner = _data_uri(getattr(profile, "banner_bytes", None))
@@ -233,7 +234,7 @@ def _card(row: ExportRow, profile) -> str:
             )
             category = category_name(account.category)
             lines.append(
-                f"<div class='line'><b style='color:{VERDICT_CSS.get(account.verdict, '#dee2e6')}'>"
+                f"<div class='line'><b style='color:{VERDICT_CSS.get(account.verdict, 'var(--fg)')}'>"
                 f"{esc(flag_name(account.flag_type))}</b> "
                 f"<span class='muted'>({actionable})</span> "
                 f"<a href='{esc(account.profile_url)}'>{esc(account.username)}</a> "
@@ -297,6 +298,42 @@ def _card(row: ExportRow, profile) -> str:
 </article>"""
 
 
+def _style(palette: ExportPalette | None = None) -> str:
+    """The stylesheet, with its `:root` block built from ``palette``.
+
+    Substituted rather than formatted: the sheet is mostly braces, and
+    ``str.format`` would mean doubling every one of them.
+    """
+    source = palette or DEFAULT_PALETTE
+    root = (
+        ":root {\n"
+        f"  color-scheme: {'dark' if source.dark else 'light'};\n"
+        f"  --bg: {source.background};\n"
+        f"  --fg: {source.text};\n"
+        f"  --panel: {source.panel};\n"
+        f"  --stripe: {source.stripe};\n"
+        f"  --grid: {source.grid};\n"
+        f"  --rule: {source.rule};\n"
+        f"  --muted: {source.muted};\n"
+        f"  --accent: {source.accent};\n"
+        f"  --on-accent: {source.on_accent};\n"
+        f"  --on-badge: {source.background};\n"
+        f"  --link: {source.link};\n"
+        "}"
+    )
+    return _STYLE.replace("%ROOT%", root)
+
+
+def verdict_css(palette: ExportPalette | None = None) -> dict:
+    """Verdict -> CSS colour.
+
+    Fixed even when the chrome follows a theme: the badge colour is the
+    finding, and draining it would remove the distinction a reader scans for.
+    """
+    source = palette or DEFAULT_PALETTE
+    return {verdict: source.verdict_css(verdict) for verdict in Verdict}
+
+
 def render_html(
     rows: Sequence[ExportRow],
     directory: Path,
@@ -307,6 +344,7 @@ def render_html(
     stamp: str = "",
     scope: str = "",
     profiles: dict | None = None,
+    palette: ExportPalette | None = None,
 ) -> list[Path]:
     """Write one self-contained page holding both the table and the cards."""
     columns = valid_columns(columns)
@@ -327,7 +365,7 @@ def render_html(
             if len(value) > 60:
                 classes.append("wrap")
             style = (
-                f" style=\"color:{VERDICT_CSS.get(verdict, '#dee2e6')}\""
+                f" style=\"color:{VERDICT_CSS.get(verdict, 'var(--fg)')}\""
                 if column == "verdict"
                 else ""
             )
@@ -351,7 +389,7 @@ def render_html(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(guild_name)} - Rotector scan</title>
-<style>{_STYLE}</style>
+<style>{_style(palette)}</style>
 </head><body>
 <h1>{esc(guild_name)}</h1>
 <div class="sub">{esc(scope)} &middot; generated {esc(stamp)} &middot;
