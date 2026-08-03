@@ -99,6 +99,11 @@ theme = ""
 # mococo findings in one response, but one member per request.
 backend = "rotector"
 
+# How many queued scans may run at once. They share one rate limiter per
+# backend -- Rotector's terms forbid getting around the window, so a second
+# scan does not buy throughput, it splits it.
+max_concurrent_jobs = 2
+
 # Bots have no Roblox connections.
 skip_bots = true
 

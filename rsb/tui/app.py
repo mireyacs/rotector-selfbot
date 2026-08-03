@@ -1915,12 +1915,17 @@ class ScannerApp(App):
             if announce:
                 self._set_status(status.describe(), "" if status.usable else "yellow")
             else:
-                # a failed background check is a log line, not an interruption
-                self._end_run()
+                # a background check is a log line, not an interruption. It
+                # must not touch the run state at all: _end_run() here wiped
+                # the activity, the clock and the task handle of whatever scan
+                # happened to be running when the fetch came back, a couple of
+                # seconds into startup.
                 self.log_debug(f"update check: {status.describe()}", "net")
             return
 
-        self._end_run()
+        if announce:
+            # only clear what this worker put up, and only when it put it up
+            self._end_run()
         self.log_debug(f"update available: {status.describe()}", "net")
         if not await self.push_screen_wait(UpdateDialog(status)):
             self._set_status(status.describe() + " Press ctrl+u to update.")

@@ -125,6 +125,13 @@ SCHEMA: list[Section] = [
                 ),
                 choices=("rotector", "okappiki"),
             ),
+            Setting(
+                "max_concurrent_jobs",
+                2,
+                "How many queued scans may run at once. They share one\n"
+                "rate limiter per backend, so a second scan splits the\n"
+                "budget rather than adding to it.",
+            ),
             Setting("skip_bots", True, "Bots have no Roblox connections."),
             Setting("max_members", 0, "Cap members per source. 0 = no cap."),
             Setting(

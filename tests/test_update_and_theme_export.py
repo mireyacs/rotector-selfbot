@@ -194,4 +194,85 @@ assert _buttons(UpdateStatus(usable=True, behind=2)) == {"cancel", "confirm"}
 assert UpdateDialog is not None
 ok("Update is only offered when there is something to apply and a tree to apply it to")
 
+
+# --- a background update check must not touch a running scan --------------
+# It did. check_updates(announce=False) called _end_run() on its quiet path,
+# which clears the activity, the elapsed clock and the scan task handle -- so
+# a startup check returning a couple of seconds into a scan tore that scan's
+# state out from under it. test_progress.py failed 5/5 on it.
+
+async def _background_check_leaves_the_scan_alone():
+    import rsb.tui.app as appmod
+    from rsb.discord.http import Channel, Guild
+    from rsb.tui.app import ScannerApp
+    import rsb.update as update
+
+    class _HTTP:
+        def __init__(self, token, **kw): pass
+        async def me(self): return {"username": "you", "global_name": "You", "id": "1"}
+        async def guilds(self):
+            return [Guild(id="1", name="g", owner=False, permissions=0,
+                          member_count=10, presence_count=2)]
+        async def relationships(self): return []
+        async def private_channels(self): return []
+        async def channels(self, gid):
+            return [Channel(id="c", name="general", type=0, position=0,
+                            everyone_can_view=True)]
+        async def aclose(self): pass
+
+    class _Gateway:
+        def __init__(self, token, bot=False):
+            self.user = None; self.on_reconnect = None; self.on_reconnected = None
+        async def connect(self, timeout=45.0): return {}
+        async def fetch_members(self, *a, **kw): return {}
+        async def close(self): pass
+
+    appmod.DiscordHTTP = _HTTP
+    appmod.DiscordGateway = _Gateway
+
+    # a check that finds nothing, which is the common case and the broken path
+    async def _nothing(root=None):
+        return update.UpdateStatus(usable=True, behind=0, branch="main",
+                                   upstream="origin/main")
+
+    real_check, real_preflight = appmod.check_update, appmod.preflight
+    appmod.check_update = _nothing
+    appmod.preflight = lambda *a, **kw: ""
+
+    config = Config()
+    config.token = "fake.test.token"
+    config.proxy.file = "/nonexistent"
+    config.update.check_on_start = False
+    app = ScannerApp(config, persist_theme=False)
+    try:
+        async with app.run_test(size=(100, 30)) as pilot:
+            for _ in range(40):
+                await pilot.pause(0.1)
+                if app.rotector is not None:
+                    break
+
+            # stand in for a scan in flight
+            app._process_started = 1.0
+            app._set_activity("Checking members - 4,200 of 10,833")
+            assert app._scanning
+
+            app.check_updates()          # the startup form: announce=False
+            for _ in range(30):
+                await pilot.pause(0.1)
+                if not app.workers._workers:
+                    break
+
+            assert app._scanning, "the background check ended the scan's clock"
+            assert app._activity is not None, (
+                "the background check cleared the running scan's activity"
+            )
+            assert "4,200" in app._activity, app._activity
+    finally:
+        appmod.check_update, appmod.preflight = real_check, real_preflight
+    ok("a quiet update check leaves a running scan's state untouched")
+
+
+asyncio.run(_background_check_leaves_the_scan_alone())
+
+
 print("\nall update and themed-export checks passed.")

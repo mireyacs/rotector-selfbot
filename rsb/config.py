@@ -152,6 +152,11 @@ class ScanConfig:
     #: own response happens to include a Rotector verdict alongside its two
     #: other sources, so switching does not lose Rotector's answer.
     backend: str = "rotector"
+    #: how many queued scans may run at once. They share one rate limiter per
+    #: backend -- Rotector's terms forbid getting around the window, so a
+    #: second scan does not buy throughput, it splits it. Two is enough to let
+    #: a quick source finish while a ten-thousand-member server grinds.
+    max_concurrent_jobs: int = 2
     #: skip bot accounts, which have no Roblox connections
     skip_bots: bool = True
     #: cap members pulled per guild; 0 means no cap
@@ -370,7 +375,8 @@ class Config:
             self.ui.theme = str(ui["theme"]).strip()
 
         scan = data.get("scan") or {}
-        for key in ("backend", "skip_bots", "max_members", "hide_no_detections",
+        for key in ("backend", "max_concurrent_jobs", "skip_bots", "max_members",
+                    "hide_no_detections",
                     "hide_unknown", "on_rescan"):
             if key in scan and scan[key] is not None:
                 setattr(self.scan, key, scan[key])
@@ -539,6 +545,11 @@ class Config:
             problems.append(
                 f"scan.backend must be one of {', '.join(BACKENDS)} "
                 f"(got {self.scan.backend!r})"
+            )
+        if not 1 <= self.scan.max_concurrent_jobs <= 8:
+            problems.append(
+                "scan.max_concurrent_jobs must be between 1 and 8 "
+                f"(got {self.scan.max_concurrent_jobs})"
             )
         if self.okappiki.reserve >= self.okappiki.rate_limit:
             problems.append("okappiki.reserve must be smaller than okappiki.rate_limit")
