@@ -1,8 +1,14 @@
-"""Render SVG screenshots of the real UI for the README.
+"""Render SVG screenshots of the real UI for the README and the project page.
 
 Runs the actual app headlessly against stub Discord data and a stub Rotector
 client, so the images are genuine renders rather than drawings -- if the UI
 changes, re-running this changes the pictures.
+
+The app is put into its "ten-thousand" theme first, which is the project page's
+own two-value palette (see ``rsb/tui/theme.py``), and ``tools/sitesvg.py``
+frames the export as one of the page's data nodes. The pictures are still the
+program: it is a theme the program ships and a user can pick, not a costume put
+on for the page.
 
     python tools/screenshots.py
 """
@@ -15,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import tools.sitesvg as sitesvg
 import rsb.tui.app as appmod
 from rsb.config import Config
 from rsb.discord.gateway import GuildMember
@@ -24,6 +31,7 @@ from rsb.rotector import MemberReport, RobloxAccount, TrackedServer
 from rsb.tui.app import Row
 from rsb.tui.proxies import ProxyTesterApp
 from rsb.tui.settings import SettingsScreen
+from rsb.tui.theme import NAME as THEME_NAME
 
 OUT = ROOT / "docs" / "screenshots"
 SIZE = (128, 34)
@@ -125,8 +133,12 @@ class StubGateway:
     async def close(self): pass
 
 
-async def shot(app, name: str, prepare, size=SIZE, settle=2.5):
+async def shot(app, name: str, label: str, prepare, size=SIZE, settle=2.5):
     async with app.run_test(size=size) as pilot:
+        # the page is black and white, so the program is too for the portrait.
+        # on_mount registered it; this is the same pick a user makes from the
+        # command palette's Theme command.
+        app.theme = THEME_NAME
         # wait for the stub connect worker to finish populating sources
         for _ in range(int(settle / 0.1)):
             await pilot.pause(0.1)
@@ -137,7 +149,7 @@ async def shot(app, name: str, prepare, size=SIZE, settle=2.5):
         await prepare(app, pilot)
         await pilot.pause(0.4)
         path = OUT / f"{name}.svg"
-        app.save_screenshot(str(path))
+        sitesvg.save(app, path, label)
         print(f"  wrote {path.relative_to(ROOT)}")
 
 
@@ -174,20 +186,20 @@ async def main():
         table.move_cursor(row=0)
         await pilot.pause(0.3)
 
-    await shot(appmod.ScannerApp(config()), "results", results)
+    await shot(appmod.ScannerApp(config()), "results", "RESULTS", results)
 
     # 2. sources pane, grouped
     async def sources(app, pilot):
         app.query_one("#guilds", appmod.DataTable).focus()
         app._set_status("4 servers, 2 group DMs, friends and requests. Press s to scan.")
         await pilot.pause(0.3)
-    await shot(appmod.ScannerApp(config()), "sources", sources)
+    await shot(appmod.ScannerApp(config()), "sources", "SOURCES", sources)
 
     # 3. settings editor
     async def settings(app, pilot):
         app.push_screen(SettingsScreen(app.config))
         await pilot.pause(0.8)
-    await shot(appmod.ScannerApp(config()), "settings", settings)
+    await shot(appmod.ScannerApp(config()), "settings", "SETTINGS", settings)
 
     # 4. proxy tester
     async def proxies(app, pilot):
@@ -229,7 +241,7 @@ async def main():
         await pilot.pause(0.3)
 
     cfg = config()
-    await shot(ProxyTesterApp(cfg), "proxies", proxies)
+    await shot(ProxyTesterApp(cfg), "proxies", "PROXY TESTER", proxies)
 
     print(f"\n{len(list(OUT.glob('*.svg')))} screenshots in {OUT.relative_to(ROOT)}")
 

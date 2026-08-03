@@ -8,10 +8,28 @@ a second one that would drift out of step.
 
 from __future__ import annotations
 
+from rich.style import Style
 from rich.text import Text
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, HorizontalScroll
 from textual.widgets import Static
+
+
+def _themed(app, variable: str, fallback: str) -> str:
+    """A Rich style string pulled from whichever theme is active.
+
+    The keybar is drawn as Rich text rather than as styled widgets, so it
+    cannot pick colours up from CSS and has to read them itself. Not every
+    theme variable is a colour Rich can parse -- the ansi themes answer with
+    ``ansi_magenta`` and ``transparent``, and several are ``auto 60%`` -- so
+    anything Rich refuses falls back rather than raising in a render.
+    """
+    value = app.theme_variables.get(variable, "")
+    try:
+        Style.parse(value)
+    except Exception:
+        return fallback
+    return value
 
 
 class BindingCommands(Provider):
@@ -224,17 +242,25 @@ class ScrollableFooter(ScrollingStrip):
 
     def on_mount(self) -> None:
         self.refresh_keys()
+        # the bar is Rich text, so a theme swap has to redraw it by hand; CSS
+        # would have repainted itself
+        self.app.theme_changed_signal.subscribe(self, lambda _: self.refresh_keys())
         # the arrows depend on measured overflow, which is not known until the
         # layout has settled
         self.set_timer(0.2, self._sync_arrows)
 
     def refresh_keys(self) -> None:
+        app = self.app
+        separator = _themed(app, "panel-lighten-3", "dim")
+        key = _themed(app, "footer-key-foreground", "")
+        description = _themed(app, "foreground", "")
+
         text = Text(no_wrap=True, overflow="visible", end="")
-        for index, (keys, _action, description) in enumerate(_described(self.app)):
+        for index, (keys, _action, description_text) in enumerate(_described(app)):
             if index:
-                text.append(" | ", style="#5a6068")
-            text.append(f" {_pretty(keys)} ", style="bold #ffa62b")
-            text.append(description, style="#d0d0d0")
+                text.append(" | ", style=separator)
+            text.append(f" {_pretty(keys)} ", style=f"bold {key}".strip())
+            text.append(description_text, style=description)
         self.set_text(text)
 
 

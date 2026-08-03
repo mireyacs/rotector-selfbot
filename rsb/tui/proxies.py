@@ -27,6 +27,7 @@ from textual.widgets import DataTable, Footer, Header, Input, ProgressBar, Stati
 from ..config import Config
 from ..eta import format_duration
 from ..proxy import DIRECT_NAME, ProbeResult, parse_proxy, probe_proxy, summarise_pool
+from .theme import register as register_theme
 
 _VERDICT_STYLE = {
     "OK": "bold green",
@@ -92,6 +93,8 @@ class ProxyTesterApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        register_theme(self)
+
         table = self.query_one("#table", DataTable)
         table.add_column("Proxy", width=32)
         table.add_column("Status", width=8)

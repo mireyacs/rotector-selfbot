@@ -69,6 +69,7 @@ from ..purge import (
     plan_purge,
 )
 from .commands import BindingCommands, ScrollableFooter, StatusStrip
+from .theme import evidence_style, register as register_theme
 from ..hotreload import HotReloader
 from .settings import (
     Check as _Check,
@@ -625,6 +626,8 @@ class ScannerApp(App):
         yield ScrollableFooter()
 
     def on_mount(self) -> None:
+        register_theme(self)
+
         guilds = self.query_one("#guilds", DataTable)
         for (name, _), width in zip(SOURCE_SORTS, (32, 10, 9)):
             guilds.add_column(name, width=width)
@@ -3215,7 +3218,9 @@ class ScannerApp(App):
         else:
             head = Text(
                 f" {self._status_text}",
-                style=self._status_style,
+                # named rather than left as "bold red": the strip resolves bare
+                # colour names off a different palette than the rest of the UI
+                style=evidence_style(self._status_style),
                 no_wrap=True,
                 overflow="visible",
                 end="",
