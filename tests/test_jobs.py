@@ -205,4 +205,83 @@ assert running.state is JobState.FAILED
 assert "FAILED" in running.describe() and "rate limited" in running.describe()
 ok(f"the queue and each job describe themselves: {line!r}")
 
+
+# --- the queue popup ------------------------------------------------------
+# A popup rather than a pane, in the same shape as settings and export: it
+# opens over the results, does one thing and gets out of the way.
+
+import asyncio  # noqa: E402
+
+from rsb.config import Config  # noqa: E402
+from rsb.tui.dialogs import JobsDialog  # noqa: E402
+from rsb.tui.proxies import ProxyTesterApp  # noqa: E402
+
+
+async def _popup():
+    from textual.widgets import DataTable
+
+    queue = JobQueue(max_concurrent=2)
+    first = queue.add(ScanJob(source=source(name="Hub", ident="1"),
+                              backend="rotector"))
+    twin = queue.add(ScanJob(source=source(name="Hub", ident="1"),
+                             backend="okappiki"))
+    other = queue.add(ScanJob(source=source(name="Bloxburg", ident="2"),
+                              backend="rotector"))
+    queue.start(first.id)
+    queue.start(twin.id)
+    first.rows.update({str(i): object() for i in range(120)})
+    first.expected = 10833
+
+    pool = BudgetPool()
+    pool.register("rotector", RateLimiter())
+    pool.register("okappiki", RateLimiter(limit=5, window=1.0, reserve=0))
+
+    config = Config()
+    config.token = "x"
+    config.proxy.file = "/nonexistent"
+    app = ProxyTesterApp(config, persist_theme=False)
+
+    async with app.run_test(size=(110, 34)) as pilot:
+        await pilot.pause(0.3)
+        app.push_screen(JobsDialog(queue, pool))
+        await pilot.pause(0.9)
+        table = app.screen.query_one("#jobs", DataTable)
+        assert table.row_count == 3, table.row_count
+        ok("the popup lists every job, including one source on two backends")
+
+        # pause and resume have to act on the same job twice running. Order
+        # changes with state, so holding a row index would move the cursor onto
+        # whatever slid into that position -- which is exactly what it did.
+        table.move_cursor(row=0)
+        await pilot.press("p")
+        await pilot.pause(0.3)
+        assert first.state is JobState.PAUSED, first.state
+        await pilot.press("p")
+        await pilot.pause(0.3)
+        assert first.state is JobState.PENDING, (
+            "the cursor did not stay on the job it just paused"
+        )
+        assert first.rows, "pausing threw the results away"
+        ok("pause and resume act on the same job, and it keeps its rows")
+
+        table.move_cursor(row=2)
+        await pilot.press("t")
+        await pilot.pause(0.3)
+        waiting = [j for j in queue.order() if j.state is JobState.PENDING]
+        assert waiting[0].id == other.id, [j.source_name for j in waiting]
+        assert twin.state is JobState.RUNNING, "promoting stopped a running scan"
+        ok("prioritising moves a job to the front without stopping anything")
+
+        await pilot.press("x")
+        await pilot.pause(0.3)
+        assert other.state is JobState.CANCELLED
+        await pilot.press("d")
+        await pilot.pause(0.3)
+        assert queue.get(other.id) is None, "the cursor lost the job it stopped"
+        assert len(queue.jobs) == 2
+        ok("stopping then removing works on the job under the cursor")
+
+
+asyncio.run(_popup())
+
 print("\nall scan queue checks passed.")

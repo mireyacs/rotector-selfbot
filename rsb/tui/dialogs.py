@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
+    DataTable,
     Button,
     Checkbox,
     Input,
@@ -1233,3 +1234,203 @@ class UpdateDialog(DismissOnOutsideClick, ModalScreen[bool]):
     @on(Button.Pressed, "#confirm")
     def _confirm(self) -> None:
         self.dismiss(True)
+
+
+class JobsDialog(DismissOnOutsideClick, ModalScreen[str | None]):
+    """The scan queue, managed from a popup rather than a pane.
+
+    Same shape as the settings and export dialogs: it opens over the results,
+    does one thing, and gets out of the way. A permanent pane would spend
+    screen on a list that is empty most of the time, and the results table is
+    what the app is *for*.
+
+    Returns the action taken, so the caller can report it -- the dialog itself
+    only ever changes queue state, never touches a worker. Anything that has to
+    stop a running scan is the app's job, because the queue does not own the
+    tasks.
+    """
+
+    CSS = "JobsDialog { align: center middle; }" + _DIALOG_CSS
+    BINDINGS = [
+        ("escape", "cancel", "Close"),
+        ("p", "pause", "Pause / resume"),
+        ("t", "prioritise", "Prioritise"),
+        ("o", "only", "Give it the budget"),
+        ("x", "cancel_job", "Stop"),
+        ("d", "forget", "Remove"),
+    ]
+
+    def _dismiss_from_outside(self) -> None:
+        self.dismiss(None)
+
+    def __init__(self, queue, budget=None) -> None:
+        super().__init__()
+        self.queue = queue
+        self.budget = budget
+        self._acted: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="panel"):
+            yield Static("Scan queue", classes="title")
+            yield Static(Text(self.queue.summary(), style="dim"), id="queue-summary")
+            with VerticalScroll(id="body"):
+                yield DataTable(id="jobs", cursor_type="row", zebra_stripes=True)
+            yield Static(self._legend(), id="queue-legend")
+            with Horizontal(id="buttons"):
+                yield Button("Close", variant="default", id="cancel")
+
+    def _legend(self) -> Text:
+        text = Text()
+        for key, what in (
+            ("p", "pause / resume"), ("t", "prioritise"),
+            ("o", "give it the whole budget"), ("x", "stop"), ("d", "remove"),
+        ):
+            text.append(f" {key} ", style="reverse bold")
+            text.append(f" {what}   ", style="dim")
+        return text
+
+    def on_mount(self) -> None:
+        table = self.query_one("#jobs", DataTable)
+        for name, width in (
+            ("Job", 26), ("Backend", 10), ("State", 9),
+            ("Found", 9), ("Elapsed", 9), ("What it is doing", 34),
+        ):
+            table.add_column(name, width=width)
+        self._rebuild()
+        table.focus()
+
+    # -- painting ----------------------------------------------------------
+
+    def _rebuild(self, keep_id: int | None = None) -> None:
+        """Redraw, keeping the cursor on the same *job*.
+
+        Order changes with state -- pausing a job moves it down the list -- so
+        holding the row index would leave the cursor on whatever slid into that
+        position, and the next keypress would act on a job nobody chose.
+        """
+        from ..eta import format_duration
+        from ..jobs import STATE_LABEL, JobState
+
+        table = self.query_one("#jobs", DataTable)
+        if keep_id is None:
+            current = self._selected_job()
+            keep_id = current.id if current is not None else None
+        table.clear()
+
+        styles = {
+            JobState.RUNNING: "bold cyan", JobState.PAUSED: "yellow",
+            JobState.PENDING: "", JobState.DONE: "green",
+            JobState.FAILED: "bold red", JobState.CANCELLED: "dim",
+        }
+        for job in self.queue.order():
+            found = f"{len(job.rows):,}"
+            if job.expected:
+                found += f" / {job.expected:,}"
+            table.add_row(
+                Text(job.source_name, overflow="ellipsis"),
+                Text(job.backend),
+                Text(STATE_LABEL[job.state], style=styles.get(job.state, "")),
+                Text(found, justify="right"),
+                Text(format_duration(job.elapsed) if job.elapsed else "-",
+                     justify="right"),
+                Text(job.error or job.note or "", overflow="ellipsis",
+                     style="red" if job.error else "dim"),
+                key=str(job.id),
+            )
+
+        summary = self.queue.summary()
+        if self.budget is not None:
+            sharing = self.budget.sharing(self.queue.jobs)
+            splits = [f"{n} on {name}" for name, n in sorted(sharing.items()) if n > 1]
+            if splits:
+                # worth saying out loud: two scans on one backend is not a
+                # fault, but it is why both of them look half as fast
+                summary += f"  -  sharing one budget: {', '.join(splits)}"
+        self.query_one("#queue-summary", Static).update(Text(summary, style="dim"))
+
+        if keep_id is not None:
+            for index, job in enumerate(self.queue.order()):
+                if job.id == keep_id:
+                    table.move_cursor(row=index)
+                    return
+        if table.row_count:
+            table.move_cursor(row=0)
+
+    def _selected_job(self):
+        table = self.query_one("#jobs", DataTable)
+        if not table.row_count:
+            return None
+        try:
+            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        except Exception:  # noqa: BLE001 - nothing under the cursor
+            return None
+        return self.queue.get(int(key.value)) if key.value else None
+
+    def _after(self, job, message: str, action: str) -> None:
+        self._acted = action
+        self._rebuild(keep_id=job.id)
+        self.notify(message)
+
+    # -- actions -----------------------------------------------------------
+
+    def action_pause(self) -> None:
+        from ..jobs import JobState
+
+        job = self._selected_job()
+        if job is None:
+            return
+        if job.state is JobState.RUNNING and self.queue.pause(job.id):
+            self._after(job, f"Paused {job.source_name}. It keeps its results.", "pause")
+        elif job.state is JobState.PAUSED and self.queue.resume(job.id):
+            self._after(job, f"{job.source_name} is queued to carry on.", "resume")
+        else:
+            self.notify("Only a running or paused scan can be toggled.",
+                        severity="warning")
+
+    def action_prioritise(self) -> None:
+        job = self._selected_job()
+        if job is None:
+            return
+        if self.queue.prioritise(job.id):
+            self._after(job, f"{job.source_name} goes next. Nothing running was "
+                        f"stopped.", "prioritise")
+
+    def action_only(self) -> None:
+        """Give one job the whole budget by pausing the others."""
+        job = self._selected_job()
+        if job is None:
+            return
+        paused = self.queue.pause_others(job.id)
+        if not paused:
+            self.notify("Nothing else was running.", severity="warning")
+            return
+        names = ", ".join(j.source_name for j in paused)
+        self._after(job, f"Paused {names}. {job.source_name} has the budget.", "only")
+
+    def action_cancel_job(self) -> None:
+        job = self._selected_job()
+        if job is None:
+            return
+        if self.queue.cancel(job.id):
+            self._after(
+                job,
+                f"Stopped {job.source_name}. Its {len(job.rows):,} result(s) "
+                f"are kept.", "cancel",
+            )
+
+    def action_forget(self) -> None:
+        job = self._selected_job()
+        if job is None:
+            return
+        name = job.source_name
+        if self.queue.remove(job.id) is not None:
+            self._acted = "remove"
+            self._rebuild()          # the job is gone; the cursor cannot follow it
+            self.notify(f"Removed {name} from the queue.")
+        else:
+            self.notify("Stop it first: a running scan cannot be removed.",
+                        severity="warning")
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(self._acted)

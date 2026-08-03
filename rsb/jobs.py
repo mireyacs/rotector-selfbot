@@ -93,6 +93,13 @@ class ScanJob:
 
     #: discord id -> Row, filled by the app as the scan publishes
     rows: dict = field(default_factory=dict)
+    #: ticked members, per job -- a selection belongs to the results it was
+    #: made in, so switching tabs must not carry it across
+    selected: set = field(default_factory=set)
+    #: the tab's own view state, so each keeps its filter, search and page
+    filter_mode: str = ""
+    search_term: str = ""
+    page: int = 0
     #: members seen so far and the total the source claims, for progress
     found: int = 0
     expected: int | None = None
