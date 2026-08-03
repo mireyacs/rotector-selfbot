@@ -743,17 +743,18 @@ html.on-light ::-webkit-scrollbar-thumb:hover { background: #8d8d8d; }
         <path d="M0 30 C 150 4, 300 4, 450 26 S 750 46, 900 20 S 1100 6, 1200 16"/>
       </svg>
       <div class="indexed" style="margin-top:1.5rem">
-      <div class="index" aria-hidden="true" data-index="3"></div>
+      <div class="index" aria-hidden="true" data-index="5"></div>
       <div class="node">
         <div class="node__hd"><span class="label">Setup</span><span class="chip"></span></div>
         <div class="node__bd">
       <ol class="steps">
         <li>
           <div>
-            <h3>Install</h3>
-            <p style="margin-top:.4rem">Python 3.11 or newer, because it reads its config with
-              <code>tomllib</code>. Nothing is installed globally, and nothing is
-              compiled &mdash; every dependency ships a wheel for all three.</p>
+            <h3>Tools</h3>
+            <p style="margin-top:.4rem">Two of them: <b>Python 3.11 or newer</b>, because the
+              config is read with <code>tomllib</code>, and <b>git</b>, to fetch the
+              code and to update it later. Check what you already have &mdash; a
+              system Python is often a version or two behind.</p>
 
             <div class="os" role="tablist" aria-label="Operating system">
               <button type="button" role="tab" id="os-tab-linux" aria-controls="os-linux" data-os="linux" aria-selected="true">Linux</button>
@@ -764,20 +765,79 @@ html.on-light ::-webkit-scrollbar-thumb:hover { background: #8d8d8d; }
 
             <div class="os-pane" id="os-linux" data-os="linux" role="tabpanel" aria-labelledby="os-tab-linux">
               <div class="os-pane__name">Linux</div>
-<pre><code>python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt</code></pre>
+<pre><code><span class="cmd">python3 --version &amp;&amp; git --version</span><span class="c"># what you have</span>
+
+<span class="c"># Debian / Ubuntu &mdash; venv is a separate package here</span>
+sudo apt install python3 python3-venv git
+
+<span class="c"># Fedora / RHEL</span>
+sudo dnf install python3 git
+
+<span class="c"># Arch</span>
+sudo pacman -S python git</code></pre>
+              <p style="margin-top:.9rem">If your distribution still ships Python 3.10 or
+                older &mdash; Ubuntu 22.04 does &mdash; add a newer one alongside it
+                rather than replacing the system copy: on Ubuntu that is the
+                <code>deadsnakes</code> PPA, and then <code>python3.12</code> is the
+                command to use below.</p>
             </div>
+
             <div class="os-pane" id="os-macos" data-os="macos" role="tabpanel" aria-labelledby="os-tab-macos">
               <div class="os-pane__name">macOS</div>
-<pre><code>python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt</code></pre>
-              <p style="margin-top:.9rem">If <code>python3</code> is older than 3.11, install a
-                newer one first &mdash; <code>brew install python@3.12</code> &mdash; and use that
-                to make the environment.</p>
+<pre><code><span class="cmd">python3 --version &amp;&amp; git --version</span><span class="c"># what you have</span>
+
+<span class="c"># git, with the Apple developer tools</span>
+xcode-select --install
+
+<span class="c"># Python, with Homebrew (brew.sh)</span>
+brew install python@3.12</code></pre>
+              <p style="margin-top:.9rem">The <code>python3</code> macOS ships with is
+                usually too old, and Apple does not intend it for your own use. If you
+                would rather not install Homebrew, the installer from
+                <a href="https://www.python.org/downloads/macos/">python.org</a> works
+                just as well.</p>
             </div>
+
             <div class="os-pane" id="os-windows" data-os="windows" role="tabpanel" aria-labelledby="os-tab-windows">
               <div class="os-pane__name">Windows</div>
-<pre><code>py -3.11 -m venv .venv
+<pre><code><span class="cmd">py --version; git --version</span><span class="c"># what you have</span>
+
+<span class="c"># winget ships with Windows 10 1809 and later</span>
+winget install Python.Python.3.12
+winget install Git.Git</code></pre>
+              <p style="margin-top:.9rem">Close and reopen the terminal afterwards, or the
+                new commands will not be on <code>PATH</code> yet. Without winget, use the
+                installers from <a href="https://www.python.org/downloads/windows/">python.org</a>
+                and <a href="https://git-scm.com/download/win">git-scm.com</a> &mdash; and on
+                the Python one, tick <b>Add python.exe to PATH</b>.</p>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Get the code</h3>
+            <p style="margin-top:.4rem">The same on every system. Clone it rather than
+              downloading a zip: the app updates itself by fast-forwarding this
+              working copy, and a zip has nothing to fast-forward.</p>
+<pre><code>git clone https://github.com/mireyacs/rotector-selfbot
+cd rotector-selfbot</code></pre>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Install</h3>
+            <p style="margin-top:.4rem">Into a virtualenv beside the code. Nothing is
+              installed globally, and nothing is compiled &mdash; every dependency
+              ships a wheel for all three.</p>
+
+            <div class="os-pane" data-os="linux macos">
+              <div class="os-pane__name">Linux and macOS</div>
+<pre><code>python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt</code></pre>
+            </div>
+            <div class="os-pane" data-os="windows">
+              <div class="os-pane__name">Windows</div>
+<pre><code>py -3 -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt</code></pre>
               <p style="margin-top:.9rem">Use <b>Windows Terminal</b>, not the old console window.
                 The interface needs truecolour and mouse reporting, which

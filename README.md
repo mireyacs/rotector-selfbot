@@ -41,9 +41,62 @@ and *Confirmed*) is documented as safe to act on automatically.
 
 ## Install
 
-Needs **Python 3.11 or newer** — that is where `tomllib` entered the standard
-library. Running on anything older stops with a message saying so rather than a
+Two prerequisites: **Python 3.11 or newer** — that is where `tomllib` entered
+the standard library — and **git**, to fetch the code and to update it later.
+Running on an older Python stops with a message saying so rather than a
 `ModuleNotFoundError` for a module you have never heard of.
+
+Check what you already have. A system Python is often a version or two behind:
+
+```bash
+python3 --version && git --version     # py --version; git --version  on Windows
+```
+
+**Linux**
+
+```bash
+sudo apt install python3 python3-venv git   # Debian/Ubuntu — venv is separate here
+sudo dnf install python3 git                # Fedora/RHEL
+sudo pacman -S python git                   # Arch
+```
+
+If your distribution still ships Python 3.10 or older (Ubuntu 22.04 does), add a
+newer one alongside the system copy rather than replacing it — on Ubuntu that is
+the `deadsnakes` PPA — and use `python3.12` in place of `python3` below.
+
+**macOS**
+
+```bash
+xcode-select --install        # git, with the Apple developer tools
+brew install python@3.12      # Python, with Homebrew (brew.sh)
+```
+
+The `python3` macOS ships with is usually too old, and Apple does not intend it
+for your own use. The installer from [python.org](https://www.python.org/downloads/macos/)
+works just as well if you would rather not install Homebrew.
+
+**Windows** (PowerShell)
+
+```powershell
+winget install Python.Python.3.12    # winget ships with Windows 10 1809 and later
+winget install Git.Git
+```
+
+Close and reopen the terminal afterwards, or the new commands will not be on
+`PATH` yet. Without winget, use the installers from
+[python.org](https://www.python.org/downloads/windows/) and
+[git-scm.com](https://git-scm.com/download/win) — and on the Python one, tick
+**Add python.exe to PATH**.
+
+### Then get the code and set it up
+
+Clone it rather than downloading a zip: the app updates itself by
+fast-forwarding this working copy, and a zip has nothing to fast-forward.
+
+```bash
+git clone https://github.com/mireyacs/rotector-selfbot
+cd rotector-selfbot
+```
 
 **Linux / macOS**
 
@@ -56,7 +109,7 @@ python3 -m venv .venv
 **Windows** (PowerShell)
 
 ```powershell
-py -3.11 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\python -m rsb
 ```

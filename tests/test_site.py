@@ -67,11 +67,24 @@ panes = re.findall(r'class="os-pane"[^>]*data-os="([^"]+)"', HTML)
 assert len(panes) >= 6, panes
 for platform in ("linux", "macos", "windows"):
     covering = [p for p in panes if platform in p.split()]
-    assert len(covering) == 3, f"{platform} has {len(covering)} panes, expected 3"
-ok(f"all three platforms are offered, each covered by 3 of the {len(panes)} panes")
+    # tools, install, configure, run
+    assert len(covering) == 4, f"{platform} has {len(covering)} panes, expected 4"
+ok(f"all three platforms are offered, each covered by 4 of the {len(panes)} panes")
+
+# the prerequisites are named, per platform, and the clone is not assumed
+assert "winget install Python.Python" in HTML and "winget install Git.Git" in HTML
+assert "sudo apt install python3 python3-venv git" in HTML, (
+    "Debian needs python3-venv separately; leaving it out is a broken first run"
+)
+assert "sudo dnf install" in HTML and "sudo pacman -S" in HTML
+assert "xcode-select --install" in HTML and "brew install python@" in HTML
+assert "git clone https://github.com/mireyacs/rotector-selfbot" in HTML, (
+    "the page cannot start in a directory it never told the reader how to get"
+)
+ok("Python and git installs are given for each platform, and the clone is shown")
 
 # the commands really do differ, or the picker would be theatre
-assert "py -3.11 -m venv" in HTML and r".venv\Scripts\pip" in HTML
+assert "py -3 -m venv" in HTML and r".venv\Scripts\pip" in HTML
 assert "python3 -m venv .venv" in HTML and "./.venv/bin/pip" in HTML
 assert "copy config.example.toml" in HTML and "cp config.example.toml" in HTML
 ok("Windows gets py/Scripts/copy where the others get python3/bin/cp")
