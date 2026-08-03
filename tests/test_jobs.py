@@ -380,4 +380,38 @@ async def _tabs():
 
 asyncio.run(_tabs())
 
+
+# --- the visualiser reads real audio, and survives bad data ---------------
+from rsb.vibe import Envelope  # noqa: E402
+
+# malformed or missing envelopes must never break a track: the picture is the
+# least important thing on screen
+for bad in ({"data": "not base64!!"}, {"data": ""}, {}, {"fps": "x"},
+            {"data": None}, {"levels": 0}):
+    empty = Envelope.parse(bad)
+    assert empty.values == [] and empty.at(5.0) == 0.0, bad
+    assert empty.window(3.0, 8, 2.0) == [0.0] * 8, bad
+ok("a broken envelope degrades to a flat line rather than an exception")
+
+# the 4-bit packing round-trips
+import base64  # noqa: E402
+
+frames = [0, 5, 10, 15, 7, 2]
+packed = base64.b64encode(bytes(
+    (frames[i] << 4) | frames[i + 1] for i in range(0, len(frames), 2)
+)).decode()
+env = Envelope.parse({"fps": 20, "levels": 16, "data": packed,
+                      "frames": len(frames)})
+assert env.values == frames, env.values
+assert env.at(0.0) == 0.0 and env.at(3 / 20) == 1.0
+assert abs(env.duration - len(frames) / 20) < 1e-9
+ok("the packed envelope unpacks to the frames it was built from")
+
+# the window scrolls: newest on the right, and it never runs off either end
+window = env.window(0.25, 6, 0.25)
+assert len(window) == 6 and all(0.0 <= v <= 1.0 for v in window)
+assert env.window(-99.0, 4, 1.0) == [env.values[0] / 15] * 4, "clamped at the start"
+assert env.window(1e6, 4, 1.0) == [env.values[-1] / 15] * 4, "clamped at the end"
+ok("the scrolling window is clamped at both ends of the track")
+
 print("\nall scan queue checks passed.")

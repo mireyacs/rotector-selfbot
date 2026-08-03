@@ -24,11 +24,13 @@ assumed, and its absence is a sentence rather than a traceback.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
+import time
 import random
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import httpx
@@ -38,6 +40,8 @@ RAW = "https://raw.githubusercontent.com/{repo}/{branch}"
 
 MANIFEST = "index.json"
 TRACK_DIR = "tracks"
+#: the envelopes tools/peaks.py writes, one per track
+PEAK_DIR = "peaks"
 
 #: a manifest is a small JSON file; anything larger is not one
 FETCH_TIMEOUT = 15.0
@@ -77,6 +81,11 @@ class Track:
         base = RAW.format(repo=repo, branch=branch)
         return f"{base}/{TRACK_DIR}/{self.file}"
 
+    def peaks_url(self, repo: str, branch: str) -> str:
+        base = RAW.format(repo=repo, branch=branch)
+        stem = self.file.rsplit(".", 1)[0]
+        return f"{base}/{PEAK_DIR}/{stem}.json"
+
     @classmethod
     def parse(cls, raw: dict) -> "Track | None":
         name = str(raw.get("file") or "").strip()
@@ -92,6 +101,79 @@ class Track:
             source=str(raw.get("source") or "").strip(),
             duration=int(duration) if isinstance(duration, (int, float)) else None,
         )
+
+
+@dataclass
+class Envelope:
+    """The amplitude of one track over time, as the visualiser reads it.
+
+    Unpacked from the 4-bit packing described in the library's README. Missing
+    or malformed data is not an error -- the player falls back to a flat line
+    and keeps playing, because a visualiser is the least important thing on
+    screen.
+    """
+
+    fps: int = 20
+    levels: int = 16
+    values: list[int] = field(default_factory=list)
+
+    @property
+    def duration(self) -> float:
+        return len(self.values) / self.fps if self.fps else 0.0
+
+    def at(self, seconds: float) -> float:
+        """Level at a moment, 0..1."""
+        if not self.values:
+            return 0.0
+        index = int(seconds * self.fps)
+        index = max(0, min(len(self.values) - 1, index))
+        return self.values[index] / (self.levels - 1)
+
+    def window(self, seconds: float, bars: int, span: float) -> list[float]:
+        """``bars`` levels ending at ``seconds``, spanning ``span`` seconds.
+
+        The barcode scrolls: the right-hand bar is now and the left-hand one is
+        ``span`` ago, so the field reads as the track running past rather than
+        as a meter twitching in place.
+        """
+        if bars <= 0:
+            return []
+        step = span / bars
+        return [self.at(seconds - (bars - 1 - i) * step) for i in range(bars)]
+
+    @classmethod
+    def parse(cls, body: dict) -> "Envelope":
+        try:
+            fps = int(body.get("fps") or 20)
+            levels = int(body.get("levels") or 16)
+            raw = base64.b64decode(str(body.get("data") or ""), validate=True)
+        except Exception:  # noqa: BLE001 - a bad envelope is not a broken track
+            return cls()
+        values: list[int] = []
+        for byte in raw:
+            values.append(byte >> 4)
+            values.append(byte & 0x0F)
+        frames = body.get("frames")
+        if isinstance(frames, int) and 0 < frames <= len(values):
+            values = values[:frames]   # the packing pads odd lengths by one
+        return cls(fps=fps, levels=levels, values=values)
+
+
+async def fetch_envelope(track: Track, repo: str, branch: str, client=None
+                         ) -> Envelope:
+    """The track's envelope, or an empty one. Never raises."""
+    owned = client is None
+    client = client or httpx.AsyncClient(timeout=FETCH_TIMEOUT)
+    try:
+        response = await client.get(track.peaks_url(repo, branch))
+        if response.status_code >= 400:
+            return Envelope()
+        return Envelope.parse(response.json())
+    except Exception:  # noqa: BLE001 - the music matters, the picture does not
+        return Envelope()
+    finally:
+        if owned:
+            await client.aclose()
 
 
 def player_available() -> bool:
@@ -170,7 +252,15 @@ class Vibe:
 
         self.tracks: list[Track] = []
         self.current: Track | None = None
+        self.envelope: Envelope = Envelope()
         self.error: str | None = None
+        #: where the current ffplay was told to start, and when it started.
+        #: ffplay has no control channel, so seeking is relaunching it with
+        #: -ss; the offset has to be tracked here or position would reset.
+        self._offset = 0.0
+        self._started_at = 0.0
+        self._seek_to: float | None = None
+        self._step = 0
         self._process: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
         self._order: list[int] = []
@@ -179,6 +269,23 @@ class Vibe:
     @property
     def playing(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def position(self) -> float:
+        """Seconds into the current track."""
+        if self.current is None or not self._started_at:
+            return 0.0
+        return self._offset + max(0.0, time.monotonic() - self._started_at)
+
+    @property
+    def duration(self) -> float:
+        if self.current is not None and self.current.duration:
+            return float(self.current.duration)
+        return self.envelope.duration
+
+    def bars(self, count: int, span: float = 6.0) -> list[float]:
+        """The visualiser's levels, newest on the right."""
+        return self.envelope.window(self.position, count, span)
 
     def describe(self) -> str:
         if self.error:
@@ -200,7 +307,8 @@ class Vibe:
         self._order = list(range(len(self.tracks)))
         if self.shuffle:
             random.shuffle(self._order)
-        self._at = 0
+        # -1 because _run advances before it plays
+        self._at = -1
 
     # -- playing -----------------------------------------------------------
 
@@ -225,14 +333,29 @@ class Vibe:
     async def _run(self) -> None:
         try:
             while True:
-                if self._at >= len(self._order):
-                    self._reorder()
-                track = self.tracks[self._order[self._at]]
-                self._at += 1
-                self.current = track
-                if self.on_change:
-                    self.on_change(track)
-                await self._play(track)
+                if self._seek_to is None:
+                    # a seek replays the same track from an offset, so the
+                    # step only applies when we are actually moving on
+                    self._at += self._step if self._step else 1
+                    self._step = 0
+                    if self._at >= len(self._order):
+                        self._reorder()
+                    if self._at < 0:
+                        self._at = len(self._order) - 1
+                    track = self.tracks[self._order[self._at]]
+                    if track is not self.current:
+                        self.envelope = Envelope()
+                    self.current = track
+                    self._offset = 0.0
+                    if self.on_change:
+                        self.on_change(track)
+                    asyncio.create_task(self._load_envelope(track))
+                else:
+                    track = self.current
+                    self._offset = self._seek_to
+                    self._seek_to = None
+
+                await self._play(track, self._offset)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - music is never fatal
@@ -242,10 +365,16 @@ class Vibe:
             if self.on_change:
                 self.on_change(None)
 
-    async def _play(self, track: Track) -> None:
+    async def _load_envelope(self, track: Track) -> None:
+        envelope = await fetch_envelope(track, self.repo, self.branch)
+        if track is self.current:
+            self.envelope = envelope
+
+    async def _play(self, track: Track, offset: float = 0.0) -> None:
         binary = shutil.which("ffplay")
         if binary is None:
             raise VibeError(missing_player_reason())
+        self._started_at = time.monotonic()
         self._process = await asyncio.create_subprocess_exec(
             binary,
             "-nodisp",            # no video window; this is a terminal program
@@ -253,6 +382,9 @@ class Vibe:
             "-hide_banner",
             "-loglevel", "error",
             "-volume", str(self.volume),
+            # ffplay offers no control channel, so seeking means starting it
+            # again from the offset. Before -i, which is the fast form.
+            "-ss", f"{max(0.0, offset):.2f}",
             track.url(self.repo, self.branch),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
@@ -265,8 +397,38 @@ class Vibe:
         finally:
             self._process = None
 
-    async def skip(self) -> None:
-        """Move to the next track by ending the current one."""
+    async def skip(self, step: int = 1) -> None:
+        """Move a track. ``step`` of -1 goes back."""
+        self._step = step
+        self._seek_to = None
+        await self._interrupt()
+
+    async def previous(self) -> None:
+        """Back to the start of this track, or to the one before it.
+
+        The rule every music player has: pressing back a few seconds in means
+        "start this again", and only near the beginning does it mean "the one
+        before".
+        """
+        if self.position > 3.0:
+            await self.seek(0.0)
+        else:
+            await self.skip(-1)
+
+    async def seek(self, seconds: float) -> None:
+        """Jump to a position by restarting ffplay there."""
+        if self.current is None:
+            return
+        limit = self.duration or 0.0
+        target = max(0.0, min(seconds, limit - 1.0) if limit else seconds)
+        self._seek_to = target
+        self._step = 0
+        await self._interrupt()
+
+    async def nudge(self, seconds: float) -> None:
+        await self.seek(self.position + seconds)
+
+    async def _interrupt(self) -> None:
         process = self._process
         if process is not None and process.returncode is None:
             process.kill()

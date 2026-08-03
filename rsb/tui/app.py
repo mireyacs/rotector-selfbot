@@ -72,6 +72,7 @@ from ..purge import (
 )
 from .commands import BindingCommands, ScrollableFooter, StatusStrip
 from .theme import ThemeMemory, evidence_style
+from .vibescreen import VibeScreen
 from ..backend import ATTRIBUTIONS, backend_label, build_backend
 from ..jobs import BudgetPool, JobQueue, JobState, ScanJob
 from ..okappiki import SOURCES
@@ -2187,6 +2188,9 @@ class ScannerApp(App):
             self._set_status(str(exc), "yellow")
             return
         self._set_status(self.vibe.describe())
+        # the player takes the whole screen while it plays. A view, not a
+        # mode: the scan carries on behind it and comes straight back.
+        await self.push_screen_wait(VibeScreen(self.vibe))
 
     def _vibe_changed(self, track) -> None:
         """Announce the track, without stepping on a scan's own status."""
