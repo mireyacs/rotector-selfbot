@@ -1203,12 +1203,31 @@ class ScannerApp(App):
                     f"(attempt {attempt})",
                     "warn",
                 )
+                # only promise to continue something that is actually running
+                tail = "; the scan will continue" if self._scanning else ""
                 self._set_activity(
                     f"Gateway {reason} - reconnecting in {delay:.0f}s "
-                    f"(attempt {attempt}); the scan will continue"
+                    f"(attempt {attempt}){tail}"
                 )
 
+            def on_reconnected(resumed: bool) -> None:
+                how = "resumed" if resumed else "reconnected with a new session"
+                self.log_debug(f"gateway {how}", "net")
+                if self._scanning:
+                    # the scan's own progress takes the bar back from here;
+                    # leaving the reconnect notice up would freeze the line at
+                    # a message that stopped being true
+                    self._set_activity(f"Gateway {how} - resuming the scan")
+                    return
+                # nothing is running, so this is the settled state. Said as a
+                # status rather than an activity: an activity is a thing in
+                # progress, and it is the reason a finished reconnect used to
+                # sit there spinning with a task timer for as long as the app
+                # stayed open.
+                self._set_status(f"Gateway {how}.")
+
             self.gateway.on_reconnect = on_reconnect
+            self.gateway.on_reconnected = on_reconnected
             await self.gateway.connect()
 
             self.my_id = str(me.get("id") or "")
@@ -1460,6 +1479,15 @@ class ScannerApp(App):
         self._end_run()
         self._set_status("Scan stopped.", "yellow")
         self.query_one("#progress", ProgressBar).remove_class("visible")
+
+    @property
+    def _scanning(self) -> bool:
+        """True while a scan run is in flight.
+
+        ``_process_started`` is the run's own clock: set when a scan begins and
+        cleared however it ends, including cancellation.
+        """
+        return self._process_started is not None
 
     def _end_run(self) -> None:
         """Clear everything that animates, so a stopped run looks stopped."""
@@ -1819,18 +1847,17 @@ class ScannerApp(App):
                 context=f"while scanning {source.name}",
                 retry=lambda: self.scan_source(source, lookup=lookup, mode=mode),
             )
-        except asyncio.CancelledError:
-            self._end_run()
-            raise
         finally:
             progress.remove_class("visible")
             task = self._scan_task
             if task is not None and not task.done():
                 task.cancel()
-            self._eta_progress = None
-            self._eta_ready = False
-            self._process_started = None
-            self._scan_task = None
+            # _end_run rather than clearing the fields by hand: it also drops
+            # _activity and repaints. A cancelled run used to skip that -- the
+            # CancelledError handler that called it sat below `except
+            # CancelledError: raise` and so was never reached -- which left the
+            # bar spinning on whatever step was interrupted.
+            self._end_run()
 
     # -- results table -----------------------------------------------------
 

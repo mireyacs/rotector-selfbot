@@ -184,6 +184,11 @@ class DiscordGateway:
         self.reconnects = 0
         #: called as (attempt, delay, reason) when a reconnect is scheduled
         self.on_reconnect: Callable[[int, float, str], None] | None = None
+        #: called as (resumed,) once a *re*-established session is usable
+        #: again. Announcing the drop without ever announcing the recovery is
+        #: what left callers displaying "reconnecting..." over a connection
+        #: that had been working for the last forty minutes.
+        self.on_reconnected: Callable[[bool], None] | None = None
         # gateway budget: ~120 events / 60s, kept well under
         self._send_limit = RateLimiter(limit=110, window=60.0, reserve=15)
         #: filled in by fetch_members, for the UI to report coverage
@@ -397,6 +402,24 @@ class DiscordGateway:
         for queue in list(self._listeners):
             queue.put_nowait(None)
 
+    def _announce_connected(self, resumed: bool) -> None:
+        """Tell the caller the session is usable again, once per reconnect.
+
+        Only fires when this is a *re*-connection: ``_connected`` is already
+        set on the initial handshake, and the first READY is not news anyone
+        needs telling about. A callback that raises must not take the read
+        loop down with it -- the connection is fine, and dropping the socket
+        because a status line failed to render would be absurd.
+        """
+        if self._connected.is_set() or not self.reconnects:
+            return
+        if self.on_reconnected is None:
+            return
+        try:
+            self.on_reconnected(resumed)
+        except Exception:  # noqa: BLE001 - a display problem, not a link problem
+            pass
+
     async def _dispatch(self, event: str | None, data: dict) -> None:
         if event == "READY":
             self.user = data.get("user")
@@ -404,9 +427,11 @@ class DiscordGateway:
             resume_url = data.get("resume_gateway_url")
             if resume_url:
                 self._resume_url = resume_url
+            self._announce_connected(resumed=False)
             self._connected.set()
             self._ready.set()
         elif event == "RESUMED":
+            self._announce_connected(resumed=True)
             self._connected.set()
             self._ready.set()
         for queue, wanted in list(self._listeners.items()):
