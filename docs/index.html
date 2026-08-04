@@ -549,7 +549,8 @@ figure img.swapping { opacity: .35; }
 .motion-toggle.on-light:hover, .motion-toggle.on-light:focus-visible {
   background: var(--ground); color: var(--ink);
 }
-/* the two-bar/▶ glyph is drawn, not typed, so it inherits the invert */
+/* the pause bars and the play triangle are drawn, not typed, so they take
+   currentColor and invert with the chip */
 .motion-toggle .state { display: block; width: 9px; height: 11px; background: currentColor;
   -webkit-mask: linear-gradient(90deg, #000 0 3px, transparent 3px 6px, #000 6px 9px);
   mask: linear-gradient(90deg, #000 0 3px, transparent 3px 6px, #000 6px 9px); }
@@ -697,15 +698,29 @@ html:not(.motion) .motion-toggle .state {
 .player.open .player__open .word > span { padding-left: .55rem; }
 .player__open { gap: 0; }
 
-/* A character rather than a mask. The conic-gradient mask this used drew
-   nothing at all, so the chip sat there with an empty icon slot. */
+/* Drawn, like every other mark on this page. The conic-gradient mask this
+   started as drew nothing at that size, and the U+25B6 character that replaced
+   it was worse in a quieter way: its advance width and vertical centring are
+   the font's business, so it sat differently wherever Azeret was not the face
+   actually resolved. A clip-path triangle over currentColor is the same
+   material as the motion toggle's own bars, and inverts with the chip for the
+   same reason. */
 .player__open .state {
-  width: auto; height: auto; background: none;
+  /* Collapsed to nothing until a track is running, so the idle chip holds no
+     empty slot -- but on a grid track, not on width. Animating width here
+     reflows the button on every play/pause, and it is the same mistake the
+     label beside it already avoids; sharing the mechanism also means the mark
+     and the word expand on one curve instead of one snapping and one gliding. */
+  display: grid; grid-template-columns: 0fr; overflow: hidden;
+  width: auto; height: 9px; background: none;
   -webkit-mask: none; mask: none;
-  /* no size of its own: the glyph is part of the button face and belongs on
-     Action with the word beside it */
-  line-height: 1;
+  transition: grid-template-columns .34s cubic-bezier(.16, 1, .3, 1);
 }
+.player__open .state::before {
+  content: ''; width: 7px; height: 9px; background: currentColor;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+.player.playing .player__open .state { grid-template-columns: 1fr; }
 
 @media (max-width: 620px) { .player__body { width: 14rem; } }
 
@@ -1804,13 +1819,11 @@ cd rotector-selfbot</code></pre>
     audio.currentTime = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * duration;
   });
 
-  var stateEl = openBtn.querySelector('.state');
-
   function state() {
     var live = !audio.paused && !!audio.src;
     player.classList.toggle('playing', live);
     playBtn.textContent = live ? 'Pause' : 'Play';
-    stateEl.textContent = live ? '\u25b6' : '';
+    // the mark is drawn by .player.playing, set just above -- nothing to type
     openBtn.setAttribute(
       'aria-label', live ? 'Music playing - open the player' : 'Music player'
     );

@@ -179,6 +179,19 @@ assert HTML.index('class="player__field"') > HTML.index('class="player__head"')
 assert HTML.index('class="player__seek') > HTML.index("</div>", HTML.index('class="player__field"')), (
     "the seekbar must sit outside the head, or the field draws under it again"
 )
+# Every mark on this page is drawn geometry -- DESIGN.md states it as a Don't,
+# and it is a portability rule as much as a stylistic one: a glyph's advance
+# width and vertical centring belong to whichever font actually resolved, so a
+# typed triangle lands differently wherever Azeret Mono did not load. The play
+# mark is a clip-path over currentColor, which also inverts with the chip for
+# free. This caught a real U+25B6 that had been typed into the transport.
+ICON_GLYPHS = "\u25b6\u25c0\u25a0\u25b2\u25bc\u23f8\u23ef\u266a\u266b\u2715\u2716\u2713"
+for glyph in ICON_GLYPHS:
+    assert glyph not in HTML, f"{glyph!r} is typed as an icon; draw it instead"
+assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in HTML, "the play mark must be drawn"
+assert ".player.playing .player__open .state" in HTML, (
+    "the play mark must be driven by state, not written into the button"
+)
 assert "'/peaks/'" in HTML, "the field must read the shipped envelope"
 assert "mireyacs/openlofi" in HTML, "one library, not two"
 ok("the barcode field sits behind the panel and reads the same envelope as the app")
