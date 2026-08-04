@@ -192,6 +192,27 @@ assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in HTML, "the play mark must 
 assert ".player.playing .player__open .state" in HTML, (
     "the play mark must be driven by state, not written into the button"
 )
+# The seekbar's parts carry component-scoped names. They were `rail`, `fill`
+# and `head`, and `.rail` is the hero's id-column class -- which carries
+# `padding: 1.5rem 1rem`. Under border-box an absolutely positioned 2px-tall
+# box cannot shrink below its own padding, so the scrub rail rendered as a 48px
+# grey slab across the panel, hiding the elapsed time and the top of the
+# transport. Bare names inside a component collide with whatever page-wide rule
+# lands next; these three are the ones that already did.
+for generic in ('<span class="rail">', '<span class="fill">', '<span class="head">'):
+    assert generic not in HTML, f"{generic} collides with a page-wide class"
+for part in ("seek__rail", "seek__fill", "seek__head"):
+    assert f".player__seek .{part}" in HTML, f"{part} has no styles"
+ok("the seekbar's parts are component-scoped, so no page-wide rule can pad them")
+
+# the mark reports transport state: bars when held, triangle when running
+assert ".player.playing .player__open .state::before" in HTML
+assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in HTML, "the play mark must be drawn"
+assert ".player.paused .player__open .state" in HTML, "a paused track must still show a mark"
+assert "player.classList.toggle('paused'" in HTML, "nothing ever sets the paused state"
+assert ".player.open .player__open { width: 100%; }" in HTML, (
+    "open, the chip squares off against the panel above it"
+)
 assert "'/peaks/'" in HTML, "the field must read the shipped envelope"
 assert "mireyacs/openlofi" in HTML, "one library, not two"
 ok("the barcode field sits behind the panel and reads the same envelope as the app")
