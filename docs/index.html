@@ -683,26 +683,16 @@ html:not(.motion) .motion-toggle .state {
 .player.on-light .player__row button:hover { background: var(--ground); color: var(--ink); }
 .player__row button[disabled] { opacity: .4; cursor: default; }
 
-/* The chip is the width of its icon when shut and grows to fit the word when
-   open, so a closed player is a mark in the corner rather than a label
-   competing with the motion control beside it. */
-/* Widened on grid-template-columns rather than max-width, the same way the
-   panel above unrolls on grid-template-rows: animating a width or a margin
-   makes the browser re-lay-out the dock on every frame, and the chip sits next
-   to the motion control, so the thrash would be visible on both. The gap lives
-   inside the animated cell as padding, so there is no second margin animating
-   alongside it. */
-.player__open .word {
-  display: grid;
-  grid-template-columns: 0fr;
-  opacity: 0;
-  transition: grid-template-columns .34s cubic-bezier(.16, 1, .3, 1),
-              opacity .18s linear;
-}
-.player__open .word > span { overflow: hidden; white-space: nowrap; min-width: 0; }
-.player.open .player__open .word { grid-template-columns: 1fr; opacity: 1; }
-.player.open .player__open .word > span { padding-left: .55rem; }
+/* The chip names itself whether it is open or shut, the way the motion control
+   beside it does. It used to collapse to a bare mark when shut, which made the
+   two controls in the dock a matched pair only half the time -- one labelled,
+   one a glyph the reader has to already know.
+   The gap is the mark's own, not the button's: with a flex gap, a chip whose
+   track has not loaded yet would hold a .55rem space where the mark is not. */
 .player__open { gap: 0; }
+.player__open .word > span { white-space: nowrap; }
+.player.playing .player__open .word > span,
+.player.paused .player__open .word > span { padding-left: .55rem; }
 
 /* Drawn, like every other mark on this page. The conic-gradient mask this
    started as drew nothing at that size, and the U+25B6 character that replaced
@@ -1480,8 +1470,15 @@ cd rotector-selfbot</code></pre>
     on = next;
     root.classList.toggle('motion', on);
     button.setAttribute('aria-pressed', String(!on));
-    word.textContent = on ? 'Motion on' : 'Motion off';
-    button.setAttribute('aria-label', on ? 'Stop the animations' : 'Start the animations');
+    // The face just names the control; the two-bar/solid mark beside it and
+    // aria-pressed carry the state, so the word does not have to repeat it.
+    word.textContent = 'Motion';
+    // The accessible name has to start with the visible one, or someone
+    // driving the page by voice says "click Motion" and nothing matches it
+    // (WCAG 2.5.3). "Stop the animations" alone did not contain the label.
+    button.setAttribute(
+      'aria-label', on ? 'Motion: stop the animations' : 'Motion: start the animations'
+    );
     if (remember) {
       try { localStorage.setItem('rsb-motion', on ? 'on' : 'off'); } catch (e) {}
     }

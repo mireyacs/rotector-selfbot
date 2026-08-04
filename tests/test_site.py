@@ -210,6 +210,23 @@ assert ".player.playing .player__open .state::before" in HTML
 assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in HTML, "the play mark must be drawn"
 assert ".player.paused .player__open .state" in HTML, "a paused track must still show a mark"
 assert "player.classList.toggle('paused'" in HTML, "nothing ever sets the paused state"
+# Both dock controls name themselves at all times. The music chip used to
+# collapse to a bare mark when shut, which made the pair match only half the
+# time -- one labelled control and one glyph the reader has to already know.
+assert "word.textContent = 'Motion';" in HTML, "the motion control must just name itself"
+assert "'Motion on'" not in HTML and "'Motion off'" not in HTML, (
+    "state belongs to the mark and aria-pressed, not to the label"
+)
+assert ".player.open .player__open .word" not in HTML, (
+    "the music label must not depend on open state; it reads MUSIC either way"
+)
+assert "'<span class=\"word\"></span>'" in HTML or 'class="word"' in HTML
+# WCAG 2.5.3: the accessible name has to start with the visible label, or
+# "click Motion" matches nothing for someone driving the page by voice
+for name in ("'Motion: stop the animations'", "'Motion: start the animations'"):
+    assert name in HTML, f"{name} missing; accessible name must carry the visible label"
+ok("both dock controls keep their label, and the motion name contains it")
+
 assert ".player.open .player__open { width: 100%; }" in HTML, (
     "open, the chip squares off against the panel above it"
 )
