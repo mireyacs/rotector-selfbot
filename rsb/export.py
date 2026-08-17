@@ -4,9 +4,13 @@ A long list is segmented into numbered CSV parts inside a per-export folder, so
 a scan of tens of thousands of members stays openable in a spreadsheet instead
 of producing one file nothing will load.
 
-Whatever is written obeys two of Rotector's Terms of Use: every file carries
-the attribution line, and every file states its 24-hour expiry, because the
-terms forbid retaining responses longer than that.
+Whatever is written carries the attribution line Rotector's Terms of Use ask
+for, and says what its own retention is: the 24-hour expiry the terms set, or
+-- when the operator has switched ``scan.retain_beyond_terms`` on -- how long
+this file is actually being kept, and that the terms allow 24. The reader of an
+exported file did not make that choice and is entitled to know which of the two
+they are holding, and to see any finding in it that is already older than the
+window labelled as stale.
 """
 
 from __future__ import annotations
@@ -19,7 +23,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .rotector import MemberReport
+from .rotector import (
+    MemberReport,
+    describe_age,
+    is_stale,
+    report_age,
+    stale_note,
+)
 from .verdict import (
     ATTRIBUTION,
     category_name,
@@ -64,6 +74,14 @@ COLUMNS: dict[str, Callable[[ExportRow], str]] = {
     "username": lambda r: r.username,
     "display_name": lambda r: r.display_name,
     "verdict": lambda r: verdict_label(r.report.verdict),
+    # Empty for a finding inside the window, so the column costs nothing to
+    # read in the ordinary case and cannot be mistaken for a verdict of its
+    # own. A value here means the row is a claim about a day or more ago.
+    "stale": lambda r: (
+        f"{describe_age(report_age(r.report))} old"
+        if is_stale(r.report)
+        else ""
+    ),
     "flag": lambda r: flag_name(_worst(r).flag_type if _worst(r) else None),
     "actionable": lambda r: str(
         flag_is_actionable(_worst(r).flag_type if _worst(r) else None)
@@ -106,6 +124,9 @@ DEFAULT_COLUMNS = [
     "username",
     "display_name",
     "verdict",
+    # on by default, because a stale finding that is not labelled reads as a
+    # current one, and the column is blank for every finding inside the window
+    "stale",
     "flag",
     "actionable",
     "category",
@@ -205,19 +226,62 @@ def purge_expired(
     return removed
 
 
-def _header_lines(guild_name: str, stamp: str, scope: str, rows: int) -> list[str]:
-    expires = (
-        datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-        + timedelta(hours=24)
-    ).strftime("%Y-%m-%d %H:%M UTC")
-    return [
+def count_stale(rows: Sequence[ExportRow]) -> int:
+    """How many of these findings are already past the 24-hour window.
+
+    Independent of any setting: results left on screen for two days are just as
+    stale as ones served from a cache that was told to keep them, and a file is
+    entitled to say so either way.
+    """
+    return sum(1 for row in rows if is_stale(row.report))
+
+
+def _header_lines(
+    guild_name: str,
+    stamp: str,
+    scope: str,
+    rows: int,
+    *,
+    retain_beyond_terms: bool = False,
+    retention_hours: int = RETENTION_HOURS,
+    stale: int = 0,
+) -> list[str]:
+    """The block every text-shaped export opens with.
+
+    The expiry line states what is true of *this* file. When retention past the
+    terms has been switched on, repeating "delete within 24 hours" would be
+    describing a rule the run did not follow, so the line says how long the file
+    is being kept and what the terms allow instead -- and still names them,
+    because whoever opens the file did not make that choice.
+    """
+    generated = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    hours = retention_hours if retain_beyond_terms else RETENTION_HOURS
+    expires = (generated + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
         f"Server:    {guild_name}",
         f"Generated: {stamp}",
         f"Scope:     {scope}",
         f"Members:   {rows}",
-        f"Expires:   {expires} - Rotector Terms of Use forbid keeping this longer",
-        f"Source:    {ATTRIBUTION}",
     ]
+    if retain_beyond_terms:
+        lines.append(
+            f"Expires:   {expires} - kept {hours}h by the operator's choice; "
+            f"Rotector's Terms of Use allow {RETENTION_HOURS}h"
+        )
+    else:
+        lines.append(
+            f"Expires:   {expires} - Rotector Terms of Use forbid keeping this longer"
+        )
+    if stale:
+        lines.append(
+            f"Stale:     {stale} of {rows} finding(s) are already older than "
+            f"{RETENTION_HOURS} hours - see the Stale column, and re-check "
+            f"before acting"
+        )
+    lines.append(f"Source:    {ATTRIBUTION}")
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -273,6 +337,8 @@ def render_txt(
     guild_name: str,
     stamp: str,
     scope: str,
+    retain_beyond_terms: bool = False,
+    retention_hours: int = RETENTION_HOURS,
 ) -> list[Path]:
     """A readable report -- one block per member, not a table."""
     columns = valid_columns(columns)
@@ -281,7 +347,15 @@ def render_txt(
     pad = max((len(l) for l in labels.values()), default=0)
 
     lines: list[str] = []
-    header = _header_lines(guild_name, stamp, scope, len(rows))
+    header = _header_lines(
+        guild_name,
+        stamp,
+        scope,
+        len(rows),
+        retain_beyond_terms=retain_beyond_terms,
+        retention_hours=retention_hours,
+        stale=count_stale(rows),
+    )
     rule = "=" * max(len(h) for h in header)
     lines.append(rule)
     lines.extend(header)
@@ -294,6 +368,11 @@ def render_txt(
             title += f" (@{row.username})"
         lines.append(title)
         lines.append("-" * len(title))
+        # Spelled out per member rather than left to the Stale column, which the
+        # operator can deselect: whether this line is a claim about today is not
+        # a formatting preference.
+        if note := stale_note(row.report):
+            lines.append(f"  {note}")
         for column in columns:
             value = COLUMNS[column](row)
             if not value:
@@ -318,14 +397,35 @@ def render_json(
     guild_id: str,
     stamp: str,
     scope: str,
+    retain_beyond_terms: bool = False,
+    retention_hours: int = RETENTION_HOURS,
 ) -> list[Path]:
     columns = valid_columns(columns)
     path = directory / f"{stem}.json"
+    stale = count_stale(rows)
     payload = {
         "guild": {"id": guild_id, "name": guild_name},
         "generated_at": stamp,
         "scope": scope,
-        "expires_at": "24 hours after generated_at (Rotector Terms of Use #1)",
+        # What is true of this file, not the rule in the abstract: repeating the
+        # 24-hour line over data deliberately kept longer would be a claim the
+        # run did not honour. The terms are named either way.
+        "expires_at": (
+            f"{retention_hours} hours after generated_at - kept past the 24 hours "
+            "Rotector's Terms of Use #1 allow, by the operator's choice"
+            if retain_beyond_terms
+            else "24 hours after generated_at (Rotector Terms of Use #1)"
+        ),
+        "retained_beyond_terms": bool(retain_beyond_terms),
+        "stale_findings": stale,
+        "stale_note": (
+            f"{stale} finding(s) here are older than 24 hours. Flag types change "
+            "and appeals succeed, so those describe the day they were answered, "
+            "not today - re-check before acting. Per-member ages are in the "
+            "'stale' column."
+            if stale
+            else ""
+        ),
         "attribution": ATTRIBUTION,
         "columns": list(columns),
         "members": [
@@ -351,6 +451,8 @@ def export(
     segment_size: int = DEFAULT_SEGMENT_SIZE,
     stamp: str | None = None,
     preserve: bool = False,
+    retain_beyond_terms: bool = False,
+    retention_hours: int = RETENTION_HOURS,
     png_style: str = "table",
     profiles: dict | None = None,
     palette=None,
@@ -360,8 +462,12 @@ def export(
     base_directory = Path(base_directory)
     base_directory.mkdir(parents=True, exist_ok=True)
 
-    # Housekeeping first, so a new export never sweeps away its own folder.
-    purged = [] if preserve else purge_expired(base_directory)
+    # Housekeeping first, so a new export never sweeps away its own folder. The
+    # sweeper honours whichever window this run is actually claiming: with
+    # retention past the terms switched on, clearing folders at 24 hours anyway
+    # would delete files whose own README says they are kept longer.
+    sweep_after = retention_hours if retain_beyond_terms else RETENTION_HOURS
+    purged = [] if preserve else purge_expired(base_directory, sweep_after)
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in guild_name)[:40]
     stem = f"{safe}-{stamp}"
     directory = Path(base_directory) / stem
@@ -377,10 +483,16 @@ def export(
         segments = len(csv_files)
         files += csv_files
     if "txt" in formats:
-        files += render_txt(rows, directory, stem, columns, guild_name, stamp, scope)
+        files += render_txt(
+            rows, directory, stem, columns, guild_name, stamp, scope,
+            retain_beyond_terms=retain_beyond_terms,
+            retention_hours=retention_hours,
+        )
     if "json" in formats:
         files += render_json(
-            rows, directory, stem, columns, guild_name, guild_id, stamp, scope
+            rows, directory, stem, columns, guild_name, guild_id, stamp, scope,
+            retain_beyond_terms=retain_beyond_terms,
+            retention_hours=retention_hours,
         )
     if "png" in formats:
         from .imagerender import available as png_available, render_png
@@ -398,6 +510,8 @@ def export(
                 style=png_style,
                 profiles=profiles,
                 palette=palette,
+                retain_beyond_terms=retain_beyond_terms,
+                retention_hours=retention_hours,
             )
         else:
             formats = [f for f in formats if f != "png"]
@@ -416,23 +530,58 @@ def export(
             scope=scope,
             profiles=profiles,
             palette=palette,
+            retain_beyond_terms=retain_beyond_terms,
+            retention_hours=retention_hours,
         )
 
     relative = [
         f.relative_to(directory) if f.is_relative_to(directory) else f for f in files
     ]
+    stale = count_stale(rows)
+    if retain_beyond_terms:
+        # Not "delete within 24 hours": this run was told to keep the data
+        # longer, and printing the rule it did not follow would be theatre. The
+        # terms are still named, and so is what that means for the findings.
+        retention_note = [
+            f"This export is being kept for {retention_hours} hours by choice.",
+            f"Rotector's Terms of Use allow {RETENTION_HOURS} hours, and flag",
+            "statuses change well inside that: anything here older than a day",
+            "describes the day it was answered rather than today. Anyone listed",
+            "can appeal at https://rotector.com",
+        ]
+    else:
+        retention_note = [
+            f"Delete this folder within {RETENTION_HOURS} hours. Rotector flag",
+            "statuses change, and their Terms of Use forbid retaining responses",
+            "beyond that. Anyone listed here can appeal at https://rotector.com",
+        ]
+    if stale:
+        retention_note += [
+            "",
+            f"{stale} of the {len(rows)} finding(s) here were already older than "
+            f"{RETENTION_HOURS} hours",
+            "when this was written; each one's age is in the Stale column. Re-check "
+            "before acting on those.",
+        ]
+
     readme = directory / "README.txt"
     readme.write_text(
         "\n".join(
             [
-                *_header_lines(guild_name, stamp, scope, len(rows)),
+                *_header_lines(
+                    guild_name,
+                    stamp,
+                    scope,
+                    len(rows),
+                    retain_beyond_terms=retain_beyond_terms,
+                    retention_hours=retention_hours,
+                    stale=stale,
+                ),
                 "",
                 "Files:",
                 *(f"  {f}" for f in relative),
                 "",
-                f"Delete this folder within {RETENTION_HOURS} hours. Rotector flag",
-                "statuses change, and their Terms of Use forbid retaining responses",
-                "beyond that. Anyone listed here can appeal at https://rotector.com",
+                *retention_note,
                 "",
                 MARKER,
             ]

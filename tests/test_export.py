@@ -6,14 +6,17 @@ import csv
 import json
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from rsb.backend import effective_cache_ttl
 from rsb.config import Config, write_section
 from rsb.export import (
     ALL_COLUMNS,
+    COLUMNS,
     DEFAULT_COLUMNS,
     ExportRow,
     export,
@@ -21,7 +24,7 @@ from rsb.export import (
     valid_columns,
 )
 from rsb.moderation import build_reason, check_eligibility, summarise_finding
-from rsb.rotector import MemberReport, RobloxAccount, TrackedServer
+from rsb.rotector import MemberReport, RobloxAccount, TrackedServer, is_stale
 from rsb.verdict import Verdict
 
 ok = lambda m: print(f"[ok] {m}")
@@ -156,6 +159,84 @@ def test_export_respects_columns():
     ok(f"only the chosen columns are written: {header}")
 
 
+def test_staleness():
+    """A finding older than the terms' window must say so, and say how old.
+
+    Independent of the retention setting: results left on screen for two days
+    go stale by themselves, and a file that repeats "delete within 24 hours"
+    over data the run was told to keep for a week is describing a rule nobody
+    followed.
+    """
+    tmp = Path(tempfile.mkdtemp())
+    old = make_row(1, flag=2)
+    old.report.fetched_at = time.time() - 3 * 86400
+    fresh = make_row(2, flag=1)
+    rows = [old, fresh]
+
+    assert is_stale(old.report) and not is_stale(fresh.report)
+    assert COLUMNS["stale"](old) == "3 days old"
+    assert COLUMNS["stale"](fresh) == "", "a fresh finding carries no marker"
+    assert "stale" in DEFAULT_COLUMNS, "a stale finding must be labelled by default"
+    ok("the stale column dates an old finding and stays blank for a fresh one")
+
+    kept = export(
+        rows,
+        guild_name="G",
+        guild_id="1",
+        base_directory=tmp,
+        formats=["txt", "json"],
+        columns=DEFAULT_COLUMNS,
+        stamp="20260801T120000Z",
+        retain_beyond_terms=True,
+        retention_hours=168,
+    )
+    payload = json.loads(
+        next(f for f in kept.files if f.suffix == ".json").read_text(encoding="utf-8")
+    )
+    assert payload["retained_beyond_terms"] is True
+    assert "168 hours" in payload["expires_at"], payload["expires_at"]
+    assert "Terms of Use" in payload["expires_at"], "the terms are named regardless"
+    assert payload["stale_findings"] == 1
+    ok(f"JSON states its real retention: {payload['expires_at']!r}")
+
+    text = next(f for f in kept.files if f.suffix == ".txt").read_text(encoding="utf-8")
+    assert "3 days ago" in text and "re-check before acting" in text
+    readme = (kept.directory / "README.txt").read_text(encoding="utf-8")
+    assert "kept for 168 hours" in readme
+    assert "Terms of Use allow 24 hours" in readme
+    assert "1 of the 2 finding(s)" in readme
+    ok("TXT and README name the age, the choice, and the terms it departs from")
+
+    default = export(
+        rows,
+        guild_name="G",
+        guild_id="1",
+        base_directory=tmp,
+        formats=["json"],
+        columns=DEFAULT_COLUMNS,
+        stamp="20260801T130000Z",
+    )
+    plain = json.loads(
+        next(f for f in default.files if f.suffix == ".json").read_text(encoding="utf-8")
+    )
+    assert plain["expires_at"] == "24 hours after generated_at (Rotector Terms of Use #1)"
+    assert plain["retained_beyond_terms"] is False
+    assert plain["stale_findings"] == 1, "staleness is reported either way"
+    ok("with the setting off the 24h wording is exactly what it always was")
+
+    cfg = Config()
+    assert effective_cache_ttl(cfg, 3600) == 3600, "off changes nothing"
+    cfg.scan.retain_beyond_terms = True
+    assert effective_cache_ttl(cfg, 3600) == 168 * 3600
+    cfg.scan.retention_hours = 0
+    assert any("retention_hours" in p for p in cfg.validate())
+    cfg.scan.retain_beyond_terms = False
+    assert not any("retention_hours" in p for p in cfg.validate()), (
+        "an ignored value must not block startup"
+    )
+    ok("retention_hours drives the cache TTL only while retain_beyond_terms is on")
+
+
 def test_config_round_trip():
     tmp = Path(tempfile.mkdtemp())
     path = tmp / "config.toml"
@@ -261,7 +342,7 @@ def test_moderation_eligibility():
        "and blocked again by allow_caution=false")
 
     unknown = check_eligibility(make_row(4).report)
-    assert unknown.needs_override and "no Roblox account" in unknown.explanation
+    assert unknown.needs_override and "No linked Roblox account" in unknown.explanation
     ok(f"UNKNOWN explains there is no finding at all: {unknown.explanation[:60]}...")
 
     relaxed = check_eligibility(make_row(5, flag=0).report, require_threat=False)
@@ -273,6 +354,8 @@ test_columns()
 test_csv_segmentation()
 test_full_export()
 test_export_respects_columns()
+print()
+test_staleness()
 print()
 test_config_round_trip()
 print()

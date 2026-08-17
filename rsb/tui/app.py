@@ -51,6 +51,7 @@ from ..moderation import (
     plan_bulk,
     rows_for_scope,
 )
+from ..triage import policy_from_config, triage
 from ..profiles import fetch_profiles
 from ..sources import (
     GROUPS,
@@ -73,7 +74,12 @@ from ..purge import (
 from .commands import BindingCommands, ScrollableFooter, StatusStrip
 from .theme import ThemeMemory, evidence_style
 from .vibescreen import VibeScreen
-from ..backend import ATTRIBUTIONS, backend_label, build_backend
+from ..backend import (
+    ATTRIBUTIONS,
+    backend_label,
+    build_backend,
+    effective_cache_ttl,
+)
 from ..jobs import BudgetPool, JobQueue, JobState, ScanJob
 from ..okappiki import SOURCES
 from ..hotreload import HotReloader
@@ -103,7 +109,14 @@ from .dialogs import (
     JobsDialog,
 )
 from ..proxy import AllRoutesFailed
-from ..rotector import MemberReport, RotectorError
+from ..rotector import (
+    MemberReport,
+    RotectorError,
+    is_stale,
+    report_age,
+    short_age,
+    stale_note,
+)
 from ..verdict import (
     ATTRIBUTION,
     Verdict,
@@ -802,7 +815,10 @@ class ScannerApp(App):
             guilds.add_column(name, width=width)
 
         results = self.query_one("#results", DataTable)
-        for (name, _), width in zip(RESULT_SORTS, (28, 15, 17, 12, 24, 6)):
+        # Verdict is wide enough to hold "NO DETECTIONS STALE 365d": a stale
+        # finding says so beside the verdict it qualifies, and a marker that got
+        # ellipsised away would be worse than none at all.
+        for (name, _), width in zip(RESULT_SORTS, (28, 24, 17, 12, 24, 6)):
             results.add_column(name, width=width)
 
         self._apply_sort_headers()
@@ -1185,9 +1201,33 @@ class ScannerApp(App):
     async def open_settings(self) -> None:
         before = (self.config.active_token, self.config.is_bot)
         backend_before = self.config.scan.backend
+        retention_before = (
+            self.config.scan.retain_beyond_terms,
+            self.config.scan.retention_hours,
+        )
         changed = await self.push_screen_wait(SettingsScreen(self.config))
         if not changed:
             return
+
+        retention_now = (
+            self.config.scan.retain_beyond_terms,
+            self.config.scan.retention_hours,
+        )
+        if retention_now != retention_before and self.rotector is not None:
+            # Applied to the running client rather than left for a restart. In
+            # the direction that matters most -- switching retention back off --
+            # a setting that does not take effect until next launch would leave
+            # Rotector's responses in memory past the window the operator just
+            # said they no longer wanted them kept for.
+            self.rotector.set_retention(
+                effective_cache_ttl(
+                    self.config,
+                    self.config.okappiki.cache_ttl
+                    if self.config.scan.backend == "okappiki"
+                    else self.config.rotector.cache_ttl,
+                ),
+                self.config.scan.retain_beyond_terms,
+            )
 
         # anything that only affects display can be applied at once
         self.hidden_verdicts = set()
@@ -2403,9 +2443,19 @@ class ScannerApp(App):
                 Text("-", style="dim", justify="right"),
             ]
 
+        # A cached answer from beyond the terms' 24-hour window is a weaker
+        # claim than a fresh one -- the account may have been cleared on appeal
+        # since -- so it is labelled where the verdict is read, not only in the
+        # detail pane somebody may never open.
+        verdict_cell = Text(verdict_label(verdict), style=verdict_style(verdict))
+        if is_stale(report):
+            verdict_cell.append(
+                f" STALE {short_age(report_age(report))}", style="bold yellow"
+            )
+
         return [
             self._name_cell(row),
-            Text(verdict_label(verdict), style=verdict_style(verdict)),
+            verdict_cell,
             Text(flag_name(worst.flag_type if worst else None)),
             Text(category_name(worst.category if worst else None) or "-"),
             roblox,
@@ -2500,6 +2550,12 @@ class ScannerApp(App):
         else:
             text.append("no results yet", style="dim")
 
+        stale = sum(1 for row in self.rows.values() if is_stale(row.report))
+        if stale:
+            # Counted here as well as marked per row, because the number is the
+            # thing that tells you a re-scan is due rather than a single old row.
+            text.append(f"{stale:,} stale  ", style="bold yellow")
+
         listed = len(self._shown)
         hidden = len(self.rows) - self._matching
         if self.selected:
@@ -2537,7 +2593,25 @@ class ScannerApp(App):
         text.append(member.display_name, style="bold")
         text.append(f"  {member.tag}  id {member.id}\n", style="dim")
         text.append(verdict_label(verdict), style=verdict_style(verdict))
-        text.append(f" - {verdict_meaning(verdict)}\n\n")
+        text.append(f" - {verdict_meaning(verdict)}\n")
+
+        # Said immediately under the verdict, in the same register as "did not
+        # answer": how old the answer is changes what it is evidence of, and a
+        # moderator about to act should meet that before the reasons, not after.
+        if note := stale_note(report):
+            text.append(f"{note}\n", style="yellow")
+
+        # The verdict grades the evidence; this grades what to do about it, and
+        # the two stopped being the same thing once more than one database could
+        # answer. Shown here rather than only at the confirmation dialog, so a
+        # moderator meets the reasoning while reading rather than mid-action.
+        call = triage(report, policy_from_config(self.config.moderation))
+        text.append(call.label, style=call.style)
+        text.append(f"  rule {call.rule}", style="dim")
+        text.append(f"\n{call.headline}\n")
+        for line in call.basis:
+            text.append(f"  {line}\n", style="dim")
+        text.append("\n")
 
         if report.accounts:
             text.append(f"Linked Roblox accounts ({len(report.accounts)})\n", style="bold")
@@ -2824,6 +2898,10 @@ class ScannerApp(App):
                 }.get(choice.scope, f"filter: {self.filter_mode.value}"),
                 segment_size=choice.segment_size,
                 preserve=choice.preserve,
+                # so the written file states its own retention rather than the
+                # 24-hour rule this run was told not to follow
+                retain_beyond_terms=self.config.scan.retain_beyond_terms,
+                retention_hours=self.config.scan.retention_hours,
                 png_style=choice.png_style,
                 profiles=profiles,
                 palette=self.export_palette(),
@@ -3074,6 +3152,10 @@ class ScannerApp(App):
             f"Discord ID: {row.member.id}",
             f"Verdict: {verdict_label(report.verdict)}",
         ]
+        # Pasted into a ticket, this text is all the reader gets; a finding that
+        # is a day old has to travel with that fact attached.
+        if note := stale_note(report):
+            lines.append(note)
         for account in sorted(report.accounts, key=lambda a: -int(a.verdict)):
             lines.append(
                 f"  Roblox {account.username} ({account.user_id}) - "
@@ -3321,9 +3403,11 @@ class ScannerApp(App):
         resolved = options[pick]
         require_threat = self.config.moderation.require_threat
 
+        policy = policy_from_config(self.config.moderation)
+
         def resolve(scope: str, custom: str | None = None) -> BulkPlan:
             rows = rows_for_scope(
-                scope, self._selected_rows(), self._matching_rows()
+                scope, self._selected_rows(), self._matching_rows(), policy=policy
             )
             rows = [r for r in rows if not r.actioned]
             return plan_bulk(
@@ -3336,6 +3420,7 @@ class ScannerApp(App):
                 custom=custom,
                 past=resolved.past,
                 appeal=self.config.appeal,
+                policy=policy,
             )
 
         choice = await self.push_screen_wait(
@@ -3547,6 +3632,7 @@ class ScannerApp(App):
             row.report,
             require_threat=self.config.moderation.require_threat,
             allow_caution=self.config.moderation.allow_caution,
+            policy=policy_from_config(self.config.moderation),
         )
         if not resolved.gated:
             eligibility = Eligibility(

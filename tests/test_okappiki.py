@@ -207,6 +207,21 @@ assert rot and okp and okp > rot * 20, (rot, okp)
 assert build_backend(_config("okappiki"), []).estimate_seconds(0) is None
 ok(f"ETA is backend-aware: {rot / 60:.0f} min batched vs {okp / 60:.0f} min one-by-one")
 
+# The ETA is bounded by requests-in-flight, not by the rate limiter. The limiter
+# is deliberately configured above what the client can produce (measurement puts
+# the endpoint's knee at 4-5 concurrent, ~5.5 req/s), so an ETA that believed it
+# would promise a scan that never arrives.
+loose = _config("okappiki")
+loose.okappiki.rate_limit = 500
+assert build_backend(loose, []).estimate_seconds(10833) == okp, (
+    "raising the rate limit alone must not change the ETA -- concurrency binds"
+)
+
+wider = _config("okappiki")
+wider.okappiki.concurrency = 8
+assert build_backend(wider, []).estimate_seconds(10833) < okp
+ok("the ETA follows concurrency rather than the rate limit, which is the real ceiling")
+
 assert backend_label("okappiki") == "Okappiki"
 assert "okappiki.com" in ATTRIBUTIONS["okappiki"]
 assert "rotector.com" in ATTRIBUTIONS["rotector"]

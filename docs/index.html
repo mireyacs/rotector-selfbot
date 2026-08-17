@@ -780,6 +780,7 @@ html:not(.motion) .motion-toggle .state {
       surfacing accounts with detected violations before you interact, not after.</p>
     <div class="actions">
       <a class="btn" href="#setup"><span class="tick" aria-hidden="true"></span>Get it running<span class="tick" aria-hidden="true"></span></a>
+      <a class="btn btn--quiet" href="#plugin">In Discord</a>
       <a class="btn btn--quiet" href="https://github.com/mireyacs/rotector-selfbot">Source</a>
     </div>
   </div>
@@ -1146,14 +1147,105 @@ cd rotector-selfbot</code></pre>
     </div>
   </section>
 
+  <!-- the client plugin -------------------------------------------------- -->
+  <!-- No figure here on purpose. Every image on this page is a real capture of
+       the program and the figcaption says so; there is no capture of the plugin,
+       and drawing one would cost the page the only claim it makes about its own
+       pictures. Type, a node and a ledger carry it instead. -->
+  <section id="plugin">
+    <div class="wrap">
+      <h2>The same check, inside the client.</h2>
+      <div class="split" style="margin-top:2rem">
+        <div class="stack">
+          <p><code>plugin/RotectorScan/</code> is this program ported into Equicord,
+            Vencord-compatible and loaded at runtime, with nothing to build. It marks
+            accounts with findings in the member list, the DM list and beside message
+            authors, adds a findings section to profiles, and puts the report, the scan
+            window, its queue, the scan history, kick and ban, purge and the exports
+            inside Discord, on context menus and <code>/rotector</code> commands.</p>
+          <p><b>It is a client mod, and Discord does not sanction client mods.</b> The
+            plugin does not drive the API the way this scanner does: it reads the stores
+            the client has already filled, and the only Discord calls it makes are three
+            the client itself makes for the same screens, each of them driven by something
+            you clicked. That is a meaningfully smaller thing to be doing. It is not
+            nothing — modifying the client is against Discord's terms too, they do not
+            carve out an exception for safety tooling, and the risk of losing your account
+            is real and entirely yours.</p>
+          <p><b>The second backend works from a browser.</b> Okappiki, which answers with
+            its own list, Rotector's verdict and mococo's together, sends permissive CORS
+            on both of the actions the plugin calls. The cost does not change in a
+            browser: one request per member, where Rotector batches ten thousand members
+            into about 218.</p>
+          <p>Two Discord themes sit beside it, <code>ten-thousand.theme.css</code> and its
+            light twin, restyling Discord itself into this page's language so the client,
+            the plugin's panels and this page read as one surface. Optional in both
+            directions: the plugin looks right with no theme installed, and the theme
+            works with no plugin.</p>
+        </div>
+        <div class="stack">
+          <div class="node">
+            <div class="node__hd"><span class="label">Coverage in the client</span><span class="chip"></span></div>
+            <div class="node__bd">
+              <div class="tablewrap">
+                <table class="ledger" style="margin-top:0">
+                  <caption>Where a scan's member list comes from</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Route</th>
+                      <th scope="col">What it reaches</th>
+                      <th scope="col">Coverage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <th scope="row">Client stores</th>
+                      <td data-label="What it reaches">The slice of the member sidebar you have scrolled, plus your friends. A few hundred people in a server of ten thousand.</td>
+                      <td data-label="Coverage"><span class="meter m2" aria-hidden="true"></span>Sampled, and stated as a fraction</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">A role</th>
+                      <td data-label="What it reaches">Every holder of that role, in one request, online or not.</td>
+                      <td data-label="Coverage"><span class="meter m4" aria-hidden="true"></span>Complete</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Gateway, bot token</th>
+                      <td data-label="What it reaches">The whole roster, offline members included, in one request. Needs the Server Members Intent.</td>
+                      <td data-label="Coverage"><span class="meter m4" aria-hidden="true"></span>Complete. Off by default</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Gateway, your account</th>
+                      <td data-label="What it reaches">The member sidebar range by range, then a name sweep for the rest — what this scanner does, and the same automation of a user account.</td>
+                      <td data-label="Coverage"><span class="meter m3" aria-hidden="true"></span>Scraped. Off by default</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <p style="font-size:.82rem">Install it by copying the folder into the client's
+            <code>dynamicPlugins</code> directory, or by running <code>install.sh</code>,
+            which syncs the plugin and the themes into every client it finds and updates
+            them again later. Every surface, every setting and the queue's one shared
+            rate-limit budget are in
+            <a href="https://github.com/mireyacs/rotector-selfbot/blob/main/plugin/RotectorScan/README.md">plugin/RotectorScan/README.md</a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- rate limits ------------------------------------------------------- -->
   <section>
     <div class="wrap split">
       <div class="stack">
         <h2>Inside the window, not around it.</h2>
-        <p>Rotector allows 50 requests per 10 seconds per IP. The scanner holds a
-          reserve, tracks the returned headers, and waits rather than gambling.
+        <p>Rotector allows 50 requests per 10 seconds per IP. The terminal scanner holds
+          a reserve, tracks the returned headers, and waits rather than gambling.
           Measured across live runs at zero rate-limit rejections.</p>
+        <p>The plugin cannot read those headers. Rotector exposes only
+          <code>X-Token-Expires</code> cross-origin, so <code>X-RateLimit-Remaining</code>
+          and <code>Retry-After</code> are invisible to a script whatever the server
+          sends. Its limiter is local only, and a 429 holds every caller for one full
+          window instead of for the interval it was told to wait.</p>
         <p>Proxies are supported for the throughput they genuinely add, and the tester
           checks each against the real API to show which actually bring their own
           budget and which only look like they do. Rotating IPs to defeat the limit is
@@ -1175,9 +1267,10 @@ cd rotector-selfbot</code></pre>
       <div>
         <div class="label" style="margin-bottom:.6rem">rotector-selfbot</div>
         <p>Detection data belongs to <a href="https://rotector.com">Rotector</a>, whose
-          terms this tool follows: nothing retained past 24 hours, attribution and an
-          appeal route on every action, and <code>Unflagged</code> never presented as
-          safe.</p>
+          terms this tool follows: nothing kept past 24 hours unless you lift that
+          ceiling yourself, and anything older labelled stale wherever it is shown or
+          written; attribution and an appeal route on every action; and
+          <code>Unflagged</code> never presented as safe.</p>
       </div>
       <div>
         <div class="label" style="margin-bottom:.6rem">Elsewhere</div>

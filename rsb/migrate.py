@@ -155,6 +155,34 @@ SCHEMA: list[Section] = [
             Setting("skip_bots", True, "Bots have no Roblox connections."),
             Setting("max_members", 0, "Cap members per source. 0 = no cap."),
             Setting(
+                "retain_beyond_terms",
+                False,
+                (
+                    "Keep looked-up findings past the 24-hour window\n"
+                    "Rotector's Terms of Use allow, instead of letting the\n"
+                    "caches expire them.\n"
+                    "Off, and it should stay off unless you have decided\n"
+                    "otherwise on purpose: switching it on is a choice to hold\n"
+                    "their data outside the terms you agreed to. It is also a\n"
+                    "fairness question -- flag types change, appeals succeed,\n"
+                    "and an account that cleared its violations yesterday still\n"
+                    "reads as flagged in a cache that never expires.\n"
+                    "Anything served from beyond the window is labelled stale,\n"
+                    "with its age, in the results table and in every export."
+                ),
+            ),
+            Setting(
+                "retention_hours",
+                168,
+                (
+                    "How long to keep findings when retain_beyond_terms is on,\n"
+                    "in hours. Ignored while it is off, when the 23-hour\n"
+                    "ceiling applies instead. 168 is a week; a year is the most\n"
+                    "the caches will hold, because a year-old flag status is\n"
+                    "not evidence about anybody."
+                ),
+            ),
+            Setting(
                 "hide_no_detections",
                 True,
                 "Hide members Rotector has not flagged.",
@@ -324,6 +352,31 @@ SCHEMA: list[Section] = [
                     "Never routine: Rotector asks that Provisional/Mixed be\n"
                     "reviewed by a person, so a second separate confirmation\n"
                     "is always required."
+                ),
+            ),
+            Setting(
+                "ban_on_corroborated_sighting",
+                False,
+                (
+                    "Triage rule R3. Let Detective Okappiki and mococo,\n"
+                    "agreeing with each other and with no Rotector flag,\n"
+                    "support a ban on their own.\n"
+                    "Off because neither publishes a claim that its sighting\n"
+                    "is safe to act on -- turning this on is your policy call,\n"
+                    "not something either service asked for.\n"
+                    "Okappiki backend only."
+                ),
+            ),
+            Setting(
+                "min_mococo_score",
+                40,
+                (
+                    "Rule R3's floor on mococo's score.\n"
+                    "TASE defines that number as how much a member interacted\n"
+                    "with the detected servers, not how severe they are, and\n"
+                    "publishes no scale for it -- so there is no correct value.\n"
+                    "40 is what the sample records carried, not a threshold\n"
+                    "TASE endorses. Set it from your own observations."
                 ),
             ),
             Setting(

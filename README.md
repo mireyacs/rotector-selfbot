@@ -39,7 +39,90 @@ not flagged the account *yet* — it is not a clean bill of health, and Rotector
 own terms forbid presenting it as "safe". Only `THREAT` (flag types *Flagged*
 and *Confirmed*) is documented as safe to act on automatically.
 
-## Install
+## The same tool, inside Discord
+
+`plugin/RotectorScan/` is a port of this app into Equicord
+(Vencord-compatible), loaded at runtime by the
+[DynamicPluginLoader](https://github.com/mireyacs/equicord-dynamic-plugin-loader)
+— nothing to build, no client rebuild. It marks accounts with findings in the
+member list, the DM list and beside message authors, adds a findings section to
+profiles, and puts the report, the scan window, the queue, the history, kick and
+ban, purge and the exports inside the client, reachable from context menus and
+`/rotector` commands. Both backends are there, and the lofi player is too, off
+by default. A finished scan is written to a small database on your computer so
+it survives a restart — and deleted 23 hours after the scan started, under the
+plugin's own copy of the opt-out in [Retention](#retention) below.
+
+**It is a client mod, and Discord does not sanction client mods.** The
+difference from the terminal app is real and worth stating plainly: the selfbot
+logs into your account with your token and drives Discord's API itself, which is
+automation of a user account and is what Discord's Terms prohibit outright. The
+plugin does none of that — it reads the stores the client has already filled for
+its own use, and the only Discord calls it makes are three the client itself
+makes for the same screens, each driven by something you clicked. That is a
+meaningfully smaller thing to be doing. It is not nothing: modifying the client
+is against Discord's terms too, they do not carve out an exception for safety
+tooling, and the risk of losing your account is real and entirely yours.
+
+### What it can actually see
+
+**Without the gateway scanner it reads the client's own stores**, which hold
+roughly the slice of the member sidebar you have scrolled through plus your
+friends — in a 10,000-member server, normally a few hundred people. A large
+server is therefore *sampled*, not enumerated, and every count is shown as a
+fraction of the guild's real member count rather than as a total.
+
+**Scanning a role is how you get a complete list** without a gateway
+connection: Discord hands over every holder of a role in one REST request,
+uncapped and regardless of who is online. If the people you want checked share a
+role, that list is genuinely complete.
+
+**With the gateway scanner switched on, the plugin does what this app does** —
+`plugin/RotectorScan/gateway/` is a port of the scanner below, heartbeat, resume,
+close-code table and all. It is **off by default**, and there are two ways to run
+it. A **bot token** with the Server Members Intent asks for the whole roster,
+offline members included, in one request, and has no Terms problem — it is what
+bot applications are for. **Your own account's token** opens a second gateway
+session and subscribes to the member sidebar range by range, which is automation
+of a user account: the same thing this app does and the same thing Discord's
+Terms prohibit. It stays off until you switch it on and pick that token
+explicitly, and the risk is yours.
+
+**Okappiki works from the plugin.** Both `vencord_full_check` and
+`vencord_check_flag` answer with `access-control-allow-origin: *`, so a renderer
+can call them, and choosing Okappiki is what lets triage rules `R2`, `R3` and
+`R6` fire at all. The cost is the same in a browser as it is here: **one request
+per member** — 10,000 requests where Rotector takes about 218 — and every one of
+them spends a live Rotector lookup out of Okappiki's own budget.
+
+### Install it
+
+Copy the `RotectorScan` folder — the whole folder, with its subfolders — into
+your client's `dynamicPlugins` directory (`~/.config/Equicord/dynamicPlugins/`
+on Linux, `%APPDATA%\Equicord\dynamicPlugins\` on Windows,
+`~/Library/Application Support/Equicord/dynamicPlugins/` on macOS), or run
+`plugin/RotectorScan/install.sh`, which syncs the plugin and the themes into
+every client data directory it finds and takes `--dry-run`, `--pull`,
+`--themes-only` and `--uninstall`. Then **Settings → Dynamic Plugins → Reload
+all** and enable **RotectorScan**; the first load asks for a restart, once.
+
+### Two Discord themes
+
+`plugin/RotectorScan/theme/` holds `ten-thousand.theme.css` and
+`ten-thousand-light.theme.css`, which restyle **Discord itself** into this
+project's design language — the same white ink on black ground, hairline rules
+and square corners the project page uses — so the client, the plugin's panels
+and the page read as one surface. Install **one** of them, not both, through
+**Settings → Themes**. Nothing depends on them in either direction: the plugin
+looks right with no theme installed, and the theme works with the plugin
+uninstalled. A theme adds no network traffic and reads nothing, and it is still
+a modified client.
+
+[**`plugin/RotectorScan/README.md`**](plugin/RotectorScan/README.md) is the
+detail: every surface, every setting, the queue's one shared rate-limit budget,
+the retention rules, and what the port deliberately does not carry over.
+
+## Install the terminal app
 
 Two prerequisites: **Python 3.11 or newer** — that is where `tomllib` entered
 the standard library — and **git**, to fetch the code and to update it later.
@@ -194,14 +277,42 @@ Two things to know before switching, both of which are the reason it is not the
 default:
 
 - **No batch endpoint.** One request covers one member. A 10,000-member server
-  is 10,000 requests against Rotector's ~218 for the same list. At the default
-  5 requests/second that is roughly half an hour where Rotector takes about a
-  minute. The scan estimate reflects this honestly; it is not a surprise you
-  discover at member 4,000.
-- **Nothing is documented.** The endpoint publishes no rate limit, no version
-  and no schema. The defaults under `[okappiki]` are deliberately slow, and the
-  client treats every field as optional because an unflagged member's record is
-  literally `{"flagged": false}` and nothing else.
+  is 10,000 requests against Rotector's ~218 for the same list — roughly half an
+  hour where Rotector takes about a minute. The scan estimate reflects this
+  honestly; it is not a surprise you discover at member 4,000.
+- **Nothing is documented.** The endpoint publishes no rate limit, no
+  `Retry-After`, no version and no schema. The client treats every field as
+  optional because an unflagged member's record is literally
+  `{"flagged": false}` and nothing else.
+
+#### How fast it can actually go
+
+The `[okappiki]` defaults are measured rather than guessed — 351 requests on
+2026-08-16, ramped and then held at the knee for 45 seconds, every one a clean
+200:
+
+| concurrency | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| req/s | 1.4 | 2.5 | 3.8 | **5.3** | **5.5** | 5.0 |
+| p95 latency | 1.0s | 1.1s | 1.1s | **0.9s** | 1.3s | 1.6s |
+
+Throughput plateaus at 4–5 concurrent and *falls* at 6 while latency keeps
+climbing — the backend saturating, not a limiter. Held at 5 it sustained 5.7
+req/s for 45 seconds with no drift and no errors. The default sits at **4**,
+within 4% of peak at the best latency of any level: a scan running for half an
+hour should not sit exactly on someone else's knee the whole time.
+
+The binding constraint is **concurrency, not `rate_limit`** — one request takes
+about 0.8s, so four in flight is ~5 req/s no matter what the limiter allows.
+`rate_limit` is set just above that as a backstop, and the ETA is computed from
+whichever ceiling is lower so it cannot promise a scan that never arrives.
+
+> **Do not raise this by adding proxies.** Every request costs Okappiki a live
+> Rotector lookup out of *their* budget, so spreading the load over more IPs to
+> go faster is the rate-limit circumvention Rotector's terms prohibit — being
+> one hop further down the chain does not make it something else. If you need a
+> 10,000-member server checked quickly, the Rotector backend does it in a minute
+> and is the sanctioned way to be fast.
 
 Verdicts are tiered by how much the source can support:
 
@@ -687,6 +798,54 @@ Tracked-server membership is shown as its own column and in the detail pane,
 but deliberately does **not** feed the verdict — being in a monitored server is
 a signal worth seeing, not a finding about the person.
 
+### Cautious, or ban? — the triage table
+
+A verdict grades the *evidence*. It does not tell you what to do, and under the
+Okappiki backend it barely differentiates: any sighting from either unverified
+database is `CAUTION`, so the member all three databases agree on read the same
+as the member one crawler saw once. A column where nearly everything says the
+same word is a column nobody reads.
+
+So a second, separate answer sits on top of the verdicts: an ordered table of
+rules, evaluated top to bottom, first match wins. It names the rule it used, so
+any recommendation can be looked up and argued with. It appears in the detail
+pane, in the confirmation dialog, and as a bulk scope of its own.
+
+| Rule | Condition | Recommends |
+|------|-----------|------------|
+| `R0` | No database answered. | `NOTHING KNOWN` |
+| `R1` | Rotector reports Flagged (1) or Confirmed (2) — the types it documents as safe to action. | **`BAN SUPPORTED`** |
+| `R2` | Rotector flagged at an inconclusive type (Provisional 4, Mixed 5) **and** another database independently flagged the same account. | **`BAN SUPPORTED`** |
+| `R3` | Both unverified databases flagged, and the mococo score meets your threshold. *Off unless you switch it on.* | **`BAN SUPPORTED`** |
+| `R4` | Flagged by real evidence, but nothing that supports acting alone. | `CAUTION` |
+| `R5` | Flagged only as Queued (3), Past Offender (6) or Redacted (8). | `INFORMATIONAL` |
+| `R6` | Nothing flagged, but a database did not answer. | `RECHECK` |
+| `R7` | No database knows of a linked Roblox account. | `NOTHING KNOWN` |
+| `R8` | Every database answered, none flagged. | `NO FINDING` |
+
+**R2 is the rule that earns the table.** *Provisional* and *Mixed* are findings
+Rotector deliberately declines to conclude from — an independent sighting of the
+same account supplies exactly what Rotector said was missing. Before this, that
+member was indistinguishable from a lone unverified sighting.
+
+**R5 is the rule that keeps it honest.** Rotector documents type 3 as *not an
+inappropriate user* and type 6 as having *since cleared*. Those are not weak
+accusations; they are not accusations. No amount of agreement from databases
+that publish no actionability claim promotes them, and there is a test asserting
+it.
+
+Two things the table deliberately does not do:
+
+- **It never parses `reason` text.** Those strings are free text from three
+  services, carrying server names *chosen by the people being flagged*. Matching
+  keywords in them would be a heuristic wearing determinism's clothes, and its
+  failure mode — a severe finding downgraded because its wording did not match —
+  is the exact failure the table exists to avoid.
+- **It does not treat mococo's score as a severity.** TASE's own API defines it
+  as how much a member *interacted* with the detected servers, and publishes no
+  scale for it. It orders members; it does not grade them — which is why the one
+  rule that uses it is off by default and its threshold is labelled as yours.
+
 ## Exports
 
 `e` opens a dialog: which formats, what scope, how to segment, and which of the
@@ -792,6 +951,30 @@ folders older than that are cleared automatically when you next export.
 *Preserve older exports* in the dialog (or `export.preserve` in the config)
 turns that off and makes retention your responsibility.
 
+The same ceiling applies to the in-memory lookup cache, and `scan.retain_beyond_terms`
+lifts it. **It is off by default**, and leaving it off is the only setting that
+keeps the run inside Rotector's Terms of Use #1. Switching it on means the
+caches hold findings for `scan.retention_hours` instead (168 — a week — by
+default, a year at most), which is a decision to keep their data outside the
+terms you agreed to. Both are editable in Settings under **Scan**, and take
+effect on the running client — switching retention back off drops whatever the
+cache is still holding there and then, rather than waiting for a restart.
+
+It is not only a licensing question. Flag types change, appeals succeed, and an
+account that cleared its violations yesterday still reads as flagged in a cache
+that outlived the window. So anything answered from beyond 24 hours is labelled
+stale wherever it appears, whether or not you turned the setting on — results
+left on screen for two days go stale by themselves:
+
+- the results table marks the verdict cell `STALE 3d`, and the summary line
+  counts how many rows are stale;
+- the detail pane and the clipboard copy say how old the answer is and that a
+  re-check is due before acting;
+- every export carries a `Stale` column (blank for findings inside the window),
+  and the TXT, JSON, HTML, PNG and card outputs each state their own retention
+  — a file kept past the window says so and still names the terms, rather than
+  repeating a 24-hour rule the run did not follow.
+
 The cleanup is deliberately timid, since it deletes files. A folder is only
 removed if it sits directly under the export directory, its name carries a
 timestamp this tool wrote, **and** its `README.txt` contains our marker line.
@@ -832,6 +1015,13 @@ judgement:
   `moderation.require_threat`. Turning that off still shows what is wrong with
   the action and still requires an explicit per-action acknowledgement; it
   never becomes routine.
+- **What counts as actionable is the triage table's answer, not a single
+  verdict.** A `THREAT` verdict still passes on rule `R1`. But a member Rotector
+  flagged inconclusively and another database independently confirmed now passes
+  on `R2` instead of sitting behind a double confirmation, and the dialog cites
+  the rule that let them through. `Everyone the rule table says a ban is
+  supported for` is a bulk scope of its own, and it is a different set from
+  `Everyone with a THREAT verdict`.
 - **`CAUTION` is the one middle case, and it takes two confirmations.**
   *Provisional* and *Mixed* mean Rotector found something and deliberately
   declined to conclude from it, asking that a person review it. So acting is
@@ -1144,6 +1334,10 @@ The client is built to honour them, but they bind *you*:
 - **Responses may not be kept longer than 24 hours.** The cache is in-memory
   only and clamped below that ceiling; nothing is written to disk except when
   you press `e`. Exports are stamped with an expiry — delete them.
+  [`scan.retain_beyond_terms`](#retention) lifts the ceiling if you decide to,
+  which puts the run outside this rule and is why it ships off; whichever way it
+  is set, findings older than the window are labelled stale with their age
+  everywhere they are shown or written.
 - **Attribute Rotector** for any action you take on this data, or link
   [rotector.com](https://rotector.com) so people can appeal. The attribution
   line is in the UI and in every export.
@@ -1268,7 +1462,10 @@ The client is built to honour them, but they bind *you*:
 - `test_export.py` — no network: CSV segmentation (2,500 rows → 3 self-contained
   parts, all rows preserved), TXT/JSON/README contents, column selection, and
   config round-tripping that proves comments elsewhere in the file survive.
-  Also reason construction — attribution never duplicated, never trimmed away,
+  Also staleness: that a finding past the 24-hour window is dated in the column,
+  the TXT and the README, that a file kept longer says so and still names the
+  terms, that the default wording is untouched, and that `retention_hours` only
+  bites while `retain_beyond_terms` is on. Also reason construction — attribution never duplicated, never trimmed away,
   512-char limit respected — and that every non-actionable flag type is refused.
 - `test_moderation_tui.py` — the kick/ban flow end to end with Discord stubbed:
   that an acknowledgement is genuinely required, that `require_threat` blocks

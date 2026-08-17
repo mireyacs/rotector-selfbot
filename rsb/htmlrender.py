@@ -18,8 +18,9 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from .export import COLUMNS, ExportRow, valid_columns
+from .export import COLUMNS, ExportRow, RETENTION_HOURS, count_stale, valid_columns
 from .palette import DEFAULT as DEFAULT_PALETTE, ExportPalette
+from .rotector import describe_age, is_stale, report_age
 from .verdict import (
     ATTRIBUTION,
     Verdict,
@@ -86,6 +87,12 @@ td.wrap { max-width: 460px; }
 .who .handle { color: var(--muted); font-size: 12px; word-break: break-all; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
          font-size: 11px; font-weight: 700; color: var(--on-badge); }
+/* Stale findings wear the CAUTION amber wherever they appear -- the reader of
+   this file did not choose to keep the data past the window it was served
+   under, so the label has to be as visible as the verdict it qualifies. */
+.badge.stale { background: #facc15; color: #1a1a1a; }
+.stale-line { color: #facc15; font-size: 12px; margin-top: 4px; }
+td.stale-cell { color: #facc15; white-space: nowrap; }
 .card section { padding: 10px 16px; border-top: 1px solid var(--rule); }
 .card h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em;
            color: var(--muted); text-transform: uppercase; }
@@ -281,6 +288,16 @@ def _card(row: ExportRow, profile) -> str:
         + [a.username for a in accounts]
     ).lower()
 
+    stale_badge = stale_line = ""
+    if is_stale(row.report):
+        age = describe_age(report_age(row.report))
+        stale_badge = f'<span class="badge stale">STALE {esc(age)}</span>'
+        stale_line = (
+            f'<div class="stale-line">Answered {esc(age)} ago, past the '
+            f"{RETENTION_HOURS}-hour window Rotector's Terms of Use allow. Flag "
+            "types change and appeals succeed, so re-check before acting.</div>"
+        )
+
     return f"""<article class="card" data-hay="{esc(hay)}" data-verdict="{esc(verdict.name)}">
   <div class="banner" style="{banner_style}"></div>
   <div class="top">
@@ -291,7 +308,9 @@ def _card(row: ExportRow, profile) -> str:
       <div class="handle">ID {esc(row.discord_id)}</div>
       <div style="margin-top:6px">
         <span class="badge" style="background:{colour}">{esc(verdict_label(verdict))}</span>
+        {stale_badge}
       </div>
+      {stale_line}
     </div>
   </div>
   {''.join(sections)}
@@ -345,11 +364,17 @@ def render_html(
     scope: str = "",
     profiles: dict | None = None,
     palette: ExportPalette | None = None,
+    retain_beyond_terms: bool = False,
+    retention_hours: int = RETENTION_HOURS,
 ) -> list[Path]:
     """Write one self-contained page holding both the table and the cards."""
     columns = valid_columns(columns)
     profiles = profiles or {}
     esc = html.escape
+    # The Stale column is on by default but can be deselected, and a stale
+    # finding with nothing next to it reads as a current one. When the column is
+    # gone, the age rides along with the verdict instead of vanishing.
+    mark_verdict = "stale" not in columns
 
     head = "".join(f"<th>{esc(c.replace('_', ' ').title())}</th>" for c in columns)
 
@@ -357,11 +382,16 @@ def render_html(
     for row in rows:
         verdict = row.report.verdict
         cells = []
+        stale = is_stale(row.report)
         for column in columns:
             value = COLUMNS[column](row)
             classes = []
             if column == "verdict":
                 classes.append("verdict")
+                if stale and mark_verdict:
+                    value += f"  · stale {describe_age(report_age(row.report))}"
+            if column == "stale" and value:
+                classes.append("stale-cell")
             if len(value) > 60:
                 classes.append("wrap")
             style = (
@@ -376,6 +406,30 @@ def render_html(
             f'<tr data-hay="{esc(hay)}" data-verdict="{esc(verdict.name)}">'
             + "".join(cells)
             + "</tr>"
+        )
+
+    stale_count = count_stale(rows)
+    if retain_beyond_terms:
+        # Saying "delete within 24 hours" over a file the run deliberately kept
+        # longer would be repeating a rule nobody followed. What the reader
+        # needs is what this file is, and what the terms say about it.
+        retention_html = (
+            f"This file is being kept for {retention_hours} hours by the "
+            f"operator's choice. Rotector's terms allow {RETENTION_HOURS} hours "
+            "&mdash; and flag statuses change well inside that, so anything "
+            "marked stale here describes the day it was answered, not today."
+        )
+    else:
+        retention_html = (
+            f"Delete this file within {RETENTION_HOURS} hours &mdash; Rotector's "
+            "terms forbid keeping their data longer than that, and flag statuses "
+            "change."
+        )
+    if stale_count:
+        retention_html += (
+            f"<br>{stale_count} of these {len(rows):,} finding(s) were already "
+            f"older than {RETENTION_HOURS} hours when this page was written; each "
+            "carries its age. Re-check those before acting."
         )
 
     cards = "".join(_card(row, profiles.get(row.discord_id)) for row in rows)
@@ -411,8 +465,7 @@ def render_html(
 <footer>
   {esc(ATTRIBUTION)}<br>
   Anyone listed here can appeal at <a href="https://rotector.com">rotector.com</a>.
-  Delete this file within 24 hours &mdash; Rotector's terms forbid keeping their
-  data longer than that, and flag statuses change.
+  {retention_html}
 </footer>
 <script>{_SCRIPT}</script>
 </body></html>"""

@@ -18,10 +18,10 @@ from dataclasses import dataclass, field
 
 from .discord.http import MAX_REASON
 from .rotector import MemberReport
+from .triage import DEFAULT_POLICY, Recommendation, TriagePolicy, triage
 from .verdict import (
     Verdict,
     category_name,
-    flag_is_actionable,
     flag_name,
     verdict_label,
 )
@@ -100,50 +100,36 @@ def check_eligibility(
     report: MemberReport,
     require_threat: bool = True,
     allow_caution: bool = True,
+    policy: TriagePolicy | None = None,
 ) -> Eligibility:
-    """Whether this member may be actioned, and how strongly to warn."""
-    account = report.worst_account
-    flag = account.flag_type if account else None
-    verdict = report.verdict
+    """Whether this member may be actioned, and how strongly to warn.
 
-    if flag is not None and flag_is_actionable(flag):
+    The decision is :mod:`rsb.triage`'s, not this function's. That matters most
+    under the Okappiki backend, where the old rule -- *anything an unverified
+    database flagged is CAUTION* -- put nearly every finding in one undivided
+    pile. The rule table separates the piles and names the rule it used, so an
+    explanation here is a citation rather than a restatement.
+    """
+    result = triage(report, policy or DEFAULT_POLICY)
+    cite = f"[{result.rule}] "
+
+    if result.recommendation is Recommendation.BAN:
+        return Eligibility(True, False, cite + result.headline)
+
+    if result.recommendation is Recommendation.CAUTION and allow_caution:
+        # Real evidence that no database will conclude from. Acting is a
+        # judgement call, so it is allowed -- but only through a second
+        # confirmation, because the honest description of it is "might be wrong".
         return Eligibility(
             True,
-            False,
-            f"{flag_name(flag)} - documented by Rotector as safe to action.",
-        )
-
-    if verdict is Verdict.CAUTION and allow_caution:
-        # Provisional and Mixed are real findings that Rotector explicitly
-        # declines to conclude from. Acting is a judgement call, so it is
-        # allowed -- but only through a second confirmation, because the
-        # honest description of this evidence is "might be wrong".
-        return Eligibility(
             True,
-            True,
-            f"{flag_name(flag)} - Rotector found something here but does "
-            f"not consider it conclusive, and asks that it be reviewed by a "
-            f"person. Acting is your judgement, not the database's.",
+            cite
+            + result.headline
+            + " Acting on it is your judgement, not the database's.",
             needs_double_confirm=True,
         )
 
-    if verdict is Verdict.UNKNOWN:
-        detail = (
-            "Rotector knows of no Roblox account for this user. There is no "
-            "finding here at all - nothing supports acting on them."
-        )
-    elif verdict is Verdict.NO_DETECTIONS:
-        detail = (
-            "Rotector has not flagged this user. 'No detections' is not "
-            "evidence of anything; acting on it is acting on nothing."
-        )
-    else:
-        detail = (
-            f"{flag_name(flag)} is explicitly not actionable per Rotector's "
-            f"documentation - the finding is informational, not a conclusion."
-        )
-
-    return Eligibility(not require_threat, True, detail)
+    return Eligibility(not require_threat, True, cite + result.headline)
 
 
 #: default text sent to someone before they are actioned. Deliberately plain:
@@ -270,6 +256,7 @@ def plan_bulk(
     custom: str | None = None,
     past: str = "",
     appeal=None,
+    policy: TriagePolicy | None = None,
 ) -> BulkPlan:
     """Work out who a bulk action may touch, before anything happens.
 
@@ -285,6 +272,7 @@ def plan_bulk(
                 report,
                 require_threat=require_threat,
                 allow_caution=allow_caution,
+                policy=policy,
             )
         else:
             eligibility = Eligibility(
@@ -303,19 +291,32 @@ def plan_bulk(
     return plan
 
 
-#: verdict filters a bulk action can be aimed at, worst first
+#: filters a bulk action can be aimed at, worst first
+#:
+#: ``ban`` and ``threat`` are not the same set and the difference is the point.
+#: ``threat`` is one database's verdict on one account; ``ban`` is what the rule
+#: table concluded from all of them, so it also picks up the members Rotector
+#: flagged inconclusively and another database independently confirmed.
 BULK_SCOPES: list[tuple[str, str]] = [
     ("selected", "Only the members I selected"),
+    ("ban", "Everyone the rule table says a ban is supported for"),
     ("threat", "Everyone with a THREAT verdict"),
     ("caution", "Everyone at CAUTION or worse"),
     ("filtered", "Everyone the current filter shows"),
 ]
 
 
-def rows_for_scope(scope: str, selected_rows, filtered_rows):
+def rows_for_scope(scope: str, selected_rows, filtered_rows, policy=None):
     """Resolve a bulk scope to the rows it covers."""
     if scope == "selected":
         return list(selected_rows)
+    if scope == "ban":
+        return [
+            r
+            for r in filtered_rows
+            if triage(r.report, policy or DEFAULT_POLICY).recommendation
+            is Recommendation.BAN
+        ]
     if scope == "threat":
         return [r for r in filtered_rows if r.report.verdict is Verdict.THREAT]
     if scope == "caution":

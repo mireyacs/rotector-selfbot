@@ -11,9 +11,17 @@ because the Discord endpoint does not itself return a flag status:
 Both endpoints share one per-IP rate limit bucket, so they share one
 :class:`~rsb.ratelimit.RateLimiter`.
 
-Rotector Terms of Use #1 forbids retaining responses for longer than 24
-hours.  The cache here is in-memory only and its TTL is clamped to well under
-that; nothing is written to disk by this module.
+Rotector Terms of Use #1 forbids retaining responses for longer than 24 hours,
+which is what the cache here does unless it is told otherwise: it is in-memory
+only, its TTL is clamped to :data:`MAX_CACHE_TTL`, and nothing is written to
+disk by this module.  That ceiling is lifted only by an explicit setting --
+``scan.retain_beyond_terms``, off by default -- and switching it on is a choice
+to hold Rotector's responses outside the terms they were served under.
+
+Nothing is quietly passed off as current either way.  Every
+:class:`MemberReport` carries the time its data actually arrived, and anything
+answered from beyond the 24-hour window is reported as stale, with its age,
+wherever it is shown or written -- see :func:`is_stale` and :func:`stale_note`.
 """
 
 from __future__ import annotations
@@ -34,6 +42,10 @@ BASE_URL = "https://roscoe.rotector.com"
 MAX_BATCH = 100
 #: hard ceiling from the Terms of Use; the configured TTL is clamped to this
 MAX_CACHE_TTL = 23 * 3600
+#: the ceiling that applies when the operator has switched `retain_beyond_terms`
+#: on. Not unbounded: an unbounded cache is a memory leak as well as a licensing
+#: problem, and a year-old flag status is not evidence about anybody.
+MAX_RETAINED_TTL = 365 * 24 * 3600
 USER_AGENT = "rotector-selfbot/1.0 (+https://rotector.com)"
 
 ProgressCallback = Callable[[str, int, int], None]
@@ -126,6 +138,12 @@ class MemberReport:
     error: str | None = None
     #: per-source findings; always empty under the Rotector backend
     signals: list[Signal] = field(default_factory=list)
+    #: when the data behind this report actually arrived from the backend --
+    #: which is not when the report was built, because a cache hit describes
+    #: the world as of the response it replays. Defaults to now, so a report
+    #: assembled from a fresh answer is dated correctly without being asked;
+    #: whoever serves one from cache is responsible for backdating it.
+    fetched_at: float = field(default_factory=time.time)
 
     @property
     def verdict(self) -> Verdict:
@@ -156,6 +174,71 @@ class MemberReport:
 
 
 # --------------------------------------------------------------------------
+# staleness
+# --------------------------------------------------------------------------
+
+#: Rotector's Terms of Use #1 allow their responses to be kept for 24 hours, so
+#: this is the line past which a finding is no longer something the terms cover
+#: -- and, more to the point for whoever reads it, no longer a claim about now.
+TERMS_WINDOW = 24 * 3600
+
+
+def report_age(report: MemberReport, now: float | None = None) -> float:
+    """How long ago the data behind ``report`` arrived, in seconds."""
+    return max(0.0, (time.time() if now is None else now) - report.fetched_at)
+
+
+def is_stale(report: MemberReport, now: float | None = None) -> bool:
+    """Whether this finding is older than the terms' 24-hour window.
+
+    A stale finding is not a wrong one, but it is a weaker claim than a fresh
+    one and has to be shown as such: flag types change, appeals succeed, and an
+    account that cleared its violations yesterday still reads as flagged in a
+    cache that outlived the window.
+    """
+    return report_age(report, now) >= TERMS_WINDOW
+
+
+def describe_age(seconds: float) -> str:
+    """An age a person can read: "3 days", "26 hours", "12 minutes"."""
+    seconds = max(0.0, seconds)
+    if seconds >= 2 * 86400:
+        return f"{int(seconds // 86400)} days"
+    if seconds >= 3600:
+        hours = int(seconds // 3600)
+        return f"{hours} hour" + ("" if hours == 1 else "s")
+    minutes = int(seconds // 60)
+    return f"{minutes} minute" + ("" if minutes == 1 else "s")
+
+
+def short_age(seconds: float) -> str:
+    """The same age where there is only room for a few columns: "3d", "26h"."""
+    seconds = max(0.0, seconds)
+    if seconds >= 86400:
+        return f"{int(seconds // 86400)}d"
+    if seconds >= 3600:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 60)}m"
+
+
+def stale_note(report: MemberReport, now: float | None = None) -> str:
+    """The sentence every surface uses for a stale finding, or "" if fresh.
+
+    Written once here so the table, the detail pane and all four export formats
+    say the same thing: a reader who meets this in an exported file did not
+    choose to keep the data past the window and is owed the reason it might no
+    longer be true.
+    """
+    if not is_stale(report, now):
+        return ""
+    return (
+        f"STALE - answered {describe_age(report_age(report, now))} ago, past the "
+        "24-hour window Rotector's Terms of Use allow. Flag types change and "
+        "appeals succeed, so re-check before acting on this."
+    )
+
+
+# --------------------------------------------------------------------------
 # client
 # --------------------------------------------------------------------------
 
@@ -166,6 +249,7 @@ class RotectorClient:
         api_key: str | None = None,
         limiter: RateLimiter | None = None,
         cache_ttl: int = 3600,
+        retain_beyond_terms: bool = False,
         concurrency: int = 3,
         max_retries: int = 4,
         timeout: float = 30.0,
@@ -175,7 +259,7 @@ class RotectorClient:
         scan_concurrency: int | None = None,
     ) -> None:
         self.limiter = limiter or RateLimiter()
-        self.cache_ttl = min(max(0, cache_ttl), MAX_CACHE_TTL)
+        self.set_retention(cache_ttl, retain_beyond_terms)
         self.max_retries = max_retries
         self._sem = asyncio.Semaphore(max(1, concurrency))
 
@@ -211,6 +295,28 @@ class RotectorClient:
     async def aclose(self) -> None:
         await self.pool.aclose()
         await self._http.aclose()
+
+    def set_retention(self, cache_ttl: int, retain_beyond_terms: bool) -> None:
+        """Set how long answers may be held, and clamp it to what is allowed.
+
+        The 24h ceiling is Rotector's Terms of Use #1 and is the default. The
+        operator can lift it deliberately -- see ScanConfig.retain_beyond_terms
+        -- and when they have, anything served from beyond the window is
+        reported as stale rather than passed off as current.
+
+        Separate from ``__init__`` so the setting can be changed while the app
+        is running without rebuilding the client and losing its cache. Turning
+        it back *off* drops whatever the cache is still holding: the shorter
+        TTL would expire those entries on the next read anyway, but the point
+        of the default is not keeping Rotector's responses around, and leaving
+        them in memory until something happens to ask for them is not that.
+        """
+        ceiling = MAX_RETAINED_TTL if retain_beyond_terms else MAX_CACHE_TTL
+        was_retaining = getattr(self, "retain_beyond_terms", False)
+        self.cache_ttl = min(max(0, cache_ttl), ceiling)
+        self.retain_beyond_terms = bool(retain_beyond_terms)
+        if was_retaining and not self.retain_beyond_terms:
+            self.purge_cache()
 
     def capacity_units_per_sec(self) -> float:
         """Combined request-unit throughput across every usable route."""
@@ -336,6 +442,18 @@ class RotectorClient:
         if self.cache_ttl:
             cache[key] = (time.time(), value)
 
+    def _fetched_at(self, cache: dict, key) -> float:
+        """When the data now standing behind ``key`` was actually received.
+
+        A cache hit is not a fresh answer, and a report built from one has to
+        carry the age of the response it replays rather than the moment it was
+        assembled. A key missing from the cache was answered just now: either
+        the lookup put it there a moment ago, or ``cache_ttl`` is 0 and nothing
+        is ever cached at all, and in both cases the data is current.
+        """
+        entry = cache.get(key)
+        return entry[0] if entry else time.time()
+
     def purge_cache(self) -> None:
         """Drop every cached response (also called on scan restart)."""
         self._discord_cache.clear()
@@ -446,7 +564,10 @@ class RotectorClient:
                 roblox_ids: set[int] = set()
                 for uid in chunk:
                     raw = discord_data.get(uid, {})
-                    report = MemberReport(discord_id=uid)
+                    report = MemberReport(
+                        discord_id=uid,
+                        fetched_at=self._fetched_at(self._discord_cache, uid),
+                    )
                     for srv in raw.get("servers") or []:
                         report.servers.append(TrackedServer.parse(srv))
                     for conn in raw.get("connections") or []:
@@ -483,6 +604,15 @@ class RotectorClient:
                     for report in batch_reports:
                         for acc in report.accounts:
                             _apply_flag(acc, flags.get(acc.user_id))
+                            # A report is only as current as the oldest response
+                            # behind it: the flag lookup is the half that says
+                            # whether someone is flagged, so a fresh membership
+                            # record paired with a day-old flag status is a
+                            # day-old finding, and has to be dated as one.
+                            report.fetched_at = min(
+                                report.fetched_at,
+                                self._fetched_at(self._roblox_cache, acc.user_id),
+                            )
 
                 await publish(batch_reports, len(chunk), "Checking members")
 

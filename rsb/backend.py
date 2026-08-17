@@ -37,6 +37,22 @@ def backend_label(name: str) -> str:
     return LABELS.get(name, name or "?")
 
 
+def effective_cache_ttl(config: Config, configured: int) -> int:
+    """The cache lifetime a client should be built with, in seconds.
+
+    While ``scan.retain_beyond_terms`` is off this is exactly the configured
+    ``cache_ttl``, which the client then clamps under the 24-hour ceiling
+    Rotector's Terms of Use set. With it on, the operator has said how long
+    findings should be kept in ``scan.retention_hours``, and that is the number
+    that decides -- a one-hour cache would otherwise throw the data away long
+    before the window they asked for was up, which is not what switching the
+    setting on was for.
+    """
+    if not config.scan.retain_beyond_terms:
+        return configured
+    return max(0, int(config.scan.retention_hours)) * 3600
+
+
 def build_backend(config: Config, proxies: list[str] | None = None):
     """The client for ``config.scan.backend``.
 
@@ -59,7 +75,8 @@ def build_backend(config: Config, proxies: list[str] | None = None):
                 window=config.okappiki.window,
                 reserve=config.okappiki.reserve,
             ),
-            cache_ttl=config.okappiki.cache_ttl,
+            cache_ttl=effective_cache_ttl(config, config.okappiki.cache_ttl),
+            retain_beyond_terms=config.scan.retain_beyond_terms,
             concurrency=config.okappiki.concurrency,
             proxies=proxies,
             direct_as_fallback=config.proxy.direct_as_fallback,
@@ -72,7 +89,8 @@ def build_backend(config: Config, proxies: list[str] | None = None):
             window=config.rotector.window,
             reserve=config.rotector.reserve,
         ),
-        cache_ttl=config.rotector.cache_ttl,
+        cache_ttl=effective_cache_ttl(config, config.rotector.cache_ttl),
+        retain_beyond_terms=config.scan.retain_beyond_terms,
         concurrency=config.rotector.concurrency,
         proxies=proxies,
         direct_as_fallback=config.proxy.direct_as_fallback,

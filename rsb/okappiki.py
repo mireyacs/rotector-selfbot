@@ -37,6 +37,12 @@ Verdict tiering follows :mod:`rsb.verdict`'s existing rules. Only Rotector
 publishes flag types with documented actionability, so only Rotector's flags
 reach THREAT; an Okappiki or mococo sighting alone is CAUTION, which is the
 verdict that already means "a person should look at this before acting".
+
+That is the right grade for the *evidence* and the wrong answer on its own for a
+moderator, because it puts every unverified sighting in one undivided pile.
+:mod:`rsb.triage` sits on top of these signals and answers the other question --
+cautious, or ban? -- from all three at once, so that the member two databases
+independently agree on stops reading the same as the member one crawler saw once.
 """
 
 from __future__ import annotations
@@ -58,8 +64,15 @@ ACTION = "vencord_full_check"
 USER_AGENT = "rotector-selfbot/1.0 (+https://github.com/mireyacs/rotector-selfbot)"
 
 #: Rotector's Terms of Use cap retention at 24h and an Okappiki response embeds
-#: a Rotector verdict, so the same ceiling is applied to this cache.
+#: a Rotector verdict, so the same ceiling applies to this cache by default --
+#: lifted only when the operator sets ``scan.retain_beyond_terms``, and even
+#: then anything answered from beyond the window is reported as stale rather
+#: than passed off as current. See :func:`rsb.rotector.stale_note`.
 MAX_CACHE_TTL = 23 * 3600
+#: the ceiling that applies when the operator has switched `retain_beyond_terms`
+#: on. Not unbounded: an unbounded cache is a memory leak as well as a licensing
+#: problem, and a year-old flag status is not evidence about anybody.
+MAX_RETAINED_TTL = 365 * 24 * 3600
 
 #: the sources a response can carry, in the order they are shown
 SOURCES = ("rotector", "okappiki", "mococo")
@@ -72,6 +85,13 @@ MIN_SNOWFLAKE_DIGITS = 17
 #: seconds of quiet before a partial batch is sent anyway; kept for interface
 #: parity with the Rotector client, which buffers ids into batches of 100
 IDLE_FLUSH = 2.0
+
+#: How long one full check takes, measured 2026-08-16 over 351 requests: p50
+#: 0.72-0.88s and p95 0.87-1.29s across concurrency 1 to 6, flat enough that a
+#: single constant is honest. Used to bound the ETA, because the rate limiter is
+#: deliberately set above what the client can produce and would otherwise
+#: promise a scan that never arrives.
+MEAN_LATENCY = 0.8
 
 
 class OkappikiError(RuntimeError):
@@ -149,14 +169,23 @@ def parse_signals(body: dict) -> list[Signal]:
     return signals
 
 
-def parse_report(discord_id: str, body: dict) -> MemberReport:
+def parse_report(
+    discord_id: str, body: dict, fetched_at: float | None = None
+) -> MemberReport:
     """Build a report from one response body.
 
     Any source naming a Roblox account also produces a :class:`RobloxAccount`,
     so the results table and the export columns -- both written against
     Rotector's shape -- have the same thing to show they always had.
+
+    ``fetched_at`` is when the body arrived, which is only the same as now for
+    a body that was just fetched: replaying a cached one has to keep the
+    original time, or a finding kept past the 24-hour window would present
+    itself as current every time it was read back out.
     """
     report = MemberReport(discord_id=discord_id)
+    if fetched_at is not None:
+        report.fetched_at = fetched_at
     report.signals = parse_signals(body)
 
     for signal in report.signals:
@@ -192,6 +221,7 @@ class OkappikiClient:
         self,
         limiter: RateLimiter | None = None,
         cache_ttl: int = 3600,
+        retain_beyond_terms: bool = False,
         concurrency: int = 2,
         max_retries: int = 4,
         timeout: float = 30.0,
@@ -201,7 +231,7 @@ class OkappikiClient:
         scan_concurrency: int | None = None,
     ) -> None:
         self.limiter = limiter or RateLimiter(limit=5, window=1.0, reserve=0)
-        self.cache_ttl = min(max(0, cache_ttl), MAX_CACHE_TTL)
+        self.set_retention(cache_ttl, retain_beyond_terms)
         self.max_retries = max_retries
 
         headers = {"user-agent": USER_AGENT, "accept": "application/json"}
@@ -221,12 +251,32 @@ class OkappikiClient:
 
         routes = len(self.pool.routes)
         self.scan_concurrency = scan_concurrency or max(concurrency, routes * 2)
-        self._sem = asyncio.Semaphore(max(self.scan_concurrency, concurrency))
+        #: how many requests may be in flight at once. Held separately from the
+        #: semaphore because a semaphore's counter drains as work starts, and an
+        #: ETA computed from it would wander for the length of the scan.
+        self.max_inflight = max(self.scan_concurrency, concurrency)
+        self._sem = asyncio.Semaphore(self.max_inflight)
         self._cache: dict[str, tuple[float, dict]] = {}
 
     async def aclose(self) -> None:
         await self.pool.aclose()
         await self._http.aclose()
+
+    def set_retention(self, cache_ttl: int, retain_beyond_terms: bool) -> None:
+        """Set how long answers may be held, and clamp it to what is allowed.
+
+        Mirrors :meth:`rsb.rotector.RotectorClient.set_retention`, for the same
+        reason the ceiling is the same one: an Okappiki response embeds a
+        Rotector verdict, so Rotector's Terms of Use #1 apply to it too.
+        Turning retention back off drops whatever is still cached rather than
+        leaving it in memory until something asks for it.
+        """
+        ceiling = MAX_RETAINED_TTL if retain_beyond_terms else MAX_CACHE_TTL
+        was_retaining = getattr(self, "retain_beyond_terms", False)
+        self.cache_ttl = min(max(0, cache_ttl), ceiling)
+        self.retain_beyond_terms = bool(retain_beyond_terms)
+        if was_retaining and not self.retain_beyond_terms:
+            self.purge_cache()
 
     async def __aenter__(self) -> "OkappikiClient":
         return self
@@ -243,15 +293,35 @@ class OkappikiClient:
         Deliberately not routed through :func:`rsb.eta.estimate_scan_seconds`,
         which models Rotector's batching and its second pass and would predict
         a scan roughly a hundred times faster than this backend can manage.
+
+        Bounded by *two* ceilings, not one. The rate limiter is the obvious one,
+        but it is deliberately configured above what this client can actually
+        produce -- see :class:`~rsb.config.OkappikiConfig` -- so on its own it
+        would promise a scan that never arrives. The real constraint is how many
+        requests can be in flight at once divided by how long one takes, and
+        measurement says one takes about :data:`MEAN_LATENCY`. Whichever ceiling
+        is lower is the one the scan will actually hit.
         """
-        capacity = self.capacity_units_per_sec()
-        if members <= 0 or capacity <= 0:
+        if members <= 0:
+            return None
+        rate_bound = self.capacity_units_per_sec()
+        inflight_bound = self.max_inflight / MEAN_LATENCY if MEAN_LATENCY > 0 else 0.0
+        capacity = min(b for b in (rate_bound, inflight_bound) if b > 0) if (
+            rate_bound > 0 or inflight_bound > 0
+        ) else 0.0
+        if capacity <= 0:
             return None
         return members / capacity
 
     # -- caching -----------------------------------------------------------
 
-    def _cache_get(self, key: str) -> dict | None:
+    def _cache_get(self, key: str) -> tuple[float, dict] | None:
+        """The cached body *and* when it arrived, or ``None``.
+
+        Both, because the caller has to date the report it builds: a body kept
+        past the 24-hour window is still an answer, but it is an answer about
+        the day it was given.
+        """
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -259,7 +329,7 @@ class OkappikiClient:
         if time.time() - stored_at > self.cache_ttl:
             self._cache.pop(key, None)
             return None
-        return value
+        return stored_at, value
 
     def purge_cache(self) -> None:
         self._cache.clear()
@@ -356,7 +426,8 @@ class OkappikiClient:
 
         cached = self._cache_get(canonical)
         if cached is not None:
-            return parse_report(str(discord_id), cached)
+            stored_at, body = cached
+            return parse_report(str(discord_id), body, fetched_at=stored_at)
 
         try:
             body = await self._get(canonical)

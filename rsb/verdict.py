@@ -131,6 +131,25 @@ def verdict_for_flag(flag_type: int | None) -> Verdict:
     return _FLAG_TO_VERDICT.get(flag_type, Verdict.INFO)
 
 
+def flag_is_suspect(flag_type: int | None) -> bool:
+    """Whether Rotector is asserting *something* about this flag type.
+
+    Types 1, 2, 4 and 5 -- the ones that reach CAUTION or THREAT above. The
+    distinction :mod:`rsb.triage` needs is not "actionable or not" but "an
+    accusation or not": Rotector describes type 3 as *not an inappropriate
+    user* and type 6 as having *since cleared*, so those are not weak
+    accusations, they are not accusations, and no amount of corroboration from
+    elsewhere may promote them.
+
+    Derived from ``_FLAG_TO_VERDICT`` rather than listed again, so a change to
+    the tiering cannot leave a second table behind disagreeing with it. An
+    unrecognised type falls to INFO and is therefore not suspect: a type added
+    after this was written could as easily mean "cleared" as "confirmed", and
+    guessing would be inventing a claim Rotector has not made.
+    """
+    return verdict_for_flag(flag_type) >= Verdict.CAUTION
+
+
 def verdict_label(verdict: Verdict) -> str:
     return VERDICT_META[verdict][0]
 

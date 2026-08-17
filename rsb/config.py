@@ -74,6 +74,7 @@ class RotectorConfig:
     #: request units held back as headroom against clock skew / shared IPs
     reserve: int = 5
     #: in-memory cache lifetime; clamped below the 24h Terms of Use ceiling
+    #: unless `retain_beyond_terms` is switched on
     cache_ttl: int = 3600
     concurrency: int = 3
 
@@ -83,20 +84,45 @@ class OkappikiConfig:
     """The Okappiki backend, which is an alternative to Rotector, not an addition.
 
     Nothing here is documented upstream. The endpoint publishes no rate-limit
-    headers and takes one Discord id per request -- there is no batch form --
-    so a ten-thousand-member server is ten thousand requests, and the defaults
-    below are deliberately slow. Raise them only if you learn what the real
-    ceiling is.
+    headers, no ``Retry-After``, and no limit in its terms, and it takes one
+    Discord id per request -- there is no batch form -- so a ten-thousand-member
+    server is ten thousand requests.
+
+    **Measured 2026-08-16**, because the numbers here used to be guesses. 351
+    requests, ramped 1/2/3/4/5/6 concurrent and then held at the knee for 45
+    seconds, every one a clean 200:
+
+        concurrency   1     2     3     4     5     6
+        req/s        1.4   2.5   3.8   5.3   5.5   5.0
+        p95 latency  1.0s  1.1s  1.1s  0.9s  1.3s  1.6s
+
+    Throughput plateaus at 4-5 concurrent and *falls* at 6 while latency keeps
+    climbing, which is the backend saturating. Sustained at 5 it held 5.7 req/s
+    for 45s with no drift, no throttling and no errors -- the last third was
+    marginally faster than the first, so nothing was draining.
+
+    The defaults below sit at 4 rather than the measured peak of 5: it is within
+    4% of peak throughput at the best latency of any level, and a scan that runs
+    for half an hour should not sit exactly on someone else's knee the whole
+    time. ``rate_limit`` is set just above what that concurrency can actually
+    produce, so it stays a backstop rather than the binding constraint -- which
+    is what it was before, at 5/s against a client that could only manage 2.4.
+
+    **Do not raise these by adding proxies.** Every request here costs Okappiki
+    a live Rotector lookup out of *their* budget, and spreading the load over
+    more IPs to go faster is the rate-limit circumvention Rotector's terms
+    prohibit -- one hop further down the chain does not make it something else.
     """
 
-    #: requests per window. 5/second by default: conservative for a service
-    #: with no published limits sitting behind Cloudflare.
-    rate_limit: int = 5
+    #: requests per window, per route. Above what concurrency 4 can produce, so
+    #: it acts as a backstop rather than the thing actually setting the pace.
+    rate_limit: int = 6
     window: float = 1.0
     reserve: int = 0
     #: in-memory cache lifetime, matching the Rotector side
     cache_ttl: int = 3600
-    concurrency: int = 2
+    #: the measured knee, minus the last 4% for headroom. See the class docstring.
+    concurrency: int = 4
 
 
 @dataclass
@@ -202,6 +228,22 @@ class ScanConfig:
     skip_bots: bool = True
     #: cap members pulled per guild; 0 means no cap
     max_members: int = 0
+    #: Keep looked-up findings past the 24-hour window Rotector's Terms of Use
+    #: allow, instead of letting the caches expire them.
+    #:
+    #: Off, and it should stay off unless you have decided otherwise on purpose.
+    #: Rotector's Terms of Use #1 forbid retaining their responses longer than
+    #: 24 hours, so switching this on is a choice to hold their data outside the
+    #: terms you agreed to. It is also a fairness question rather than only a
+    #: licensing one: flag types change, appeals succeed, and an account that
+    #: cleared its violations yesterday still reads as flagged in a cache that
+    #: never expires. Anything served from beyond the window is labelled stale
+    #: wherever it is shown, and that labelling is not optional.
+    retain_beyond_terms: bool = False
+    #: How long to keep findings when `retain_beyond_terms` is on, in hours.
+    #: Ignored while it is off, when the 23-hour ceiling applies instead.
+    retention_hours: int = 168
+
     #: hide members Rotector has not flagged -- almost everyone, in practice
     hide_no_detections: bool = True
     #: hide members with no Rotector-known Roblox link -- the larger group still
@@ -253,6 +295,18 @@ class ModerationConfig:
     #: Rotector asks that Provisional/Mixed be reviewed by a person, so the UI
     #: requires a second, separate confirmation every time.
     allow_caution: bool = True
+    #: triage rule R3: let Detective Okappiki and mococo, agreeing with each
+    #: other and with no Rotector flag, support a ban on their own. Off by
+    #: default because neither service publishes a claim that its sighting is
+    #: safe to act on -- switching it on is a policy call, not something either
+    #: service asked for. Okappiki backend only; Rotector alone cannot trigger it.
+    ban_on_corroborated_sighting: bool = False
+    #: R3's floor on mococo's score. TASE defines that number as how much a
+    #: member interacted with the detected servers, not how severe they are, and
+    #: publishes no scale for it, so there is no correct value. 40 is what the
+    #: sample records this was built against carried, not a threshold TASE
+    #: endorses.
+    min_mococo_score: int = 40
     #: try to DM someone before kicking or banning them. Sent first because a
     #: banned account shares no server with you and can no longer be reached.
     #: **Bot tokens only.** A bot messaging members is ordinary; a user
@@ -428,6 +482,7 @@ class Config:
 
         scan = data.get("scan") or {}
         for key in ("backend", "max_concurrent_jobs", "skip_bots", "max_members",
+                    "retain_beyond_terms", "retention_hours",
                     "hide_no_detections",
                     "hide_unknown", "on_rescan"):
             if key in scan and scan[key] is not None:
@@ -479,15 +534,11 @@ class Config:
     def save_export_settings(self) -> Path:
         """Persist the [export] section, leaving the rest of the file intact."""
         path = self.config_path()
-        body = {
-            "formats": self.export.formats,
-            "scope": self.export.scope,
-            "segment_size": self.export.segment_size,
-            "columns": self.export.columns,
-            "directory": self.export.directory,
-            "preserve": self.export.preserve,
-            "png_style": self.export.png_style,
-        }
+        # Same rule as [scan]: the section is replaced wholesale, so this has to
+        # be every field or the omitted ones are deleted. The hand-written list
+        # this replaces had already lost `follow_theme`.
+        body = {f.name: getattr(self.export, f.name)
+                for f in dataclasses.fields(self.export)}
         write_section(path, "export", body)
         self.source = path
         return path
@@ -532,18 +583,24 @@ class Config:
         return path
 
     def save_scan_settings(self) -> Path:
-        """Persist the [scan] section."""
+        """Persist the [scan] section.
+
+        Every field, read off the dataclass, the way ``save_appeal_settings``
+        already does it -- and not a hand-written subset, which is what this was.
+        ``write_section`` *replaces* the section it is given, so a key missing
+        from the dict here is a key deleted from the file: saving any scan
+        setting from the settings screen silently discarded ``backend`` and
+        ``max_concurrent_jobs``, which meant an operator who had chosen Okappiki
+        was quietly moved back to Rotector the next time they touched an
+        unrelated toggle. Driving it off ``dataclasses.fields`` means a setting
+        added to ``ScanConfig`` cannot be forgotten here again.
+        """
         path = self.config_path()
         write_section(
             path,
             "scan",
-            {
-                "skip_bots": self.scan.skip_bots,
-                "max_members": self.scan.max_members,
-                "hide_no_detections": self.scan.hide_no_detections,
-                "hide_unknown": self.scan.hide_unknown,
-                "on_rescan": self.scan.on_rescan,
-            },
+            {f.name: getattr(self.scan, f.name)
+             for f in dataclasses.fields(self.scan)},
         )
         self.source = path
         return path
@@ -602,6 +659,17 @@ class Config:
             problems.append(
                 "scan.max_concurrent_jobs must be between 1 and 8 "
                 f"(got {self.scan.max_concurrent_jobs})"
+            )
+        # Only checked when the ceiling has actually been lifted: while
+        # retain_beyond_terms is off the value is ignored entirely, and refusing
+        # to start over a number nothing reads would be nonsense. A year is the
+        # same ceiling the clients clamp to -- past that it is a memory leak,
+        # and a year-old flag status is not evidence about anybody.
+        if self.scan.retain_beyond_terms and not 1 <= self.scan.retention_hours <= 8760:
+            problems.append(
+                "scan.retention_hours must be between 1 and 8760 (one year) "
+                f"when scan.retain_beyond_terms is on (got "
+                f"{self.scan.retention_hours})"
             )
         if not 0 <= self.vibe.volume <= 100:
             problems.append(

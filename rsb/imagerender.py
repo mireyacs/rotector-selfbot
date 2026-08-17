@@ -18,8 +18,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .export import COLUMNS, ExportRow, valid_columns
+from .export import COLUMNS, ExportRow, RETENTION_HOURS, count_stale, valid_columns
 from .palette import DEFAULT as DEFAULT_PALETTE, ExportPalette
+from .rotector import is_stale, report_age, short_age, stale_note
 from .verdict import ATTRIBUTION, Verdict, category_name, flag_name, verdict_label
 
 try:  # optional
@@ -194,6 +195,8 @@ def render_png(
     style: str = "table",
     profiles: dict | None = None,
     palette: ExportPalette | None = None,
+    retain_beyond_terms: bool = False,
+    retention_hours: int = RETENTION_HOURS,
 ) -> list[Path]:
     """Draw ``rows`` as images.
 
@@ -216,6 +219,34 @@ def render_png(
 
     extra = cards if style == "both" else []
     columns = valid_columns(columns)
+
+    # A screenshot travels further than the folder it came out of, so the strip
+    # under the table has to say what is true of this image rather than repeat
+    # the 24-hour rule over data the run was told to keep longer.
+    retention_strip = (
+        f"kept {retention_hours}h by choice; Rotector's terms allow "
+        f"{RETENTION_HOURS}h"
+        if retain_beyond_terms
+        else f"delete within {RETENTION_HOURS}h"
+    )
+    stale_rows = count_stale(rows)
+    stale_strip = (
+        f"{stale_rows} finding(s) here are older than {RETENTION_HOURS}h and "
+        "describe the day they were answered - re-check before acting"
+        if stale_rows
+        else ""
+    )
+    # The Stale column is on by default and can be deselected; when it is, the
+    # age rides with the verdict rather than disappearing off the image.
+    mark_verdict = "stale" not in columns
+
+    def cell_value(row: ExportRow, column: str) -> str:
+        """What actually gets drawn in one cell, measured and rendered alike."""
+        value = COLUMNS[column](row)
+        if column == "verdict" and mark_verdict and is_stale(row.report):
+            value += f"  stale {short_age(report_age(row.report))}"
+        return value
+
     font = _load_font(font_size)
     bold = _load_font(font_size, bold=True)
     theme = Theme.from_palette(palette)
@@ -230,13 +261,13 @@ def render_png(
     for column in columns:
         longest = len(column)
         for row in rows:
-            longest = max(longest, len(" ".join(COLUMNS[column](row).split())))
+            longest = max(longest, len(" ".join(cell_value(row, column).split())))
         widths.append(min(max(longest, len(column)), max_column_chars))
 
     table_chars = sum(widths) + 3 * (len(columns) - 1)
     image_w = int(pad * 2 + table_chars * cell_w) + 2
     header_h = pad + line_h * (3 if subtitle else 2)
-    footer_h = line_h + pad
+    footer_h = line_h * (2 if stale_strip else 1) + pad
 
     chunks = (
         [list(rows)]
@@ -290,7 +321,7 @@ def render_png(
 
             x = pad
             for column, width in zip(columns, widths):
-                value = _fit(COLUMNS[column](row), width)
+                value = _fit(cell_value(row, column), width)
                 colour = accent if column == "verdict" else theme.text
                 draw.text((x, y), value, font=font, fill=colour)
                 x += (width + 3) * cell_w
@@ -301,10 +332,16 @@ def render_png(
         y += 6
         draw.text(
             (pad, y),
-            f"{len(rows):,} members  -  {ATTRIBUTION}  -  delete within 24h",
+            f"{len(rows):,} members  -  {ATTRIBUTION}  -  {retention_strip}",
             font=font,
             fill=theme.muted,
         )
+        if stale_strip:
+            y += line_h
+            draw.text(
+                (pad, y), stale_strip, font=font,
+                fill=verdict_colours(palette).get(Verdict.CAUTION, theme.text),
+            )
 
         name = (
             f"{stem}.png"
@@ -473,9 +510,18 @@ def render_card(
             ),
         ))
 
+    # A card is the piece that gets pasted into a ticket on its own, so if the
+    # finding is older than the window the terms allow, the card has to carry
+    # that with it rather than leave it behind in the folder's README.
+    stale_lines = (
+        _wrap(stale_note(row.report), small_font, CARD_W - CARD_PAD * 2, 2)
+        if is_stale(row.report)
+        else []
+    )
+
     line_h = 19
     body_h = sum(24 + line_h * len(lines) for _title, lines in blocks)
-    header_h = BANNER_H + AVATAR_D // 2 + 60
+    header_h = BANNER_H + AVATAR_D // 2 + 60 + 17 * len(stale_lines)
     # room for the footer strip plus breathing space, so the last block
     # does not run into it
     height = header_h + body_h + 60
@@ -550,7 +596,15 @@ def render_card(
     draw.text((CARD_PAD, y), handle, font=tag_font, fill=theme.muted)
     y += 20
     draw.text((CARD_PAD, y), f"ID {row.discord_id}", font=small_font, fill=theme.muted)
-    y += 24
+    y += 20 if stale_lines else 24
+    for line in stale_lines:
+        draw.text(
+            (CARD_PAD, y), line, font=small_font,
+            fill=verdict_colours(palette).get(Verdict.CAUTION, theme.text),
+        )
+        y += 17
+    if stale_lines:
+        y += 4
 
     # --- findings
     for label, lines in blocks:
