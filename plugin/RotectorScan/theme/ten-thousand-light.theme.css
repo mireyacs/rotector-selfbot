@@ -1,0 +1,1003 @@
+/**
+ * @name Ten Thousand Light
+ * @author azula
+ * @description The Field of Ten Thousand, inverted. Pure black ink on pure white ground, #c4c4c4 hairlines, square everything, one monospace family. The whole frame flips — there is no half-inverted state in this system — and colour still survives only where it is evidence or identity.
+ * @version 1.0.0
+ * @license GPL-3.0-or-later
+ * @source https://github.com/mireyacs/rotector-selfbot
+ * @website https://mireyacs.github.io/rotector-selfbot/
+ */
+
+/*
+ * ten-thousand-light.theme.css — the inverted frame.
+ *
+ * THE PAGE IS THE SOURCE AND THIS IS A COPY. See the long note at the top of
+ * ten-thousand.theme.css; everything it says applies here unchanged.
+ *
+ * THE ONE RULE THIS FILE EXISTS TO GET RIGHT
+ *
+ * DESIGN.md, Inverted Context: "borders become Invert Rule (#c4c4c4), ornament
+ * numerals become Invert Texture (#b4b4b4), section labels become Invert Label
+ * (#555555), and code comments become Invert Comment (#6a6a6a). Selection colours
+ * invert too. Nothing is left at a dark-mode value inside a light frame."
+ *
+ * A half-inverted frame — white ground with #2a2a2a rules still in it, or a
+ * #9a9a9a label that was legible against black and is not against white — is the
+ * specific failure this file is written to avoid. Every supporting tone below is
+ * the swapped one, not the dark one. There is no in-between surface: this system
+ * has two frames and no tint between them.
+ *
+ * This is a separate installable theme rather than a `.theme-light` branch inside
+ * the dark file, for the same reason the page has two frames rather than a
+ * preference: a frame is a whole decision, and half of one is the failure mode.
+ * Install this one OR the dark one, never both.
+ *
+ * TWO CONSEQUENCES OF THAT RULE, BOTH OF WHICH THIS FILE GOT WRONG ONCE
+ *
+ * 1. There is no raised surface in the inverted frame. DESIGN.md enumerates four
+ *    inverted tones and every one of them is a line, a numeral or a label; the
+ *    overview says outright that there is no half-measure surface between the two
+ *    states. So this file invents no light grey to hover with. Hover and
+ *    selection are drawn as a hairline, the way style.css's own invert block
+ *    already drew them. See the token block's note on --rsb-near/--rsb-hover.
+ *
+ *    This file got there first and the dark one has since followed:
+ *    ten-thousand.theme.css no longer has a raised step either, so the two frames
+ *    are each two values and the inset-outline device below is now the client's
+ *    hover in both of them rather than this file's local workaround.
+ *
+ * 2. A subtree that asks to be inverted has to end up dark. `plugin/RotectorScan`
+ *    has one — PurgeModal's `.rsb--invert` warning — and inversion is the only
+ *    emphasis device this system owns, since it has no accent hue. Flipping the
+ *    plugin's tokens to the light frame and stopping there made that warning
+ *    invert to exactly what surrounded it. The counter-inversion at the very
+ *    bottom of this file is not a refinement; without it the file silently
+ *    deletes the loudest thing the plugin can say.
+ *
+ * `plugin/RotectorScan/style.css` is the other copy of the --rsb-* token block.
+ * Unlike the dark file, this one has real work to do there: the plugin's default
+ * frame is the dark one, so the block near the bottom flips the plugin's tokens
+ * with the client around it, and the counter-inversion after it flips them back
+ * for the subtrees that opted out. That is what keeps a RotectorScan panel from
+ * being a black rectangle punched into a white client, and its one warning from
+ * being a white rectangle lost inside a white panel.
+ */
+
+/* -------------------------------------------------------------------------
+   the token block — the copy shared with plugin/RotectorScan/style.css
+   ------------------------------------------------------------------------- */
+
+:root {
+    /* --- the two absolutes, swapped --- */
+    --rsb-ink: #000000;
+    --rsb-ground: #ffffff;
+
+    /*
+     * The four inverted tones, under the names style.css already gives them —
+     * `--rsb-invert-*` means the same four colours in all three files, and this
+     * is simply the frame they were named for. DESIGN.md, Inverted Context.
+     */
+    --rsb-invert-rule: #c4c4c4;
+    --rsb-invert-texture: #b4b4b4;
+    --rsb-invert-label: #555555;
+    --rsb-invert-comment: #6a6a6a;
+
+    /* --- every supporting tone, read from those four rather than restated as
+       a second copy of the same hex --- */
+    --rsb-rule: var(--rsb-invert-rule);
+    --rsb-comment: var(--rsb-invert-comment);
+
+    /*
+     * The two ornament tones collapse onto Invert Texture, because the inverted
+     * frame names one ornament tone and not two (DESIGN.md:227-231). Like their
+     * counterparts in the dark file they are declared here and spent nowhere:
+     * the Pure Ink Rule allows them only on aria-hidden, unselectable numeral
+     * columns, and this file styles a Discord client, which has none. They exist
+     * so the --rsb-* block stays a complete copy of the one in
+     * plugin/RotectorScan/style.css, where the plugin's own chip and ornament
+     * columns do read them.
+     */
+    --rsb-texture-1: var(--rsb-invert-texture);
+    --rsb-texture-2: var(--rsb-invert-texture);
+
+    /*
+     * The quiet stroke, mirrored. style.css's own invert block reads it from
+     * Invert Comment rather than Invert Label, and that is the decision this
+     * file copies: the quiet stroke is the *lighter* of the two greys against
+     * its own ground, so a secondary control outlines without reading as a
+     * second, heavier rule. Invert Label goes where DESIGN.md puts it — on
+     * labels — which here means the client's muted chrome text.
+     */
+    --rsb-quiet: var(--rsb-invert-comment);
+
+    /*
+     * THERE IS NO RAISED STEP IN THIS FRAME, AND THAT IS NOT AN OVERSIGHT.
+     *
+     * DESIGN.md's Inverted Context (227-231) enumerates the inverted supporting
+     * tones exhaustively — #c4c4c4 rules, #b4b4b4 ornament, #555555 labels,
+     * #6a6a6a comments — and the overview states outright that "there is no
+     * half-measure surface between the two states". #101010 and #161616 were
+     * once sanctioned in the dark frame because rsb/tui/theme.py measured them
+     * there; nothing measured them here, and mirroring them by luminance produces
+     * exactly the "slightly lighter panel" the No Grey Fill Rule (240-243)
+     * refuses. (They are not sanctioned there any more either. The TUI needs a
+     * tone step because a terminal cannot draw a hairline between two panes; CSS
+     * can, so ten-thousand.theme.css has dropped both and reached the same two
+     * values this file already had.) An earlier revision of this file invented
+     * #efefef and #e9e9e9 for the job and then spent them as fills across the
+     * whole client, which is a
+     * grey surface wherever Discord asked for one — the ban, restated as two
+     * tokens.
+     *
+     * So the raised step is the ground, hover paints nothing, and the feedback
+     * moves onto a hairline. That is not a compromise: it is the device
+     * style.css's own `.rsb--invert` block already chose for the same reason,
+     * and the client-side half of it is the inset-outline block near the bottom
+     * of this file. An outline draws inside the box Discord already measured, so
+     * a row that gains an edge under the pointer does not move the rows below it.
+     */
+    --rsb-near: var(--rsb-ground);
+    --rsb-hover: transparent;
+
+    /* --- evidence. Unswapped, and that is the point: a verdict hex is the same
+       fact in either frame. rsb/palette.py's web set, matching style.css. --- */
+    --rsb-threat: #f43f5e;
+    --rsb-caution: #facc15;
+    --rsb-info: #38bdf8;
+    --rsb-no-detections: #4ade80;
+    --rsb-unknown: #8a929c;
+
+    /* --- one family. See the dark file: no webfont is fetched from a theme,
+       so the stack is the honest answer and picks up a locally installed
+       Azeret Mono when there is one. --- */
+    --rsb-font: "Azeret Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* --- the type ramp, exact, from DESIGN.md's front matter --- */
+    --rsb-title-size: 1.02rem;
+    --rsb-title-weight: 800;
+    --rsb-title-track: -0.03em;
+    --rsb-body-size: 15px;
+    --rsb-body-track: -0.01em;
+    --rsb-data-size: 0.82rem;
+    --rsb-label-size: 0.68rem;
+    --rsb-label-weight: 500;
+    --rsb-label-track: 0.19em;
+    --rsb-action-size: 0.78rem;
+    --rsb-action-weight: 700;
+    --rsb-action-track: 0.13em;
+    --rsb-micro-size: 0.62rem;
+    --rsb-micro-track: 0.17em;
+
+    /* --- spacing --- */
+    --rsb-hairline: 1px;
+    --rsb-xs: 0.4rem;
+    --rsb-sm: 0.7rem;
+    --rsb-md: 0.9rem;
+    --rsb-lg: 1.5rem;
+    --rsb-xl: 1.75rem;
+    --rsb-measure: 68ch;
+
+    /* the frame is light, and the browser draws its own furniture to match */
+    color-scheme: light;
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — surfaces
+
+   Every surface is the ground, which here is white. Separation is a #c4c4c4
+   hairline, never a step in tone — and in this frame there is no step in tone
+   available, so it is a hairline everywhere without exception.
+
+   Every one of these is written as --rsb-ground rather than as --rsb-hover
+   where the token has to stay opaque. A transparent modal or popout would let
+   the app show through it; a transparent hover fill shows the ground, which is
+   what was already behind it.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --background-base-lowest: var(--rsb-ground);
+    --background-base-lower: var(--rsb-ground);
+    --background-base-lower-alt: var(--rsb-ground);
+    --background-base-low: var(--rsb-ground);
+    --background-surface-high: var(--rsb-ground);
+    --background-surface-higher: var(--rsb-ground);
+    --background-surface-highest: var(--rsb-ground);
+
+    --background-primary: var(--rsb-ground);
+    --background-secondary: var(--rsb-ground);
+    --background-secondary-alt: var(--rsb-ground);
+    --background-tertiary: var(--rsb-ground);
+    --background-floating: var(--rsb-ground);
+    --background-nested-floating: var(--rsb-ground);
+    --background-mobile-primary: var(--rsb-ground);
+    --background-mobile-secondary: var(--rsb-ground);
+
+    /*
+     * The modifier family: the translucent plates Discord paints over a surface
+     * to say "hovered", "selected", "a panel within a panel". There is no step
+     * in tone in this frame — nor, since the dark file gave up its two, in that
+     * one — so they paint nothing at all and the hairline block near the bottom
+     * of this file draws the state instead.
+     *
+     * Transparent is safe here for a reason particular to this theme: every
+     * background token above is already the ground, so the only thing showing
+     * through a transparent modifier is the white it was going to tint.
+     */
+    --background-mod-faint: var(--rsb-hover);
+    --background-mod-subtle: var(--rsb-hover);
+    --background-mod-normal: var(--rsb-hover);
+    --background-mod-strong: var(--rsb-hover);
+    --background-mod-heavy: var(--rsb-hover);
+    --background-mod-muted: var(--rsb-hover);
+
+    --background-modifier-hover: var(--rsb-hover);
+    --background-modifier-active: var(--rsb-hover);
+    --background-modifier-selected: var(--rsb-hover);
+    /* used as a divider far more than as a fill, so it takes the rule tone */
+    --background-modifier-accent: var(--rsb-rule);
+
+    --message-background-hover: var(--rsb-hover);
+    --user-profile-overlay-background: var(--rsb-ground);
+    --user-profile-background-hover: var(--rsb-hover);
+
+    /* a card is a frame in this system, not a surface: the ground, edged by
+       whatever border token the component already reads */
+    --modal-background: var(--rsb-ground);
+    --modal-footer-background: var(--rsb-ground);
+    --card-background-default: var(--rsb-ground);
+    --card-primary-bg: var(--rsb-ground);
+    --card-secondary-bg: var(--rsb-ground);
+    --activity-card-background: var(--rsb-ground);
+    --home-background: var(--rsb-ground);
+
+    /* the hue stays on the text and the icon; the tinted plate goes */
+    --background-feedback-critical: var(--rsb-ground);
+    --background-feedback-warning: var(--rsb-ground);
+    --background-feedback-positive: var(--rsb-ground);
+    --background-feedback-info: var(--rsb-ground);
+    --status-danger-background: var(--rsb-ground);
+    --status-warning-background: var(--rsb-ground);
+
+    --input-background: var(--rsb-ground);
+    --input-background-default: var(--rsb-ground);
+    --channeltextarea-background: var(--rsb-ground);
+    --deprecated-text-input-bg: var(--rsb-ground);
+    --deprecated-quickswitcher-input-background: var(--rsb-ground);
+    --deprecated-card-bg: var(--rsb-ground);
+    --deprecated-card-editable-bg: var(--rsb-ground);
+    --deprecated-store-bg: var(--rsb-ground);
+
+    /*
+     * A mention of you and a hidden spoiler are the two places where the fill
+     * is doing real work rather than reporting a pointer: one has to stand out
+     * of a paragraph, the other has to physically cover text somebody has not
+     * asked to see yet. Neither can be transparent and neither may be a grey,
+     * so both take this system's actual emphasis device — full inversion. They
+     * sat on #161616 in the dark frame, which was the weaker reading and is not
+     * available there any more either; inversion is now what both frames use,
+     * and a mention or a hidden spoiler is the same inverted block whichever way
+     * round the client is.
+     */
+    --mention-background: var(--rsb-ink);
+    --mention-foreground: var(--rsb-ground);
+    --spoiler-hidden-background: var(--rsb-ink);
+    --spoiler-revealed-background: transparent;
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — text
+
+   Two steps, mirrored: content at full ink, and the client's own chrome labels
+   at Invert Label #555555. Note that the muted step is #555555 and not the dark
+   frame's #9a9a9a — #9a9a9a on white is the exact half-inverted mistake this
+   file exists to avoid, and it fails contrast besides.
+
+   There is deliberately no third, fainter step. An earlier revision sent
+   --text-faint, --text-tertiary, --interactive-muted and --icon-muted to
+   --rsb-texture-1, which is Invert Texture #b4b4b4: 2.07:1 against white, and
+   DESIGN.md's Pure Ink Rule (245-249) permits the ornament tones only on
+   aria-hidden, unselectable numeral columns. Discord spends those four tokens
+   on timestamps, member counts, empty states and disabled control labels —
+   every one of them a line somebody reads — so they take Invert Label with
+   everything else muted. #555555 on #ffffff is 7.46:1, WCAG AAA for body text,
+   and exactly the ratio #9a9a9a gets against black in ten-thousand.theme.css:
+   the two frames dim their chrome by the same amount, which is what "the whole
+   frame flips" means when it is done properly.
+
+   Disabled state is not lost by collapsing the step. Discord already reports it
+   by dimming the control's opacity, setting `cursor: not-allowed` and writing
+   `aria-disabled` — three carriers, none of which is a tone, and none of which
+   asks a reader to distinguish #b4b4b4 from #555555 at 12px.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --text-default: var(--rsb-ink);
+    --text-strong: var(--rsb-ink);
+    --text-normal: var(--rsb-ink);
+    --text-primary: var(--rsb-ink);
+    --header-primary: var(--rsb-ink);
+    --icon-default: var(--rsb-ink);
+
+    --text-subtle: var(--rsb-invert-label);
+    --text-muted: var(--rsb-invert-label);
+    --text-secondary: var(--rsb-invert-label);
+    --header-secondary: var(--rsb-invert-label);
+    --channels-default: var(--rsb-invert-label);
+    --channel-icon: var(--rsb-invert-label);
+    --input-placeholder-text: var(--rsb-invert-label);
+    --icon-secondary: var(--rsb-invert-label);
+    --interactive-normal: var(--rsb-invert-label);
+    --interactive-text-default: var(--rsb-invert-label);
+    --interactive-icon-default: var(--rsb-invert-label);
+
+    --text-faint: var(--rsb-invert-label);
+    --text-tertiary: var(--rsb-invert-label);
+    --interactive-muted: var(--rsb-invert-label);
+    --icon-muted: var(--rsb-invert-label);
+
+    --interactive-hover: var(--rsb-ink);
+    --interactive-active: var(--rsb-ink);
+    --interactive-text-hover: var(--rsb-ink);
+    --interactive-text-active: var(--rsb-ink);
+    --interactive-icon-hover: var(--rsb-ink);
+    --interactive-icon-active: var(--rsb-ink);
+    --interactive-background-hover: var(--rsb-hover);
+    --interactive-background-active: var(--rsb-hover);
+
+    /* text on an ink fill — which in this frame means white on black */
+    --text-invert: var(--rsb-ground);
+
+    --text-link: var(--rsb-ink);
+    --text-link-low-saturation: var(--rsb-ink);
+    --link-decoration: underline;
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — rules, and the focus ring
+   ------------------------------------------------------------------------- */
+
+:root {
+    --border-faint: var(--rsb-rule);
+    --border-subtle: var(--rsb-rule);
+    --border-normal: var(--rsb-rule);
+    --border-muted: var(--rsb-rule);
+    /* the louder stroke, mirrored: darker than the rule against this ground,
+       where in the dark frame it was lighter than it */
+    --border-strong: var(--rsb-quiet);
+
+    --input-border: var(--rsb-rule);
+    --input-border-default: var(--rsb-rule);
+    --deprecated-text-input-border: var(--rsb-rule);
+    --user-profile-border: var(--rsb-rule);
+    --profile-body-divider-color: var(--rsb-rule);
+
+    /* the ring is ink, which flips with the frame and so needs no second rule */
+    --border-focus: var(--rsb-ink);
+    --focus-primary: var(--rsb-ink);
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — the blurple
+
+   Blurple is Discord's identity, not a fact about a person, so it becomes ink —
+   black here, white in the dark file. Its translucent variants are a fill, and
+   there is no fill in either frame, so they paint nothing.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --brand: var(--rsb-ink);
+    --brand-500: var(--rsb-ink);
+    --brand-700: var(--rsb-ink);
+    --brand-experiment: var(--rsb-ink);
+    --brand-experiment-560: var(--rsb-ink);
+    --brand-experiment-600: var(--rsb-ink);
+    --brand-experiment-10a: var(--rsb-hover);
+    --brand-experiment-15a: var(--rsb-hover);
+    --brand-experiment-30a: var(--rsb-hover);
+    --brand-15a: var(--rsb-hover);
+    --background-brand: var(--rsb-ink);
+    --background-accent: var(--rsb-ink);
+    --text-brand: var(--rsb-ink);
+    --control-brand-foreground: var(--rsb-ink);
+    --control-brand-foreground-new: var(--rsb-ink);
+    --logo-primary: var(--rsb-ink);
+    --badge-background-brand: var(--rsb-ink);
+    --badge-text-brand: var(--rsb-ground);
+    --badge-expressive-background-default: var(--rsb-ink);
+    --badge-expressive-text-default: var(--rsb-ground);
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — controls
+
+   Written entirely in --rsb-ink and --rsb-ground, so the pair is the same
+   object in both frames: a primary control is a solid ink face with ground
+   text, a secondary control is a hairline frame that inverts on hover.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --control-primary-background-default: var(--rsb-ink);
+    --control-primary-background-hover: var(--rsb-ground);
+    --control-primary-border-default: var(--rsb-ink);
+    --control-primary-border-hover: var(--rsb-ink);
+    --control-primary-text-default: var(--rsb-ground);
+    --control-primary-text-hover: var(--rsb-ink);
+
+    --control-secondary-background-default: transparent;
+    --control-secondary-background-hover: var(--rsb-ink);
+    --control-secondary-border-default: var(--rsb-quiet);
+    --control-secondary-border-hover: var(--rsb-ink);
+    --control-secondary-text-default: var(--rsb-ink);
+    --control-secondary-text-hover: var(--rsb-ground);
+
+    /*
+     * An icon-only control had two carriers while there was a fill — the icon
+     * promoting to ink and the #161616 plate behind it. The plate is gone, in
+     * both frames, so the border does its work: it promotes to ink rather than
+     * staying at the hairline rule, which would have been a #c4c4c4 outline
+     * announcing itself against white and reading as no change at all.
+     */
+    --control-icon-only-icon-default: var(--rsb-invert-label);
+    --control-icon-only-icon-hover: var(--rsb-ink);
+    --control-icon-only-background-hover: var(--rsb-hover);
+    --control-icon-only-background-active: var(--rsb-hover);
+    --control-icon-only-border-hover: var(--rsb-ink);
+    --control-icon-only-border-active: var(--rsb-ink);
+
+    --control-overlay-primary-background-default: var(--rsb-ground);
+    --control-overlay-primary-background-hover: var(--rsb-ink);
+    --control-overlay-primary-border-default: var(--rsb-quiet);
+    --control-overlay-primary-border-hover: var(--rsb-ink);
+    --control-overlay-primary-text-default: var(--rsb-ink);
+    --control-overlay-primary-text-hover: var(--rsb-ground);
+
+    --switch-background-default: transparent;
+    --switch-background-hover: var(--rsb-hover);
+    --switch-border-default: var(--rsb-quiet);
+    --switch-border-hover: var(--rsb-ink);
+    --switch-thumb-background-default: var(--rsb-quiet);
+    --switch-thumb-icon-default: var(--rsb-ground);
+    --switch-background-selected-default: var(--rsb-ink);
+    --switch-background-selected-hover: var(--rsb-ink);
+    --switch-border-selected-default: var(--rsb-ink);
+    --switch-border-selected-hover: var(--rsb-ink);
+    --switch-thumb-background-selected-default: var(--rsb-ground);
+    --switch-thumb-icon-active: var(--rsb-ink);
+}
+
+/* -------------------------------------------------------------------------
+   colour that is evidence, and is therefore left alone
+
+   Identical to the dark file, and for the identical reason. These are NOT
+   declared anywhere here:
+
+     --status-online / --status-danger / --status-warning / --status-positive
+     --text-status-online / -idle / -dnd / -offline
+     --icon-status-idle / -offline
+     --text-feedback-critical / -warning / -positive / -info
+     --icon-feedback-critical / -warning / -positive / -info
+     --text-danger / --text-positive
+     --control-critical-* (the destructive button family)
+     --green-* / --red-* / --yellow-* / --orange-*
+
+   Discord's status and feedback hues were picked to sit on a dark ground, so a
+   couple of them are a little brighter than ideal against white. Restating them
+   at hand-picked light-frame values was considered and refused: they would then
+   be this theme's opinion about a person's presence rather than the client's own
+   statement of it, and the moment Discord changes one the theme would be
+   asserting something the client no longer says. The frame inverts; the evidence
+   does not.
+
+   Role colours are inline styles Discord writes per user, and avatars, embeds,
+   attachments and custom emoji are somebody's own pixels. Nothing here touches
+   any of them.
+   ------------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — geometry, type and furniture
+   ------------------------------------------------------------------------- */
+
+:root {
+    --radius-xxs: 0;
+    --radius-xs: 0;
+    --radius-sm: 0;
+    --radius-md: 0;
+    --radius-lg: 0;
+    --radius-xl: 0;
+    --radius-round: 0;
+
+    --elevation-low: none;
+    --elevation-medium: none;
+    --elevation-high: none;
+    --elevation-stroke: none;
+    --shadow-low: none;
+    --shadow-medium: none;
+    --shadow-high: none;
+    --legacy-elevation-low: none;
+    --legacy-elevation-high: none;
+    --legacy-elevation-border: none;
+
+    --font-primary: var(--rsb-font);
+    --font-display: var(--rsb-font);
+    --font-headline: var(--rsb-font);
+    --font-code: var(--rsb-font);
+
+    --scrollbar-thin-thumb: var(--rsb-rule);
+    --scrollbar-thin-track: transparent;
+    --scrollbar-auto-thumb: var(--rsb-rule);
+    --scrollbar-auto-track: transparent;
+    --scrollbar-auto-scrollbar-color-thumb: var(--rsb-rule);
+    --scrollbar-auto-scrollbar-color-track: var(--rsb-ground);
+}
+
+/*
+ * Discord's raw neutral ramp, inverted end for end.
+ *
+ * The dark file maps it in place, because the ramp already runs light-to-dark
+ * and so does that frame. Here the frame runs the other way, so the ramp is read
+ * backwards: the steps Discord uses for text (the low numbers) still have to end
+ * up as text against a white ground, and the steps it uses for panels (the high
+ * numbers) still have to end up as the panel. Mapping it "in place" would have
+ * printed white text on a black panel inside a white client, which is the
+ * half-inverted failure in its purest form.
+ *
+ *   100-345  content and headings          -> ink (black)
+ *   360-430  muted labels and placeholders -> Invert Label
+ *   460-560  strokes, dividers, thumbs     -> Invert Rule
+ *   600-900  panels and chrome             -> the ground (white)
+ *
+ * The dark file used to split its 600-900 band across near-ground and ground,
+ * because it had a near-ground to split it with. Neither frame does now, so in
+ * both of them the whole band lands on the ground — which is the correct answer
+ * rather than a lossy one:
+ * every panel in this theme is the ground already, and a component reaching past
+ * the semantic tokens into --primary-630 gets the same white it would have got
+ * from --background-primary. The separation it wanted from a tone step is drawn
+ * by the hairline blocks below.
+ */
+:root {
+    --primary-100: var(--rsb-ink);
+    --primary-130: var(--rsb-ink);
+    --primary-200: var(--rsb-ink);
+    --primary-230: var(--rsb-ink);
+    --primary-300: var(--rsb-ink);
+    --primary-330: var(--rsb-ink);
+    --primary-345: var(--rsb-ink);
+
+    --primary-360: var(--rsb-invert-label);
+    --primary-400: var(--rsb-invert-label);
+    --primary-430: var(--rsb-invert-label);
+
+    --primary-460: var(--rsb-rule);
+    --primary-500: var(--rsb-rule);
+    --primary-530: var(--rsb-rule);
+    --primary-560: var(--rsb-rule);
+
+    --primary-600: var(--rsb-ground);
+    --primary-630: var(--rsb-ground);
+    --primary-645: var(--rsb-ground);
+    --primary-660: var(--rsb-ground);
+    --primary-700: var(--rsb-ground);
+    --primary-730: var(--rsb-ground);
+    --primary-800: var(--rsb-ground);
+    --primary-900: var(--rsb-ground);
+}
+
+/* -------------------------------------------------------------------------
+   the two hard resets — identical in both frames
+   ------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
+/* the circle and squircle live in an SVG mask, which no radius reset can
+   reach; dropping the mask squares the avatar and the guild icon */
+foreignObject[mask],
+[mask*="svg-mask-avatar"],
+[mask*="svg-mask-squircle"] {
+    -webkit-mask: none !important;
+    mask: none !important;
+}
+
+/* -------------------------------------------------------------------------
+   status: the hue is evidence, the shape is the carrier, the box is square
+
+   The same four clip-paths as the dark file. The stroke reads from --rsb-ground,
+   so the dot's hairline gap is white here and black there without a second rule.
+   ------------------------------------------------------------------------- */
+
+rect[mask*="svg-mask-status-online"]:not([mask*="mobile"]),
+rect[mask*="svg-mask-status-idle"],
+rect[mask*="svg-mask-status-dnd"],
+rect[mask*="svg-mask-status-offline"] {
+    -webkit-mask: none !important;
+    mask: none !important;
+    stroke: var(--rsb-ground);
+    stroke-width: 1.5;
+    paint-order: stroke;
+}
+
+rect[mask*="svg-mask-status-idle"] {
+    clip-path: polygon(45% 0, 100% 0, 100% 100%, 0 100%, 0 45%, 45% 45%);
+}
+
+rect[mask*="svg-mask-status-dnd"] {
+    clip-path: polygon(0 0, 100% 0, 100% 36%, 22% 36%, 22% 64%, 100% 64%, 100% 100%, 0 100%);
+}
+
+rect[mask*="svg-mask-status-offline"] {
+    clip-path: polygon(
+        0 0, 100% 0, 100% 100%, 55% 100%, 55% 70%, 70% 70%,
+        70% 30%, 30% 30%, 30% 70%, 45% 70%, 45% 100%, 0 100%
+    );
+}
+
+/* -------------------------------------------------------------------------
+   type
+   ------------------------------------------------------------------------- */
+
+body,
+button,
+input,
+select,
+textarea,
+[class*="markup_"],
+[class*="messageContent_"] {
+    font-family: var(--rsb-font) !important;
+    font-variant-ligatures: none;
+}
+
+/* -------------------------------------------------------------------------
+   selection, and the focus ring
+
+   Selection inverts with the frame: DESIGN.md's inverted context swaps the
+   selection colours too, so this is black-on-white text selecting to
+   white-on-black. Both sides read from the tokens, so there is one rule rather
+   than two hard-coded pairs.
+   ------------------------------------------------------------------------- */
+
+::selection {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+}
+
+:focus-visible {
+    outline: 2px solid var(--rsb-ink);
+    outline-offset: 2px;
+}
+
+::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+    border-radius: 0 !important;
+    border: 0 !important;
+}
+
+/* -------------------------------------------------------------------------
+   the blocks that reach for class names
+
+   See the dark file for why these cannot be done with a variable, and for what
+   happens when Discord renames a class: the separators and the popout hairlines
+   go, and nothing else does.
+
+   The hover and selection hairlines below started here, because this frame had
+   no raised step to spend where the dark file still did. That asymmetry is the
+   whole content of DESIGN.md's Inverted Context: the inverted frame is
+   enumerated as four line-and-label tones with no surface among them, so an
+   inverted client reports the pointer with a line. The dark file has since been
+   read the same way — a near-black plate is a plate — and now carries a
+   character-for-character copy of both rules. They are meant to stay identical:
+   the only thing that differs between the two is what --rsb-ink resolves to.
+   ------------------------------------------------------------------------- */
+
+[class*="guilds_"],
+[class*="sidebar_"],
+[class*="membersWrap_"],
+[class*="panels_"],
+section[class*="title_"] {
+    outline: var(--rsb-hairline) solid var(--rsb-rule);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+[class*="layerContainer"] > [class*="layer_"],
+[class*="menu_"],
+[class*="popout_"],
+[class*="modal_"],
+[class*="autocomplete_"],
+[class*="tooltip_"] {
+    outline: var(--rsb-hairline) solid var(--rsb-rule);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/* the filled brand button writes its own label colour rather than reading
+   --control-primary-text-default; its face is ink, so the label is the ground */
+[class*="colorBrand"],
+[class*="lookFilled_"][class*="colorBrand"] {
+    color: var(--rsb-ground) !important;
+}
+
+/*
+ * hover and selection, carried on a hairline instead of on a fill
+ *
+ * This is the client-side half of the decision made in the token block: no
+ * --rsb-hover fill exists in this frame, so the state has to be drawn. It is an
+ * inset outline for the same reason style.css uses one on `.rsb-row` — an
+ * outline is painted inside the box the layout already measured, so a row that
+ * gains an edge under the pointer does not push the rows beneath it down. A
+ * border would.
+ *
+ * Two kinds of selector, with different failure modes, so they are listed
+ * separately below rather than merged into one rule:
+ *
+ *   - ARIA roles. These are web-platform semantics that Discord writes for
+ *     assistive tech, not build output, so they do not rotate with a Discord
+ *     release. They are the load-bearing half.
+ *   - Two class-name substrings, both of which Equicord itself keys on today:
+ *     `interactive__` / `interactiveSelected__` (the channel and DM rows —
+ *     src/equicordplugins/messagePeek/style.css) and `cozyMessage` (the message
+ *     row — src/plugins/reviewDB/components/ReviewComponent.tsx). A rename costs
+ *     hover feedback on those two surfaces and nothing else; every role-driven
+ *     surface keeps working, and no state that matters is carried by hover alone.
+ *
+ * The outline is ink rather than the hairline rule: #c4c4c4 against white is
+ * 1.74:1, which is a rule you can see when you know it is there and not a
+ * pointer report. Ink is the emphasis value this system has.
+ */
+[class*="interactive__"]:hover,
+[class*="interactive__"]:focus-within,
+[class*="cozyMessage"]:hover,
+[role="menuitem"]:hover,
+[role="menuitemcheckbox"]:hover,
+[role="menuitemradio"]:hover,
+[role="option"]:hover,
+[role="treeitem"]:hover,
+[role="listitem"]:hover,
+[role="gridcell"]:hover,
+[role="row"]:hover,
+[role="tab"]:hover {
+    outline: var(--rsb-hairline) solid var(--rsb-ink);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/*
+ * Selection is the same hairline. It reads as distinct from hover because it
+ * persists and hover does not, and because Discord promotes the selected row's
+ * own text to --interactive-active, which is ink — so a selected channel is a
+ * framed row in full ink beside unframed rows in #555555.
+ */
+[class*="interactiveSelected__"],
+[role="option"][aria-selected="true"],
+[role="treeitem"][aria-selected="true"],
+[role="tab"][aria-selected="true"],
+[role="menuitemcheckbox"][aria-checked="true"],
+[role="menuitemradio"][aria-checked="true"] {
+    outline: var(--rsb-hairline) solid var(--rsb-ink);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/* -------------------------------------------------------------------------
+   the plugin, sitting inside the inverted client
+
+   plugin/RotectorScan/style.css declares the --rsb-* block on `.rsb`, which
+   out-specifies the `:root` copy above — deliberately, so the plugin looks right
+   with no theme installed at all. In the dark frame the two agree and there is
+   nothing to do. Here they do not: without this block a RotectorScan panel would
+   be a black rectangle punched into a white client, which is precisely the seam
+   this theme exists to close.
+
+   `:root .rsb` is one class and one pseudo-class more specific than the plugin's
+   own `.rsb`, so it wins regardless of which stylesheet the client happens to
+   insert last — and stylesheet order between a managed plugin style and a user
+   theme is not something either file gets to decide.
+
+   Everything in the first block below is style.css's own `.rsb--invert` block,
+   applied without the class. It is a copy of a decision the plugin already made,
+   not a new one. The two rules after the tokens are the ones style.css keys on
+   `.rsb--invert` rather than on a token, restated with the same selectors and
+   the same values. There used to be four: the sticky ledger header and the row
+   hover have since moved onto tokens in style.css itself — it draws them from
+   --rsb-near, --rsb-hover and --rsb-ink in its base rules now that the upright
+   frame has no fill either — so flipping the tokens is the whole of that job and
+   a copy here would only be a way to get out of step with it.
+
+   AND THEN IT IS TAKEN BACK, for the subtrees that asked to be inverted.
+   See the counter-inversion at the end of this file; it is not optional and the
+   block above is wrong without it.
+
+   If a future style.css grows a way to invert from the outside — a
+   `.rsb--invert` toggled by the plugin's own settings, say — this block should
+   be deleted in favour of it, because a decision copied is a decision that can
+   drift.
+   ------------------------------------------------------------------------- */
+
+:root .rsb {
+    --rsb-ink: #000000;
+    --rsb-ground: #ffffff;
+    --rsb-rule: #c4c4c4;
+    --rsb-texture-1: #b4b4b4;
+    --rsb-texture-2: #b4b4b4;
+    --rsb-quiet: #6a6a6a;
+
+    /*
+     * No fill inside the plugin, exactly as style.css decides. This frame never
+     * had one — a #f4f4f4 header is the "slightly lighter panel" the No Grey Fill
+     * Rule refuses, and nothing ever measured a light-side counterpart to
+     * #101010 / #161616 — and the upright frame has since given its two up as
+     * well, so the plugin's own base rules now draw the sticky ledger header on
+     * the ground and the row hover on an inset outline whichever way round the
+     * frame is.
+     *
+     * These are restated rather than inherited even though the client's own
+     * --rsb-near / --rsb-hover at the top of this file hold exactly the same two
+     * values. They agree because all three files arrived at the same conclusion,
+     * not because one reads another, and writing it out is what makes that
+     * visible to whoever changes one of them next.
+     */
+    --rsb-near: var(--rsb-ground);
+    --rsb-hover: transparent;
+
+    /*
+     * Tokens only — no `background` and no `color` declaration here, unlike
+     * style.css's `.rsb--invert`, which can afford them because a surface opts
+     * into that class. `.rsb` is on every decorator in the member list too, and
+     * style.css keeps those transparent on purpose so a mark does not paint a
+     * box into somebody else's list. Painting the root here would put a white
+     * rectangle behind every mark. The surfaces that are ours end to end
+     * (`.rsb--field`, `.rsb-profile`) already read their ground from the tokens
+     * above, so flipping the tokens is the whole job.
+     */
+}
+
+/* structural labels take Invert Label; the count beside them is a measured
+   figure and deliberately stays ink */
+:root .rsb .rsb-label,
+:root .rsb .rsb-node__name {
+    color: var(--rsb-invert-label, #555555);
+}
+
+/* ornament flips to the inverted texture tone rather than inheriting a dimmed
+   label colour through currentColor */
+:root .rsb .rsb-chip {
+    background: var(--rsb-invert-texture, #b4b4b4);
+    opacity: 1;
+}
+
+/*
+ * The sticky ledger header and the row hover are deliberately not restated here.
+ * style.css draws both from the tokens now — the header from --rsb-near, which is
+ * the ground in every frame there is, and the hover from --rsb-hover and
+ * --rsb-ink, which is a transparent fill under an inset ink outline — so the
+ * token flip above is the whole job, and it carries the counter-inverted subtree
+ * at the bottom of this file for free as well.
+ */
+
+/* -------------------------------------------------------------------------
+   the counter-inversion — a `.rsb--invert` subtree, inside a light client
+
+   THIS BLOCK IS WHAT KEEPS THE PLUGIN'S ONLY EMPHASIS DEVICE ALIVE.
+
+   This system has no accent hue, so emphasis is weight and inversion — and
+   inversion is the whole of it for a passage. `components/PurgeModal.tsx` is the
+   one surface that spends it: `<div className="rsb rsb--invert rsb-warn">`
+   around "this cannot be undone", on a screen whose button deletes messages
+   that cannot be recovered. style.css:1270-1284 says out loud why it is an
+   inversion and not a colour — a warning painted in a verdict hex would be
+   claiming to be a finding about a person, and a sixth hue invented for warnings
+   would stop the other five reading as evidence.
+
+   The block above turns the plugin's tokens over to the light frame, which is
+   correct for the plugin at rest. It is exactly wrong for a subtree that asked
+   to be the *other* frame: `:root .rsb` and style.css's `.rsb .rsb--invert` are
+   both (0,2,0), and this file was handing them token-for-token identical values,
+   so the warning inverted to precisely what surrounded it and vanished. The
+   loudest thing the plugin can say became the quietest, in the one client theme
+   where somebody is about to destroy something.
+
+   So it flips back, and it flips back *whole*. Every supporting tone returns to
+   its dark-frame value in one place, because a half-inverted frame — a black
+   panel with #c4c4c4 rules still drawn on it, or a #6a6a6a stroke that was
+   legible on white and is not on black — is the specific failure DESIGN.md:
+   227-231 and 579-582 exist to prevent, and it is no less a failure when the
+   half that is stale belongs to the frame outside rather than the one inside.
+
+   `:root .rsb.rsb--invert` and `:root .rsb .rsb--invert` are (0,3,0): one class
+   more specific than both the block above and style.css's own, so this wins on
+   specificity rather than on stylesheet order — which is the point, since order
+   between a managed plugin style and a user theme is not something either file
+   gets to decide. The rules after the tokens are (0,4,0) or better for the same
+   reason: they have to out-specify the (0,3,0) copies above.
+   ------------------------------------------------------------------------- */
+
+:root .rsb.rsb--invert,
+:root .rsb .rsb--invert {
+    /* the two absolutes, back */
+    --rsb-ink: #ffffff;
+    --rsb-ground: #000000;
+
+    /* and every tone that supports them, back with them */
+    --rsb-rule: #2a2a2a;
+    --rsb-texture-1: #6f6f6f;
+    --rsb-texture-2: #3a3a3a;
+    --rsb-quiet: #9a9a9a;
+    --rsb-comment: #8d8d8d;
+
+    /*
+     * The two raised steps do NOT return, because there are none left to return.
+     * This block used to put #101010 and #161616 back on the grounds that they
+     * were legal in a dark frame and this subtree is a dark frame wherever it
+     * happens to be sitting. That was true of the frame as it stood then; it is
+     * not true of the frame now. ten-thousand.theme.css has given both values up
+     * — rsb/tui/theme.py needs them because a terminal cannot draw a hairline
+     * between two panes, and CSS can — so a dark frame is two values here exactly
+     * as a light one is, and reinstating them would make this subtree the only
+     * surface in the system with a grey fill in it.
+     *
+     * They are still written out, at the ground and at nothing, because this
+     * block's job is to state a whole frame in one place: a reader checking that
+     * nothing is left at a light-frame value should find every token in the set,
+     * not have to work out which ones were left to inherit.
+     */
+    --rsb-near: var(--rsb-ground);
+    --rsb-hover: transparent;
+
+    background: var(--rsb-ground);
+    color: var(--rsb-ink);
+
+    /* a scroller inside the warning gets dark furniture, since the frame it is
+       scrolling is dark; `color-scheme` inherits, so this covers the subtree */
+    color-scheme: dark;
+}
+
+/*
+ * The rules style.css keys on `.rsb--invert` rather than on a token, and which
+ * the block above therefore restated at (0,3,0). Each is put back to the
+ * plugin's dark-frame default here.
+ */
+
+/* labels are pure ink in the dark frame — Invert Label is a light-frame tone
+   and would be #555555 on black, which is the half-inverted mistake exactly */
+:root .rsb .rsb--invert .rsb-label,
+:root .rsb .rsb--invert .rsb-node__name,
+:root .rsb.rsb--invert .rsb-label,
+:root .rsb.rsb--invert .rsb-node__name {
+    color: var(--rsb-ink);
+}
+
+/* the chip goes back to reading currentColor at half opacity, so it is ink
+   density rather than a fixed light-frame ornament hex */
+:root .rsb .rsb--invert .rsb-chip,
+:root .rsb.rsb--invert .rsb-chip {
+    background: currentColor;
+    opacity: 0.5;
+}
+
+/*
+ * The sticky ledger header and the row hover need nothing put back.
+ *
+ * They used to: this block reinstated the #101010 header and the #161616 hover
+ * fill, and cancelled the outline that had replaced them — carefully, scoped to
+ * `:hover:not(:focus-within)` so that clearing the outline could not also clear
+ * it from a row that was hovered *and* focused, where that outline is the focus
+ * indicator. All of that is gone with the two fills it existed to reinstate.
+ * style.css's own base rules draw the header on --rsb-near and the hover on an
+ * inset --rsb-ink outline, both of which the token block above has already
+ * flipped back to their dark-frame values, so an inverted warning inside a light
+ * client gets a black header on a #2a2a2a rule and a white hover outline with no
+ * rule written here at all.
+ */
+
+/*
+ * Selection inside the counter-inverted subtree. `.rsb--invert ::selection` in
+ * style.css already reads the tokens, so the flip above carries it — this is
+ * here so that a reader diffing the two files against DESIGN.md's "selection
+ * colours invert too" finds the statement rather than having to derive it.
+ */
+:root .rsb .rsb--invert ::selection,
+:root .rsb.rsb--invert ::selection {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+}

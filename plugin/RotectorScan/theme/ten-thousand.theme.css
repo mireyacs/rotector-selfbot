@@ -1,0 +1,913 @@
+/**
+ * @name Ten Thousand
+ * @author azula
+ * @description The Field of Ten Thousand, worn by Discord itself. Pure white ink on pure black ground, hairline rules, square everything, one monospace family — so the client, the RotectorScan plugin and the project's page read as one surface. Colour survives only where it is evidence or identity.
+ * @version 1.0.0
+ * @license GPL-3.0-or-later
+ * @source https://github.com/mireyacs/rotector-selfbot
+ * @website https://mireyacs.github.io/rotector-selfbot/
+ */
+
+/*
+ * ten-thousand.theme.css — the dark frame.
+ *
+ * THE PAGE IS THE SOURCE AND THIS IS A COPY.
+ *
+ * `docs/index.html` holds this palette; `DESIGN.md` records it; `rsb/tui/theme.py`
+ * is the first copy of it onto somebody else's widget system (Textual) and this
+ * file is the second (Discord). The rule that governs all three is the same one
+ * DESIGN.md states for the TUI: a change to the colours on the page is a change
+ * here, never the reverse. If you are about to invent a tone in this file,
+ * you are about to make the client disagree with the page.
+ *
+ * `plugin/RotectorScan/style.css` is the *other* copy of the --rsb-* token block
+ * below. The plugin defines those names on `.rsb` so that it looks right with no
+ * theme installed at all; this file defines the same names on `:root` so that the
+ * client around it is built out of the same values and the plugin's surfaces have
+ * no seam at their edges. The two blocks must stay in step. Neither is optional
+ * for the other: the theme works with the plugin uninstalled, and the plugin
+ * works with the theme uninstalled.
+ *
+ * WHAT IS NON-NEGOTIABLE HERE
+ *
+ *  1. Ground #000000 and ink #ffffff, set literally, not as a near-black and an
+ *     off-white. Hairline rules are #2a2a2a. THE FRAME IS TWO VALUES AND NOTHING
+ *     ELSE: there is no raised state at all, in either direction. An earlier
+ *     revision sanctioned #101010 and #161616 here, lifted from rsb/tui/theme.py's
+ *     NEAR_GROUND and HOVER, and spent them as fills across some thirty-odd
+ *     Discord variables. Those two values exist in the TUI because a terminal
+ *     cannot draw a hairline between two panes — a cell is the smallest thing
+ *     there is — so a step in tone is the only separator Textual has. CSS can draw
+ *     the hairline, so the justification does not travel, and what was left was
+ *     thirty grey surfaces in a file whose whole argument is that there are none.
+ *     --rsb-near is the ground and --rsb-hover paints nothing; the names are kept
+ *     because the --rsb-* block is shared with the plugin and with the light file,
+ *     and a name missing from one copy is how the three drift.
+ *  2. No grey fills. Discord's --background-mod-subtle family is the exact
+ *     "slightly lighter panel" DESIGN.md's No Grey Fill Rule refuses, so it paints
+ *     nothing and the state it was carrying is drawn as an inset hairline instead
+ *     (the hover-and-selection block near the bottom of this file). An outline is
+ *     painted inside the box Discord already measured, so a row that gains an edge
+ *     under the pointer does not move the rows below it. A border would.
+ *  3. Zero border-radius, everywhere, including avatars, guild icons and buttons.
+ *     DESIGN.md: `rounded.none` is the only radius token and it is the whole scale.
+ *  4. No box-shadow. Depth in this world is density, not elevation. Floating
+ *     surfaces are separated by a hairline instead — drawn as an inset outline so
+ *     it costs no layout.
+ *  5. One family, monospace, ligatures off.
+ *  6. Colour survives only where it is evidence or identity. Role colours are
+ *     inline styles Discord writes per user and this file never touches them;
+ *     status hues, feedback hues and destructive-action red are deliberately left
+ *     at Discord's own values (see "colour that is evidence" below); avatars,
+ *     embeds, attachments and every other pixel a person uploaded are untouched.
+ *     Discord's blurple is not evidence about anybody, so it becomes ink.
+ *
+ * HOW IT WORKS
+ *
+ * Almost all of this file is a remap of Discord's own custom properties, not a
+ * fight with Discord's selectors. Discord is mid-migration between two token
+ * families — the legacy --background-primary / --text-normal names and the newer
+ * --background-base-lower / --text-default ones — and both are live in the client
+ * today, so both are declared. Every name used below was read out of the Equicord
+ * source (`src/**`), where plugins consume the ones that actually exist; a name
+ * Discord has since retired costs nothing, an invented one would be a lie.
+ *
+ * The blocks at the bottom that reach for class names all say why. A Discord
+ * class-name rename degrades them to "no separator", "no hairline on a popout" or
+ * "no hover feedback on two surfaces" — never to a broken client.
+ */
+
+/* -------------------------------------------------------------------------
+   the token block — the copy shared with plugin/RotectorScan/style.css
+   ------------------------------------------------------------------------- */
+
+:root {
+    /* --- the two absolutes --- */
+    --rsb-ink: #ffffff;
+    --rsb-ground: #000000;
+
+    /* --- the tones that exist only so the absolutes stay absolute --- */
+    --rsb-rule: #2a2a2a;        /* every structural hairline */
+    --rsb-quiet: #9a9a9a;       /* the quiet stroke, and chrome labels */
+
+    /*
+     * THERE IS NO RAISED STEP IN THIS FRAME EITHER, AND THAT IS THE WHOLE EDIT.
+     *
+     * These two names used to hold #101010 and #161616, copied out of
+     * rsb/tui/theme.py's NEAR_GROUND and HOVER, and they were spent as fills on
+     * roughly thirty-four Discord variables — the surface-high family, the whole
+     * --background-mod-* family, hover/active/selected, the cards, the mention
+     * plate. Thirty-four grey surfaces, in the file whose second non-negotiable
+     * is that there are none.
+     *
+     * The TUI's justification for them is real and does not carry over. Textual
+     * draws in cells; there is no such thing as a one-pixel line between two
+     * panes, so the only way a terminal can say "this header is not that body" is
+     * a step in tone. CSS draws the line. DESIGN.md's No Grey Fill Rule (240-243)
+     * says grey is a line, a numeral or a comment and never a surface, and the
+     * Flat Field Rule (388-389) says a container is separated from its neighbour
+     * by a hairline or by a full-frame inversion — never by a tint. With a
+     * hairline available, a near-ground fill is the tint.
+     *
+     * So the raised step is the ground, hover paints nothing, and the feedback
+     * moves onto an inset hairline. This is not a new device invented here: it is
+     * exactly what ten-thousand-light.theme.css already does, for exactly this
+     * reason, and what style.css's own `.rsb--invert` block already did before
+     * either theme existed. Both frames are now two values and nothing else.
+     *
+     * The names stay. The --rsb-* block is one token set with three copies — this
+     * file, the light file, and plugin/RotectorScan/style.css — and a name present
+     * in two of them is a set that has started to drift.
+     */
+    --rsb-near: var(--rsb-ground);
+    --rsb-hover: transparent;
+
+    /*
+     * The two ornament tones. DESIGN.md's Pure Ink Rule (245-249) permits them
+     * on aria-hidden, unselectable numeral columns and on code comments, and
+     * nowhere else — which is why this file declares them and then spends them
+     * on nothing. They are here because the --rsb-* block is shared with
+     * plugin/RotectorScan/style.css, where the chip and the ornament columns do
+     * use them, and a shared block with a name missing from one copy is a block
+     * that has started to drift.
+     *
+     * An earlier revision of this file sent --text-faint, --text-tertiary,
+     * --interactive-muted and --icon-muted to --rsb-texture-2. That is #3a3a3a
+     * on #000000: a contrast ratio of 1.85:1, which is not a dim reading of the
+     * text so much as an absence of it. See the text block below for where those
+     * four went instead.
+     */
+    --rsb-texture-1: #6f6f6f;   /* ornament only — aria-hidden columns */
+    --rsb-texture-2: #3a3a3a;   /* ornament only — aria-hidden columns */
+    --rsb-comment: #8d8d8d;     /* commentary rather than content */
+
+    /* --- the inverted frame's tones, carried here so both theme files and the
+       plugin name the same four colours. ten-thousand-light.theme.css is the
+       frame these belong to; they are declared in both so a reader comparing the
+       files sees one set of decisions rather than two. --- */
+    --rsb-invert-rule: #c4c4c4;
+    --rsb-invert-texture: #b4b4b4;
+    --rsb-invert-label: #555555;
+    --rsb-invert-comment: #6a6a6a;
+
+    /* --- evidence. The five verdict hexes, literal, from rsb/palette.py's web
+       set — the same set plugin/RotectorScan/style.css uses. A verdict colour
+       that followed the user's theme would stop being evidence and start being
+       chrome, so these are never mapped onto --status-danger and friends. --- */
+    --rsb-threat: #f43f5e;
+    --rsb-caution: #facc15;
+    --rsb-info: #38bdf8;
+    --rsb-no-detections: #4ade80;
+    --rsb-unknown: #8a929c;
+
+    /* --- one family. Azeret Mono is the page's face and it cannot be shipped
+       from here: a theme file is a stylesheet, not a bundle, and fetching a
+       webfont would put the client's chrome behind a network request Discord's
+       CSP may refuse. The stack is therefore the honest answer, and it picks up
+       a locally installed Azeret Mono for free when one is present. --- */
+    --rsb-font: "Azeret Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* --- the type ramp, exact, from DESIGN.md's front matter --- */
+    --rsb-title-size: 1.02rem;
+    --rsb-title-weight: 800;
+    --rsb-title-track: -0.03em;
+    --rsb-body-size: 15px;
+    --rsb-body-track: -0.01em;
+    --rsb-data-size: 0.82rem;
+    --rsb-label-size: 0.68rem;
+    --rsb-label-weight: 500;
+    --rsb-label-track: 0.19em;
+    --rsb-action-size: 0.78rem;
+    --rsb-action-weight: 700;
+    --rsb-action-track: 0.13em;
+    --rsb-micro-size: 0.62rem;
+    --rsb-micro-track: 0.17em;
+
+    /* --- spacing --- */
+    --rsb-hairline: 1px;
+    --rsb-xs: 0.4rem;
+    --rsb-sm: 0.7rem;
+    --rsb-md: 0.9rem;
+    --rsb-lg: 1.5rem;
+    --rsb-xl: 1.75rem;
+    --rsb-measure: 68ch;
+
+    /* the frame is dark, and the browser should draw its own furniture to match */
+    color-scheme: dark;
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — surfaces
+
+   Every surface is the ground. That is not laziness: the page's Continuous
+   Field Rule says the wall is one wall, and rsb/tui/theme.py already made the
+   same call for the terminal (`surface=GROUND`, only a header sitting
+   fractionally off it). Separation is a hairline, never a step in tone.
+   ------------------------------------------------------------------------- */
+
+:root {
+    /* the current family: base = app chrome, surface = things that sit on it */
+    --background-base-lowest: var(--rsb-ground);
+    --background-base-lower: var(--rsb-ground);
+    --background-base-lower-alt: var(--rsb-ground);
+    --background-base-low: var(--rsb-ground);
+    /* "surface" is Discord's word for a thing that sits on the base, and its own
+       answer to that is a tone step. Ours is a hairline, so all three are the
+       ground and the separation is drawn — see the outline blocks at the bottom.
+       Written as --rsb-ground rather than --rsb-near because these have to stay
+       opaque whatever the token block is doing: a see-through popout shows the
+       app behind it. */
+    --background-surface-high: var(--rsb-ground);
+    --background-surface-higher: var(--rsb-ground);
+    --background-surface-highest: var(--rsb-ground);
+
+    /* the legacy family, still live in a large part of the client */
+    --background-primary: var(--rsb-ground);
+    --background-secondary: var(--rsb-ground);
+    --background-secondary-alt: var(--rsb-ground);
+    --background-tertiary: var(--rsb-ground);
+    --background-floating: var(--rsb-ground);
+    --background-nested-floating: var(--rsb-ground);
+    --background-mobile-primary: var(--rsb-ground);
+    --background-mobile-secondary: var(--rsb-ground);
+
+    /*
+     * The modifier family: translucent fills Discord paints over a surface to
+     * say "hovered", "selected", "a panel within a panel". These are precisely
+     * the grey fills the No Grey Fill Rule bans — which they remained when they
+     * were remapped onto #101010 and #161616, because a near-black plate over a
+     * black ground is still a plate. So they paint nothing at all, and the
+     * hairline block near the bottom of this file draws the state instead.
+     *
+     * Transparent is safe here for the reason particular to this theme: every
+     * background token above is already the ground, so the only thing showing
+     * through a transparent modifier is the black it was going to tint.
+     */
+    --background-mod-faint: var(--rsb-hover);
+    --background-mod-subtle: var(--rsb-hover);
+    --background-mod-normal: var(--rsb-hover);
+    --background-mod-strong: var(--rsb-hover);
+    --background-mod-heavy: var(--rsb-hover);
+    --background-mod-muted: var(--rsb-hover);
+
+    --background-modifier-hover: var(--rsb-hover);
+    --background-modifier-active: var(--rsb-hover);
+    --background-modifier-selected: var(--rsb-hover);
+    /* used as a divider far more than as a fill, so it takes the rule tone */
+    --background-modifier-accent: var(--rsb-rule);
+
+    --message-background-hover: var(--rsb-hover);
+    --user-profile-overlay-background: var(--rsb-ground);
+    --user-profile-background-hover: var(--rsb-hover);
+
+    /* a card is a frame in this system, not a surface: the ground, edged by
+       whatever border token the component already reads */
+    --modal-background: var(--rsb-ground);
+    --modal-footer-background: var(--rsb-ground);
+    --card-background-default: var(--rsb-ground);
+    --card-primary-bg: var(--rsb-ground);
+    --card-secondary-bg: var(--rsb-ground);
+    --activity-card-background: var(--rsb-ground);
+    --home-background: var(--rsb-ground);
+
+    /*
+     * Feedback panels. The hue stays on the text and the icon, where it is a
+     * statement about state; the tinted plate behind it is chrome and goes.
+     */
+    --background-feedback-critical: var(--rsb-ground);
+    --background-feedback-warning: var(--rsb-ground);
+    --background-feedback-positive: var(--rsb-ground);
+    --background-feedback-info: var(--rsb-ground);
+    --status-danger-background: var(--rsb-ground);
+    --status-warning-background: var(--rsb-ground);
+
+    /* inputs are a frame, not a filled box */
+    --input-background: var(--rsb-ground);
+    --input-background-default: var(--rsb-ground);
+    --channeltextarea-background: var(--rsb-ground);
+    --deprecated-text-input-bg: var(--rsb-ground);
+    --deprecated-quickswitcher-input-background: var(--rsb-ground);
+    --deprecated-card-bg: var(--rsb-ground);
+    --deprecated-card-editable-bg: var(--rsb-ground);
+    --deprecated-store-bg: var(--rsb-ground);
+
+    /*
+     * A mention of you and a hidden spoiler are the two places where the fill is
+     * doing real work rather than reporting a pointer: one has to stand out of a
+     * paragraph, the other has to physically cover text somebody has not asked to
+     * see yet. Neither can be transparent — a transparent spoiler is not a
+     * spoiler — and neither may be a grey, so both take this system's actual
+     * emphasis device, full inversion. They sat on #161616 before, which against
+     * black meant a mention that did not stand out of anything and a spoiler you
+     * could only find by knowing it was there.
+     *
+     * This is the same answer ten-thousand-light.theme.css gives, and it is the
+     * same object in both frames: an inverted block that reads as a hole cut in
+     * the wall.
+     */
+    --mention-background: var(--rsb-ink);
+    --mention-foreground: var(--rsb-ground);
+    --spoiler-hidden-background: var(--rsb-ink);
+    --spoiler-revealed-background: transparent;
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — text
+
+   The Pure Ink Rule applies to content: a character somebody is meant to read
+   is ink at full opacity, and a thing that is not meant to be read is ornament,
+   which must be hidden from assistive tech (DESIGN.md:245-249). There is no
+   third category, so this frame has exactly two text values: ink #ffffff for
+   content, and the quiet stroke #9a9a9a for the client's own chrome labels.
+
+   That is one step fewer than rsb/tui/theme.py, which carries a third
+   `text-disabled` at the ornament tone. The TUI can afford it because a Textual
+   cell is drawn at a size and a weight this file cannot assume; a Discord
+   client renders 12px chrome type, and #3a3a3a behind it is 1.85:1 against the
+   ground. Discord already reports a disabled control by dimming its opacity,
+   setting `cursor: not-allowed` and writing `aria-disabled`, so nothing is lost
+   by refusing to encode the same state a fourth time in a tone nobody can read.
+
+   #9a9a9a on #000000 is 7.46:1 — WCAG AAA for body text, and the same ratio
+   #555555 gets against white in ten-thousand-light.theme.css, so the two frames
+   dim their chrome by exactly the same amount.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --text-default: var(--rsb-ink);
+    --text-strong: var(--rsb-ink);
+    --text-normal: var(--rsb-ink);
+    --text-primary: var(--rsb-ink);
+    --header-primary: var(--rsb-ink);
+    --icon-default: var(--rsb-ink);
+
+    --text-subtle: var(--rsb-quiet);
+    --text-muted: var(--rsb-quiet);
+    --text-secondary: var(--rsb-quiet);
+    --header-secondary: var(--rsb-quiet);
+    --channels-default: var(--rsb-quiet);
+    --channel-icon: var(--rsb-quiet);
+    --input-placeholder-text: var(--rsb-quiet);
+    --icon-secondary: var(--rsb-quiet);
+    --interactive-normal: var(--rsb-quiet);
+    --interactive-text-default: var(--rsb-quiet);
+    --interactive-icon-default: var(--rsb-quiet);
+
+    /*
+     * The faint step. Discord spends these on timestamps, member counts, empty
+     * states, the typing indicator and every disabled control label — all of
+     * them things a reader reads. They therefore take the quiet stroke, not an
+     * ornament tone: 7.46:1 rather than 1.85:1.
+     */
+    --text-faint: var(--rsb-quiet);
+    --text-tertiary: var(--rsb-quiet);
+    --interactive-muted: var(--rsb-quiet);
+    --icon-muted: var(--rsb-quiet);
+
+    /* an interactive thing under the pointer promotes to ink; there is no
+       second accent in this world, so emphasis is the full value */
+    --interactive-hover: var(--rsb-ink);
+    --interactive-active: var(--rsb-ink);
+    --interactive-text-hover: var(--rsb-ink);
+    --interactive-text-active: var(--rsb-ink);
+    --interactive-icon-hover: var(--rsb-ink);
+    --interactive-icon-active: var(--rsb-ink);
+    --interactive-background-hover: var(--rsb-hover);
+    --interactive-background-active: var(--rsb-hover);
+
+    /* text on an ink fill */
+    --text-invert: var(--rsb-ground);
+
+    /*
+     * Links. Blurple is not evidence about anything, so a link is ink and says
+     * so with an underline instead of a hue — the same decision the page makes
+     * for `.rsb-link`.
+     */
+    --text-link: var(--rsb-ink);
+    --text-link-low-saturation: var(--rsb-ink);
+    --link-decoration: underline;
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — rules, and the focus ring
+   ------------------------------------------------------------------------- */
+
+:root {
+    --border-faint: var(--rsb-rule);
+    --border-subtle: var(--rsb-rule);
+    --border-normal: var(--rsb-rule);
+    --border-muted: var(--rsb-rule);
+    /* the one rule allowed to be louder than a hairline, for a stroke that has
+       to survive over a busy surface — the page's quiet stroke, exactly */
+    --border-strong: var(--rsb-quiet);
+
+    --input-border: var(--rsb-rule);
+    --input-border-default: var(--rsb-rule);
+    --deprecated-text-input-border: var(--rsb-rule);
+    --user-profile-border: var(--rsb-rule);
+    --profile-body-divider-color: var(--rsb-rule);
+
+    /*
+     * The focus ring is ink, not the host's blurple. Same argument as
+     * style.css's --rsb-focus: a blurple ring would be the only non-verdict
+     * colour on the surface, and it is exactly that kind of stray hue that
+     * makes a verdict hue stop reading as evidence.
+     */
+    --border-focus: var(--rsb-ink);
+    --focus-primary: var(--rsb-ink);
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — the blurple
+
+   Blurple is Discord's identity, not a fact about a person, so it becomes ink.
+   The alpha variants are translucent blurple used as a fill; there is no fill in
+   this frame, so they paint nothing and whatever they were behind is reported by
+   the hairline blocks at the bottom of this file.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --brand: var(--rsb-ink);
+    --brand-500: var(--rsb-ink);
+    --brand-700: var(--rsb-ink);
+    --brand-experiment: var(--rsb-ink);
+    --brand-experiment-560: var(--rsb-ink);
+    --brand-experiment-600: var(--rsb-ink);
+    --brand-experiment-10a: var(--rsb-hover);
+    --brand-experiment-15a: var(--rsb-hover);
+    --brand-experiment-30a: var(--rsb-hover);
+    --brand-15a: var(--rsb-hover);
+    --background-brand: var(--rsb-ink);
+    --background-accent: var(--rsb-ink);
+    --text-brand: var(--rsb-ink);
+    --control-brand-foreground: var(--rsb-ink);
+    --control-brand-foreground-new: var(--rsb-ink);
+    --logo-primary: var(--rsb-ink);
+    --badge-background-brand: var(--rsb-ink);
+    --badge-text-brand: var(--rsb-ground);
+    --badge-expressive-background-default: var(--rsb-ink);
+    --badge-expressive-text-default: var(--rsb-ground);
+}
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — controls
+
+   A primary control is a solid ink face with ground text; a secondary control
+   is a hairline frame that inverts on hover. That is the page's button pair
+   (DESIGN.md, Components → Buttons) applied to the client's own control tokens,
+   so a Discord button and a `.rsb-btn` beside it are the same object.
+   ------------------------------------------------------------------------- */
+
+:root {
+    --control-primary-background-default: var(--rsb-ink);
+    --control-primary-background-hover: var(--rsb-ground);
+    --control-primary-border-default: var(--rsb-ink);
+    --control-primary-border-hover: var(--rsb-ink);
+    --control-primary-text-default: var(--rsb-ground);
+    --control-primary-text-hover: var(--rsb-ink);
+
+    --control-secondary-background-default: transparent;
+    --control-secondary-background-hover: var(--rsb-ink);
+    --control-secondary-border-default: var(--rsb-quiet);
+    --control-secondary-border-hover: var(--rsb-ink);
+    --control-secondary-text-default: var(--rsb-ink);
+    --control-secondary-text-hover: var(--rsb-ground);
+
+    /*
+     * An icon-only control had two carriers while there was a fill — the icon
+     * promoting to ink and the #161616 plate behind it. The plate is gone, so the
+     * border does the work: it promotes to ink rather than staying at the hairline
+     * rule, which would have been a #2a2a2a outline against black and read as no
+     * change at all. Same decision, and same wording, as the light file.
+     */
+    --control-icon-only-icon-default: var(--rsb-quiet);
+    --control-icon-only-icon-hover: var(--rsb-ink);
+    --control-icon-only-background-hover: var(--rsb-hover);
+    --control-icon-only-background-active: var(--rsb-hover);
+    --control-icon-only-border-hover: var(--rsb-ink);
+    --control-icon-only-border-active: var(--rsb-ink);
+
+    /* controls that sit over user media keep the ground behind them so the
+       media underneath is the only colour in the frame */
+    --control-overlay-primary-background-default: var(--rsb-ground);
+    --control-overlay-primary-background-hover: var(--rsb-ink);
+    --control-overlay-primary-border-default: var(--rsb-quiet);
+    --control-overlay-primary-border-hover: var(--rsb-ink);
+    --control-overlay-primary-text-default: var(--rsb-ink);
+    --control-overlay-primary-text-hover: var(--rsb-ground);
+
+    /*
+     * Switches are the one control whose whole job is to report a boolean, and
+     * it has to be readable at a glance with no label attached. Off is a
+     * hairline frame with a quiet thumb; on is a solid ink face with a ground
+     * thumb — the same inversion the buttons use, so "on" reads as filled.
+     *
+     * Its hover paints nothing now, which costs it nothing: the border already
+     * promotes from the quiet stroke to full ink under the pointer, and that was
+     * always the louder of the two carriers.
+     */
+    --switch-background-default: transparent;
+    --switch-background-hover: var(--rsb-hover);
+    --switch-border-default: var(--rsb-quiet);
+    --switch-border-hover: var(--rsb-ink);
+    --switch-thumb-background-default: var(--rsb-quiet);
+    --switch-thumb-icon-default: var(--rsb-ground);
+    --switch-background-selected-default: var(--rsb-ink);
+    --switch-background-selected-hover: var(--rsb-ink);
+    --switch-border-selected-default: var(--rsb-ink);
+    --switch-border-selected-hover: var(--rsb-ink);
+    --switch-thumb-background-selected-default: var(--rsb-ground);
+    --switch-thumb-icon-active: var(--rsb-ink);
+}
+
+/* -------------------------------------------------------------------------
+   colour that is evidence, and is therefore left alone
+
+   These names are NOT declared anywhere in this file, deliberately, and a
+   future edit that "finishes the job" by draining them is the change that
+   breaks the theme's argument:
+
+     --status-online / --status-danger / --status-warning / --status-positive
+     --text-status-online / -idle / -dnd / -offline
+     --icon-status-idle / -offline
+     --text-feedback-critical / -warning / -positive / -info
+     --icon-feedback-critical / -warning / -positive / -info
+     --text-danger / --text-positive
+     --control-critical-* (the destructive button family)
+     --green-* / --red-* / --yellow-* / --orange-* (the hues the above resolve to)
+
+   DESIGN.md's Screenshot Colour Rule is the precedent: when the terminal app was
+   photographed in this palette, what survived in colour was exactly the verdict
+   column and the status line — the evidence — and the rule was sharpened rather
+   than weakened by that. A person's presence is a fact about them; an error is a
+   fact about the client's state; a red Delete button is the affordance that stops
+   somebody destroying a server they meant to leave. Draining those would make a
+   prettier screenshot of a less honest client.
+
+   Role colours need no rule at all: Discord writes them as an inline `style` on
+   the element, per user, and nothing here can or should reach them. The same goes
+   for avatars, embed images, attachments, custom emoji and every other pixel a
+   person uploaded.
+   ------------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+   Discord's own variables — geometry, type and furniture
+   ------------------------------------------------------------------------- */
+
+:root {
+    /* the whole radius scale is zero, and that is the entire scale */
+    --radius-xxs: 0;
+    --radius-xs: 0;
+    --radius-sm: 0;
+    --radius-md: 0;
+    --radius-lg: 0;
+    --radius-xl: 0;
+    --radius-round: 0;
+
+    /* there is no elevation; separation below is drawn as a hairline instead */
+    --elevation-low: none;
+    --elevation-medium: none;
+    --elevation-high: none;
+    --elevation-stroke: none;
+    --shadow-low: none;
+    --shadow-medium: none;
+    --shadow-high: none;
+    --legacy-elevation-low: none;
+    --legacy-elevation-high: none;
+    --legacy-elevation-border: none;
+
+    /* one family, at every size, everywhere */
+    --font-primary: var(--rsb-font);
+    --font-display: var(--rsb-font);
+    --font-headline: var(--rsb-font);
+    --font-code: var(--rsb-font);
+
+    /* the scrollbar is a hairline object: a rule-toned thumb on the ground,
+       square like everything else (the radius reset below covers the corners) */
+    --scrollbar-thin-thumb: var(--rsb-rule);
+    --scrollbar-thin-track: transparent;
+    --scrollbar-auto-thumb: var(--rsb-rule);
+    --scrollbar-auto-track: transparent;
+    --scrollbar-auto-scrollbar-color-thumb: var(--rsb-rule);
+    --scrollbar-auto-scrollbar-color-track: var(--rsb-ground);
+}
+
+/*
+ * Discord's raw neutral ramp. The semantic tokens above cover most of the
+ * client, but a long tail of older components reaches straight past them into
+ * --primary-N, and leaving the ramp at Discord's greys is what puts a #313338
+ * panel in the middle of an otherwise two-value client.
+ *
+ * The ramp runs light (100) to dark (900) and the mapping keeps that order, so
+ * nothing inverts and no text lands on its own background:
+ *
+ *   100-345  content and headings          -> ink
+ *   360-430  muted labels and placeholders -> the quiet stroke
+ *   460-560  strokes, dividers, thumbs     -> the hairline rule
+ *   600-900  panels and chrome             -> the ground
+ *
+ * The 600-900 band used to be split across a near-ground step and the ground.
+ * There is no near-ground step any more, so the whole band lands on the ground —
+ * which is the correct answer rather than a lossy one: every panel in this theme
+ * is the ground already, so a component reaching past the semantic tokens into
+ * --primary-630 now gets exactly what --background-primary would have given it.
+ * The separation it wanted from a tone step is drawn by the hairline blocks below.
+ *
+ * The 460-560 band is the one judgement call in the file. In Discord's own dark
+ * theme those steps are used as strokes, dividers and scrollbar thumbs far more
+ * often than as panel fills, and #2a2a2a is exactly this system's line tone —
+ * so the band is mapped to the rule. Where one of them is used as a fill after
+ * all, it lands on the hairline value rather than on a grey panel, which is the
+ * quietest possible way for that mistake to look.
+ */
+:root {
+    --primary-100: var(--rsb-ink);
+    --primary-130: var(--rsb-ink);
+    --primary-200: var(--rsb-ink);
+    --primary-230: var(--rsb-ink);
+    --primary-300: var(--rsb-ink);
+    --primary-330: var(--rsb-ink);
+    --primary-345: var(--rsb-ink);
+
+    --primary-360: var(--rsb-quiet);
+    --primary-400: var(--rsb-quiet);
+    --primary-430: var(--rsb-quiet);
+
+    --primary-460: var(--rsb-rule);
+    --primary-500: var(--rsb-rule);
+    --primary-530: var(--rsb-rule);
+    --primary-560: var(--rsb-rule);
+
+    --primary-600: var(--rsb-ground);
+    --primary-630: var(--rsb-ground);
+    --primary-645: var(--rsb-ground);
+    --primary-660: var(--rsb-ground);
+    --primary-700: var(--rsb-ground);
+    --primary-730: var(--rsb-ground);
+    --primary-800: var(--rsb-ground);
+    --primary-900: var(--rsb-ground);
+}
+
+/* -------------------------------------------------------------------------
+   the two hard resets
+
+   Both are `!important` and both have to be. Discord sets --radius-sm and
+   --radius-round on components as literal declarations in places as well as
+   through the variable, and its selectors routinely out-specify anything a
+   theme can write without one.
+   ------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
+/*
+ * Avatars and guild icons are circles and squircles cut by an SVG mask, which a
+ * radius reset cannot reach: the shape lives in `mask="url(#svg-mask-…)"` on a
+ * <foreignObject> or a <rect>, not in CSS. Dropping the mask squares them.
+ *
+ * A side effect worth knowing: the avatar mask also punches the notch the status
+ * dot sits in, so removing it puts the dot back on top of the picture. The dot
+ * gets a ground-coloured stroke below to keep its own edge.
+ */
+foreignObject[mask],
+[mask*="svg-mask-avatar"],
+[mask*="svg-mask-squircle"] {
+    -webkit-mask: none !important;
+    mask: none !important;
+}
+
+/* -------------------------------------------------------------------------
+   status: the hue is evidence, the shape is the carrier, the box is square
+
+   A status dot says something true about a person, so it keeps its hue — but the
+   hue must never be the only carrier (DESIGN.md: colour is never the only
+   carrier), and Discord's own masks are what carry it for anyone who cannot
+   separate the four colours: a filled disc for online, a crescent for idle, a
+   slotted disc for do-not-disturb, a ring for offline.
+
+   Dropping the mask outright would square the dot and throw that away in the
+   same stroke. So the mask goes and the same four shapes are redrawn as
+   clip-path geometry on a square: a full square, a square with a corner bitten
+   out, a square with a slot through it, and a square ring. Drawn geometry, no
+   glyphs, `currentColor`-free because the fill is Discord's own status hue.
+
+   The mobile, streaming and typing indicators are left masked. Their shape is
+   not decoration of a colour, it is the entire message — a phone outline says
+   "on their phone" and nothing else in the client says it.
+   ------------------------------------------------------------------------- */
+
+rect[mask*="svg-mask-status-online"]:not([mask*="mobile"]),
+rect[mask*="svg-mask-status-idle"],
+rect[mask*="svg-mask-status-dnd"],
+rect[mask*="svg-mask-status-offline"] {
+    -webkit-mask: none !important;
+    mask: none !important;
+    /* the dot now sits on the picture rather than in a notch cut for it, so it
+       carries its own hairline gap against whatever is behind it */
+    stroke: var(--rsb-ground);
+    stroke-width: 1.5;
+    paint-order: stroke;
+}
+
+/* idle: a square with the top-left quarter bitten out, mirroring the crescent */
+rect[mask*="svg-mask-status-idle"] {
+    clip-path: polygon(45% 0, 100% 0, 100% 100%, 0 100%, 0 45%, 45% 45%);
+}
+
+/* do-not-disturb: a square with a slot through the middle, mirroring the bar.
+   The slot is cut in from the right edge because a clip-path polygon cannot
+   enclose a hole; at this size the two read the same. */
+rect[mask*="svg-mask-status-dnd"] {
+    clip-path: polygon(0 0, 100% 0, 100% 36%, 22% 36%, 22% 64%, 100% 64%, 100% 100%, 0 100%);
+}
+
+/* offline: a square ring, mirroring Discord's hollow circle. The seam is one
+   hairline wide along the bottom edge and is invisible at 8-12px. */
+rect[mask*="svg-mask-status-offline"] {
+    clip-path: polygon(
+        0 0, 100% 0, 100% 100%, 55% 100%, 55% 70%, 70% 70%,
+        70% 30%, 30% 30%, 30% 70%, 45% 70%, 45% 100%, 0 100%
+    );
+}
+
+/* -------------------------------------------------------------------------
+   type
+
+   The variables above cover everything that reads a font token; these four
+   selectors cover the elements that carry a family literally. Ligatures off, so
+   ids, snowflakes and flag names render character-exact.
+   ------------------------------------------------------------------------- */
+
+body,
+button,
+input,
+select,
+textarea,
+[class*="markup_"],
+[class*="messageContent_"] {
+    font-family: var(--rsb-font) !important;
+    font-variant-ligatures: none;
+}
+
+/* -------------------------------------------------------------------------
+   selection, and the focus ring
+
+   Selection on the page is a full inversion, never a tint — the same call
+   rsb/tui/theme.py makes for the terminal's two selection pairs.
+   ------------------------------------------------------------------------- */
+
+::selection {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+}
+
+/* box-shadow: none above removes Discord's own focus rings, which it draws as a
+   shadow. The ring is redrawn as an outline, which no reset touches. */
+:focus-visible {
+    outline: 2px solid var(--rsb-ink);
+    outline-offset: 2px;
+}
+
+/* square scrollbar furniture, for the Chromium-drawn bars the variables miss */
+::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+    border-radius: 0 !important;
+    border: 0 !important;
+}
+
+/* -------------------------------------------------------------------------
+   the blocks that reach for class names
+
+   Everything above drives a variable Discord owns. These cannot: Discord simply
+   does not expose a token for "the seam between the server rail and the channel
+   list", for "this popout is a separate plane", or for "this row is under the
+   pointer" as anything other than a fill — because in its own design those jobs
+   are done by a tone step and a drop shadow, and this theme has removed both.
+
+   Discord's class names are hashed per build but keep a readable prefix, which
+   is what the substring match is for. When a rename lands, these degrade to "no
+   separator", "no hairline on a popout" and "no hover feedback on two of the
+   surfaces": the client stays entirely usable and reads as one continuous wall,
+   which is the worse half of a design decision this system is happy to make
+   anyway.
+
+   Separation is drawn as an inset outline rather than a border, so nothing here
+   adds a pixel to a layout Discord already measured.
+   ------------------------------------------------------------------------- */
+
+/* 1. the columns. Every surface is the ground, so the seams have to be drawn. */
+[class*="guilds_"],
+[class*="sidebar_"],
+[class*="membersWrap_"],
+[class*="panels_"],
+section[class*="title_"] {
+    outline: var(--rsb-hairline) solid var(--rsb-rule);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/* 2. floating planes. With no elevation left, a popout needs an edge or it
+      reads as a hole punched in the page. */
+[class*="layerContainer"] > [class*="layer_"],
+[class*="menu_"],
+[class*="popout_"],
+[class*="modal_"],
+[class*="autocomplete_"],
+[class*="tooltip_"] {
+    outline: var(--rsb-hairline) solid var(--rsb-rule);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/*
+ * Discord's filled brand button writes its own white label rather than reading
+ * --control-primary-text-default. Its face is now ink, so the label has to be
+ * the ground or it is white on white.
+ */
+[class*="colorBrand"],
+[class*="lookFilled_"][class*="colorBrand"] {
+    color: var(--rsb-ground) !important;
+}
+
+/*
+ * 3. hover and selection, carried on a hairline instead of on a fill
+ *
+ * This is the client-side half of the decision made in the token block: no
+ * --rsb-hover fill exists any more, so the state has to be drawn. It is an inset
+ * outline for the same reason style.css uses one on `.rsb-row` — an outline is
+ * painted inside the box the layout already measured, so a row that gains an edge
+ * under the pointer does not push the rows beneath it down. A border would.
+ *
+ * This block is a straight copy of the one in ten-thousand-light.theme.css, and
+ * that is the point: the two frames now report the pointer identically, in ink,
+ * because both of them have exactly two values to spend.
+ *
+ * Two kinds of selector, with different failure modes, so they are listed
+ * separately below rather than merged into one rule:
+ *
+ *   - ARIA roles. These are web-platform semantics that Discord writes for
+ *     assistive tech, not build output, so they do not rotate with a Discord
+ *     release. They are the load-bearing half, and they cover the member list,
+ *     the menus, the autocompletes, the tab strips and the quick switcher.
+ *   - Two class-name substrings, both of which Equicord itself keys on today:
+ *     `interactive__` / `interactiveSelected__` (the channel and DM rows —
+ *     src/equicordplugins/messagePeek/style.css) and `cozyMessage` (the message
+ *     row — src/plugins/reviewDB/components/ReviewComponent.tsx). A rename costs
+ *     hover feedback on those two surfaces and nothing else; every role-driven
+ *     surface keeps working, and no state that matters is carried by hover alone.
+ *
+ * The outline is ink rather than the hairline rule: #2a2a2a against black is
+ * 1.36:1, which is a rule you can see when you know it is there and not a pointer
+ * report. Ink is the emphasis value this system has.
+ */
+[class*="interactive__"]:hover,
+[class*="interactive__"]:focus-within,
+[class*="cozyMessage"]:hover,
+[role="menuitem"]:hover,
+[role="menuitemcheckbox"]:hover,
+[role="menuitemradio"]:hover,
+[role="option"]:hover,
+[role="treeitem"]:hover,
+[role="listitem"]:hover,
+[role="gridcell"]:hover,
+[role="row"]:hover,
+[role="tab"]:hover {
+    outline: var(--rsb-hairline) solid var(--rsb-ink);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/*
+ * Selection is the same hairline. It reads as distinct from hover because it
+ * persists and hover does not, and because Discord promotes the selected row's
+ * own text to --interactive-active, which is ink — so a selected channel is a
+ * framed row in full ink beside unframed rows in #9a9a9a.
+ */
+[class*="interactiveSelected__"],
+[role="option"][aria-selected="true"],
+[role="treeitem"][aria-selected="true"],
+[role="tab"][aria-selected="true"],
+[role="menuitemcheckbox"][aria-checked="true"],
+[role="menuitemradio"][aria-checked="true"] {
+    outline: var(--rsb-hairline) solid var(--rsb-ink);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/* -------------------------------------------------------------------------
+   the plugin, sitting inside the themed client
+
+   plugin/RotectorScan/style.css declares the --rsb-* block on `.rsb`, which
+   out-specifies the `:root` copy at the top of this file — deliberately, because
+   the plugin has to look right with no theme installed. In this frame the two
+   agree already: the plugin's own values ARE the dark frame. Nothing to do here.
+
+   That includes --rsb-near and --rsb-hover, which style.css dropped to the ground
+   and to transparent in the same edit as this file, and for the same reason. If
+   one copy ever grows a fill back, the seam it opens is at the edge of every
+   RotectorScan surface in the client.
+
+   ten-thousand-light.theme.css is where that stops being true, and it carries
+   the block that flips the plugin's tokens with the rest of the frame.
+   ------------------------------------------------------------------------- */

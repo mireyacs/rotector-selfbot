@@ -1,0 +1,2005 @@
+/*
+ * RotectorScan — a Discord-client port of rotector-selfbot
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * The whole visual language, in one managed stylesheet.
+ *
+ * Imported as `import styles from "./style.css?managed"` and handed to the
+ * plugin as `managedStyle`, because a plain `import "./style.css"` leaks a
+ * duplicate <style> element on every hot reload of the dynamic loader.
+ *
+ * Three things about this file are not preferences and must not be "tidied":
+ *
+ *  1. The token block lives on `.rsb`, never on `:root`. Discord's own
+ *     stylesheet is in the same document; a token defined on :root would leak
+ *     into the client and a Discord token would leak into us.
+ *  2. The five verdict hexes are literals. rsb/palette.py:137-148 and
+ *     rsb/htmlrender.py:327-334 both refuse to let a theme touch them: a
+ *     verdict colour is evidence, and evidence that follows the user's theme is
+ *     chrome. Never map one onto --status-danger / --status-warning /
+ *     --status-positive.
+ *  3. There is no grey fill anywhere, and that now means anywhere: the frame is
+ *     two values and nothing between them. Tone comes from stripe density in a
+ *     mask (.rsb-chip, .rsb-meter, .rsb-mark), never from a tinted panel — which
+ *     is why Discord's --background-mod-subtle and --background-modifier-hover are
+ *     absent even though they would be the obvious answer.
+ *
+ *     --rsb-near and --rsb-hover used to hold #101010 and #161616, copied from
+ *     rsb/tui/theme.py:43-44, and spent on the sticky ledger header and the row
+ *     hover. They are gone: --rsb-near is the ground and --rsb-hover paints
+ *     nothing. The TUI needs those two values because Textual draws in cells and
+ *     a terminal cannot put a one-pixel line between two panes, so a step in tone
+ *     is the only separator it has; CSS draws the line, so the justification does
+ *     not travel and what was left was two grey surfaces. The header keeps its
+ *     opacity by taking the ground itself and separating on a rule, and the hover
+ *     moves onto an inset outline — drawn inside the box the layout already
+ *     measured, so nothing reflows as the pointer runs down a table. Both devices
+ *     were already in this file, in the `.rsb--invert` block, which had to solve
+ *     the same problem first because the light frame never had a raised step.
+ *
+ *     The two token names stay. theme/ten-thousand.theme.css and its light twin
+ *     declare the same --rsb-* set, and a name present in two copies of three is
+ *     a set that has started to drift.
+ *
+ * Colour set: the export/web set from rsb/palette.py:54-60, not the terminal's
+ * Monokai-resolved set in rsb/tui/theme.py:50-53. Two palettes exist for the
+ * same five meanings; a web surface uses the one rsb/htmlrender.py ships, or
+ * the plugin visibly disagrees with the HTML export sitting beside it.
+ */
+
+/* -------------------------------------------------------------------------
+   tokens
+   ------------------------------------------------------------------------- */
+
+.rsb {
+    /* --- the app's own language: imposed, never themed --- */
+    --rsb-ink: #ffffff;
+    --rsb-ground: #000000;
+    --rsb-rule: #2a2a2a;
+    --rsb-quiet: #9a9a9a;       /* quiet button stroke only — never text */
+    /*
+     * There is no raised step in this frame, or in the inverted one. See note 3
+     * at the top of the file: these two held #101010 and #161616 and were the
+     * only two fills in the plugin, and a near-black plate on a black ground is
+     * still the "slightly lighter panel" DESIGN.md:240-243 refuses. The sticky
+     * ledger header takes the ground and separates on a rule; the row hover is an
+     * inset ink outline. Both are below, and both are what `.rsb--invert` already
+     * did.
+     */
+    --rsb-near: var(--rsb-ground);
+    --rsb-hover: transparent;
+    --rsb-texture-1: #6f6f6f;   /* aria-hidden ornament only */
+    --rsb-texture-2: #3a3a3a;   /* aria-hidden ornament only */
+    /* DESIGN.md's Comment Grey. Nothing in this file uses it yet; it is
+       declared because theme/ten-thousand.theme.css and its light twin both
+       define the same --rsb-* names, and a shared token set with a hole in it
+       is a set that drifts the first time one copy grows a rule for it. */
+    --rsb-comment: #8d8d8d;
+
+    /* inverted frame, for a passage meant to be read at length */
+    --rsb-invert-rule: #c4c4c4;
+    --rsb-invert-texture: #b4b4b4;
+    --rsb-invert-label: #555555;
+    --rsb-invert-comment: #6a6a6a;
+
+    /* --- evidence. Literal hexes, deliberately. See note 2 above. --- */
+    --rsb-threat: #f43f5e;
+    --rsb-caution: #facc15;
+    --rsb-info: #38bdf8;
+    --rsb-no-detections: #4ade80;
+    --rsb-unknown: #8a929c;
+    /* the hue of whatever this subtree is asserting; set by [data-verdict] */
+    --rsb-verdict: var(--rsb-ink);
+
+    /* --- type. One family. Azeret Mono cannot be shipped (the loader reads no
+       font files and Discord's CSP will not fetch one), so the fallback stack
+       is the honest answer and Discord's own mono is the first fallback. --- */
+    --rsb-font: "Azeret Mono", var(--font-code, ui-monospace), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --rsb-title-size: 1.02rem;
+    --rsb-title-weight: 800;
+    --rsb-title-track: -0.03em;
+    --rsb-body-size: 15px;
+    --rsb-body-track: -0.01em;
+    --rsb-data-size: 0.82rem;
+    --rsb-label-size: 0.68rem;
+    --rsb-label-weight: 500;
+    --rsb-label-track: 0.19em;
+    --rsb-action-size: 0.78rem;
+    --rsb-action-weight: 700;
+    --rsb-action-track: 0.13em;
+    --rsb-micro-size: 0.62rem;
+    --rsb-micro-track: 0.17em;
+
+    /* --- spacing, DESIGN.md front matter --- */
+    --rsb-hairline: 1px;
+    --rsb-xs: 0.4rem;
+    --rsb-sm: 0.7rem;
+    --rsb-md: 0.9rem;
+    --rsb-lg: 1.5rem;
+    --rsb-xl: 1.75rem;
+    --rsb-measure: 68ch;
+
+    /*
+     * The focus ring is ink, not the host's accent.
+     *
+     * --border-focus is Discord's brand blurple, which is neither of this
+     * system's two values nor one of the five verdict hexes, and DESIGN.md:210-211
+     * is explicit that there is no second accent: emphasis is weight and
+     * inversion. A blurple ring would also be the only non-verdict colour on the
+     * surface, which is exactly the thing that makes a verdict hue stop reading
+     * as evidence. Ink flips with the frame, so the invert block gets the
+     * inverted ring for free.
+     */
+    --rsb-focus: var(--rsb-ink);
+
+    font-family: var(--rsb-font);
+    font-variant-ligatures: none;
+    font-size: var(--rsb-body-size);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-body-track);
+    color: var(--rsb-ink);
+    /* deliberately transparent: a decorator carries .rsb for its tokens and
+       must not paint a black box into someone else's member list. Surfaces the
+       plugin owns end to end opt in with .rsb--field. */
+    background: transparent;
+}
+
+/* verdict -> hue. Both forms are needed: the mark carries .rsb and
+   [data-verdict] on the same element, everything else nests. */
+.rsb[data-verdict="THREAT"],
+.rsb [data-verdict="THREAT"] { --rsb-verdict: var(--rsb-threat); }
+
+.rsb[data-verdict="CAUTION"],
+.rsb [data-verdict="CAUTION"] { --rsb-verdict: var(--rsb-caution); }
+
+.rsb[data-verdict="INFO"],
+.rsb [data-verdict="INFO"] { --rsb-verdict: var(--rsb-info); }
+
+.rsb[data-verdict="NO_DETECTIONS"],
+.rsb [data-verdict="NO_DETECTIONS"] { --rsb-verdict: var(--rsb-no-detections); }
+
+.rsb[data-verdict="UNKNOWN"],
+.rsb [data-verdict="UNKNOWN"] { --rsb-verdict: var(--rsb-unknown); }
+
+/*
+ * Triage recommendations reuse the same five hues, but they are not a second
+ * attribute: every component resolves a recommendation through
+ * `verdictFloor(recommendation)` in api/triage.ts and emits the result as
+ * `data-verdict`, so the mapping happens in TypeScript where the rule table
+ * lives rather than being restated here. A `[data-rec]` block would be dead
+ * weight that drifts out of step with rsb/triage.py the first time a rule
+ * changes tier.
+ */
+
+/* -------------------------------------------------------------------------
+   the two hard resets
+
+   Discord sets --radius-sm / --radius-round on components we nest inside, and
+   its selectors frequently out-specify ours, so this is the one place !important
+   is correct. DESIGN.md:464-466: there is not a single border-radius in this
+   world. DESIGN.md:350-359: there are zero box-shadow declarations. The modal
+   *shell* keeps Discord's elevation; nothing we draw inside it has any.
+   ------------------------------------------------------------------------- */
+
+/* .rsb-scroll is listed by name because Discord's ScrollerThin sits *above* our
+   root in the report modal — it is the modal's child and .rsb is its child — so
+   it is the one node of ours the descendant selector cannot reach. */
+.rsb,
+.rsb *,
+.rsb-scroll {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
+/*
+ * Discord styles its scrollbars globally with a rounded thumb, and a scroller
+ * we own is plugin content: a rounded thumb inside a frame with no radius
+ * anywhere else is the one curve on the surface. ::-webkit-scrollbar is the
+ * only handle Electron gives us for it.
+ */
+.rsb ::-webkit-scrollbar-thumb,
+.rsb ::-webkit-scrollbar-track,
+.rsb-scroll::-webkit-scrollbar-thumb,
+.rsb-scroll::-webkit-scrollbar-track {
+    border-radius: 0;
+}
+
+.rsb *,
+.rsb *::before,
+.rsb *::after {
+    box-sizing: border-box;
+}
+
+/* box-shadow: none above removes Discord's focus rings from anything nested in
+   our surfaces, so the ring is re-drawn as an outline, which no reset touches. */
+.rsb :focus-visible,
+.rsb.rsb-mark:focus-visible {
+    outline: 2px solid var(--rsb-focus);
+    outline-offset: 2px;
+}
+
+.rsb ::selection {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+}
+
+/* -------------------------------------------------------------------------
+   type ramp
+
+   Eight named steps and no more (DESIGN.md:233-236). A literal font-size that
+   is not one of these is drift.
+   ------------------------------------------------------------------------- */
+
+.rsb-title {
+    font-size: var(--rsb-title-size);
+    font-weight: var(--rsb-title-weight);
+    line-height: 1.25;
+    letter-spacing: var(--rsb-title-track);
+    color: var(--rsb-ink);
+    margin: 0;
+}
+
+.rsb-body {
+    font-size: var(--rsb-body-size);
+    font-weight: 400;
+    line-height: 1.62;
+    letter-spacing: var(--rsb-body-track);
+    color: var(--rsb-ink);
+    margin: 0;
+}
+
+/* prose that is read rather than scanned gets the measure cap */
+.rsb-body--measure {
+    max-width: var(--rsb-measure);
+}
+
+.rsb-data {
+    font-size: var(--rsb-data-size);
+    font-weight: 400;
+    line-height: 1.62;
+    letter-spacing: var(--rsb-body-track);
+}
+
+.rsb-label {
+    display: block;
+    font-size: var(--rsb-label-size);
+    font-weight: var(--rsb-label-weight);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-label-track);
+    text-transform: uppercase;
+    color: var(--rsb-ink);
+}
+
+/*
+ * micro is the floor of the ramp and it is ornament-adjacent, but it is still
+ * content: ids, rule handles, retention notices. The Pure Ink Rule
+ * (DESIGN.md:245-249) therefore applies — full-opacity ink, never a dimmed
+ * grey. Anything that genuinely wants to be dim is ornament and must be
+ * aria-hidden and unselectable, which is what .rsb-chip is.
+ */
+.rsb-micro {
+    font-size: var(--rsb-micro-size);
+    font-weight: 400;
+    line-height: 1.9;
+    letter-spacing: var(--rsb-micro-track);
+    color: var(--rsb-ink);
+}
+
+.rsb-action {
+    font-size: var(--rsb-action-size);
+    font-weight: var(--rsb-action-weight);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-action-track);
+    text-transform: uppercase;
+}
+
+/* -------------------------------------------------------------------------
+   surfaces the plugin owns end to end
+   ------------------------------------------------------------------------- */
+
+.rsb--field {
+    background: var(--rsb-ground);
+    color: var(--rsb-ink);
+    padding: var(--rsb-md);
+}
+
+/* vertical rhythm helper: hairline-separated stack, never a tinted divider */
+.rsb-stack > * + * {
+    margin-top: var(--rsb-md);
+}
+
+.rsb-hr {
+    border: 0;
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+    margin: var(--rsb-md) 0;
+}
+
+.rsb-link {
+    color: var(--rsb-ink);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.rsb-link:hover,
+.rsb-link:focus-visible {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+    text-decoration: none;
+}
+
+/* an action rendered as a link rather than a button — same type as .rsb-btn's
+   label so a row of controls reads as one row, with no second fill in it */
+.rsb-link--action {
+    font-size: var(--rsb-action-size);
+    font-weight: var(--rsb-action-weight);
+    letter-spacing: var(--rsb-action-track);
+    text-transform: uppercase;
+}
+
+/* -------------------------------------------------------------------------
+   identity band — the head of a report
+
+   Square avatar, hairline framed. The HTML export draws a 50% radius
+   (rsb/htmlrender.py:80) — that is the old export skin, not this language.
+   ------------------------------------------------------------------------- */
+
+.rsb-id {
+    display: flex;
+    align-items: center;
+    gap: var(--rsb-md);
+}
+
+.rsb-id__avatar {
+    display: block;
+    width: 48px;
+    height: 48px;
+    flex: none;
+    object-fit: cover;
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    background: var(--rsb-ground);
+}
+
+/*
+ * No avatar to draw. The frame still stands, filled with a diagonal bar field
+ * rather than a grey square — the No Grey Fill Rule applies to a placeholder
+ * exactly as it applies to a panel, and this is one of the two places
+ * --rsb-texture-2 is legitimately used: the element is aria-hidden ornament.
+ */
+.rsb-id__avatar--blank {
+    background-image: repeating-linear-gradient(
+        135deg,
+        var(--rsb-texture-2) 0 var(--rsb-hairline),
+        transparent var(--rsb-hairline) 6px
+    );
+}
+
+.rsb-id__text {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow-wrap: anywhere;
+}
+
+/* the band's remaining width, filled by density: the same argument as the node
+   header's chip, so the identity reads as the head of a frame rather than a row */
+.rsb-id__chip {
+    align-self: center;
+}
+
+/* -------------------------------------------------------------------------
+   node — the hairline rectangle every section lives in
+   ------------------------------------------------------------------------- */
+
+.rsb-node {
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    background: transparent;
+}
+
+.rsb-node__hd {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.6rem var(--rsb-md);
+    border-bottom: var(--rsb-hairline) solid var(--rsb-rule);
+    font-size: var(--rsb-micro-size);
+    font-weight: var(--rsb-label-weight);
+    line-height: 1.62;
+    letter-spacing: 0.21em;
+    text-transform: uppercase;
+    color: var(--rsb-ink);
+}
+
+.rsb-node__name {
+    white-space: nowrap;
+}
+
+.rsb-node__count {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.rsb-node__bd {
+    padding: 1.1rem var(--rsb-md) 1.3rem;
+}
+
+/*
+ * The chip: the header's remaining width, filled with a bar field rather than a
+ * tint. This is the No Grey Fill Rule made literal — the header separates from
+ * the body by density, not by a lighter panel. Ornament, so it is aria-hidden
+ * in the markup and unselectable here.
+ */
+.rsb-chip {
+    flex: 1 1 auto;
+    min-width: 1.5rem;
+    height: 10px;
+    background: currentColor;
+    opacity: 0.5;
+    user-select: none;
+    -webkit-user-select: none;
+    pointer-events: none;
+    -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px, #000 4px 6px, transparent 6px 11px, #000 11px 12px, transparent 12px 17px);
+    mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px, #000 4px 6px, transparent 6px 11px, #000 11px 12px, transparent 12px 17px);
+    -webkit-mask-size: 17px 100%;
+    /* one pattern period, so the drift loops seamlessly */
+    --rsb-drift: 17px;
+    mask-size: 17px 100%;
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+}
+
+/* -------------------------------------------------------------------------
+   meter and mark — the drawn geometry that carries a verdict
+
+   No glyphs, no icon fonts, no emoji (DESIGN.md:611-616): a drawn mark takes
+   currentColor and inverts for free, and a typed codepoint does neither.
+
+   Duty cycle is a second, redundant carrier of the tier, so the tier survives
+   for a reader who cannot separate the hues. The tier -> period mapping is the
+   page's m4..m0 (docs/index.html:918-947).
+   ------------------------------------------------------------------------- */
+
+.rsb-meter {
+    display: block;
+    width: 74px;
+    height: 9px;
+    flex: none;
+    background: var(--rsb-verdict);
+    -webkit-mask-image: var(--rsb-duty);
+    mask-image: var(--rsb-duty);
+    -webkit-mask-size: var(--rsb-duty-period) 100%;
+    mask-size: var(--rsb-duty-period) 100%;
+    /* the duty period *is* the pattern period, so it is also the drift */
+    --rsb-drift: var(--rsb-duty-period);
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+}
+
+.rsb-meter--wide {
+    width: 100%;
+}
+
+/*
+ * The ledger duty cycles. mask-size is pinned to exactly one period so the
+ * field tiles seamlessly at any width — the page can get away with
+ * mask-repeat: no-repeat because its meters are a fixed 74px.
+ */
+.rsb-meter[data-verdict="THREAT"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 5px);
+    --rsb-duty-period: 5px;
+}
+
+.rsb-meter[data-verdict="CAUTION"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 6px);
+    --rsb-duty-period: 6px;
+}
+
+.rsb-meter[data-verdict="INFO"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 7px);
+    --rsb-duty-period: 7px;
+}
+
+.rsb-meter[data-verdict="NO_DETECTIONS"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 12px);
+    --rsb-duty-period: 12px;
+}
+
+.rsb-meter[data-verdict="UNKNOWN"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 24px);
+    --rsb-duty-period: 24px;
+}
+
+/*
+ * A lookup that has not come back yet. Hairline outline, no fill, no spinner:
+ * nothing in this world animates position, and an empty frame is an honest
+ * picture of "nothing has been said about this member yet".
+ */
+.rsb-meter--pending,
+.rsb-mark--pending {
+    background: transparent;
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    -webkit-mask-image: none;
+    mask-image: none;
+}
+
+/*
+ * The decorator. The ledger meter at member-list scale: it lands inside
+ * .vc-member-list-decorators-wrapper, which is a 0.25em-gapped flex row with
+ * roughly 16px of usable height.
+ */
+.rsb-mark {
+    display: block;
+    width: 10px;
+    height: 9px;
+    flex: none;
+    cursor: pointer;
+    background: var(--rsb-verdict);
+    -webkit-mask-image: var(--rsb-duty);
+    mask-image: var(--rsb-duty);
+    -webkit-mask-size: var(--rsb-duty-period) 100%;
+    mask-size: var(--rsb-duty-period) 100%;
+    /* the duty period *is* the pattern period, so it is also the drift */
+    --rsb-drift: var(--rsb-duty-period);
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+}
+
+/* message and DM surfaces sit on a taller line, so the mark grows with it */
+.rsb-mark--message {
+    width: 12px;
+    height: 10px;
+    display: inline-block;
+    vertical-align: middle;
+    margin: 0 0.25em;
+}
+
+.rsb-mark--dm {
+    width: 10px;
+    height: 9px;
+}
+
+/*
+ * Tighter periods than the ledger, because 74px of duty cycle does not survive
+ * being scaled to 10px. Two-thirds / one-third / one-fifth ink is a difference
+ * a reader can still see at this size.
+ */
+.rsb-mark[data-verdict="THREAT"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 3px);
+    --rsb-duty-period: 3px;
+}
+
+.rsb-mark[data-verdict="CAUTION"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 3px);
+    --rsb-duty-period: 3px;
+}
+
+.rsb-mark[data-verdict="INFO"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 5px);
+    --rsb-duty-period: 5px;
+}
+
+/*
+ * Mark.tsx renders nothing at all for these two — findings only, per
+ * rsb/tui/app.py:121-134 — so these rules should never match. They exist
+ * because an unmasked .rsb-mark would fall back to a solid block of colour,
+ * which is the loudest possible mark for the two tiers that deserve the
+ * quietest, and because a legend elsewhere may legitimately draw all five.
+ */
+.rsb-mark[data-verdict="NO_DETECTIONS"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 8px);
+    --rsb-duty-period: 8px;
+}
+
+.rsb-mark[data-verdict="UNKNOWN"] {
+    --rsb-duty: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 12px);
+    --rsb-duty-period: 12px;
+}
+
+/* the verdict word itself, and the only other place a hue is allowed */
+.rsb-verdict {
+    color: var(--rsb-verdict);
+    font-weight: var(--rsb-action-weight);
+    white-space: nowrap;
+}
+
+.rsb-verdict-line {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--rsb-sm);
+}
+
+/* the meaning beside the verdict is content, so it is pure ink, never dimmed */
+.rsb-verdict-line .rsb-meaning {
+    color: var(--rsb-ink);
+}
+
+/* -------------------------------------------------------------------------
+   ledger
+   ------------------------------------------------------------------------- */
+
+/* six columns of monospace do not fit a modal at every window width, so the
+   table scrolls sideways inside its own frame instead of forcing the modal to */
+.rsb-ledger__wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.rsb-ledger {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--rsb-data-size);
+    letter-spacing: var(--rsb-body-track);
+}
+
+.rsb-ledger caption {
+    text-align: left;
+    font-size: var(--rsb-label-size);
+    font-weight: var(--rsb-label-weight);
+    letter-spacing: var(--rsb-label-track);
+    text-transform: uppercase;
+    color: var(--rsb-ink);
+    padding-bottom: var(--rsb-md);
+}
+
+.rsb-ledger th,
+.rsb-ledger td {
+    text-align: left;
+    padding: 0.8rem var(--rsb-md) 0.8rem 0;
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+    vertical-align: top;
+}
+
+/*
+ * The header is the one place an opaque fill is unavoidable: a sticky row that is
+ * not opaque has the table scrolling through it. Opaque does not have to mean
+ * *different*, though, which is what the old #101010 assumed — so it takes the
+ * ground itself and separates from the body on a hairline, exactly as the
+ * inverted frame has always had to. --rsb-near is the ground; it is written by
+ * name here rather than as --rsb-ground because "the raised step" is still the
+ * job this fill is doing, and the token records that the step is now zero.
+ */
+.rsb-ledger thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    /* opaque, not a tone step: the ground itself, so rows scroll *under* the
+       header rather than through it. The separation below is a line. */
+    background: var(--rsb-near);
+    border-top: 0;
+    padding-bottom: 0.5rem;
+    font-size: var(--rsb-label-size);
+    font-weight: var(--rsb-label-weight);
+    letter-spacing: 0.17em;
+    text-transform: uppercase;
+    color: var(--rsb-ink);
+    white-space: nowrap;
+}
+
+/*
+ * The hairline under the sticky header, drawn rather than declared.
+ *
+ * `.rsb-ledger` is `border-collapse: collapse`, and a collapsed border belongs
+ * to the *table* rather than to the cell — so a `border-bottom` here stays
+ * where the table painted it while the sticky header travels, and the header
+ * loses its underline the moment the body scrolls. A hairline positioned inside
+ * the cell moves with the cell. Same construction as `.rsb-basis__item::before`
+ * for the same reason: this system's separators are lines it draws, not borders
+ * it asks a layout mode for.
+ */
+.rsb-ledger thead th::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: var(--rsb-hairline);
+    background: var(--rsb-rule);
+}
+
+.rsb-ledger tbody th {
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+}
+
+.rsb-ledger td.rsb-verdict {
+    font-weight: 700;
+}
+
+/*
+ * Unscoped: the scan modal's summary tally and its role picker both print a
+ * count outside any table, and a figure that is right-aligned and tabular in
+ * one place and not in another is drift a reader sees before they can name it.
+ */
+.rsb-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The VERDICT column: the drawn mark and the verdict word on one line.
+ *
+ * The cell keeps `display: table-cell` — a `<td>` switched to flex drops out of
+ * the row's column model and the header stops lining up with the body — so the
+ * two children are laid inline instead, and the meter is narrowed because 74px
+ * of ledger meter is wider than the word beside it. The mask tiles at one
+ * period, so any width still draws a whole number of stripes.
+ */
+.rsb-ledger__verdict {
+    white-space: nowrap;
+}
+
+.rsb-ledger__verdict .rsb-meter {
+    display: inline-block;
+    width: 44px;
+    vertical-align: middle;
+    margin-right: var(--rsb-xs);
+}
+
+.rsb-ledger__verdict .rsb-verdict-line {
+    display: inline-flex;
+    vertical-align: middle;
+}
+
+/*
+ * The TRIAGE column's recommendation word. The component resolves the
+ * recommendation to a verdict tier and puts it on `data-verdict`, so the hue is
+ * already in scope here; this is the rule that spends it.
+ */
+.rsb-rec {
+    color: var(--rsb-verdict);
+    font-weight: var(--rsb-action-weight);
+    white-space: nowrap;
+}
+
+/*
+ * The second line in a ledger cell: `@handle` under a display name, `rule R7`
+ * under a recommendation. It is micro type and full-opacity ink — an audit
+ * handle is content, and the rule id in particular is the thing a moderator
+ * needs in order to disagree with the call, so it is never dimmed.
+ */
+.rsb-row__handle {
+    display: block;
+    font-size: var(--rsb-micro-size);
+    font-weight: 400;
+    line-height: 1.9;
+    letter-spacing: var(--rsb-micro-track);
+    color: var(--rsb-ink);
+}
+
+/*
+ * Row hover, carried on a hairline rather than on a fill.
+ *
+ * This was the one hover fill in the plugin — #161616, from rsb/tui/theme.py:44 —
+ * and it was still a fill: Discord's --background-modifier-hover is exactly the
+ * "slightly lighter panel" DESIGN.md:240-243 forbids, and a near-black one is no
+ * less a panel for being nearly the ground. --rsb-hover now paints nothing and
+ * the state is drawn.
+ *
+ * An inset outline is the device because it draws over the row's own borders
+ * without adding a pixel to its box, so nothing reflows as the pointer travels
+ * down a table — the same reason nothing else in this world animates position.
+ * The outline is ink rather than the rule: #2a2a2a on black is 1.36:1, which is a
+ * line you can see when you know it is there and not a pointer report. Ink flips
+ * with the frame, so `.rsb--invert` gets the black one for free.
+ */
+.rsb-row {
+    cursor: pointer;
+}
+
+.rsb-row:hover,
+.rsb-row:focus-within {
+    background: var(--rsb-hover);
+    outline: var(--rsb-hairline) solid var(--rsb-ink);
+    outline-offset: calc(var(--rsb-hairline) * -1);
+}
+
+/* -------------------------------------------------------------------------
+   buttons
+   ------------------------------------------------------------------------- */
+
+.rsb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--rsb-sm);
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+    border: var(--rsb-hairline) solid var(--rsb-ink);
+    padding: 0.85rem 1.15rem;
+    font-family: var(--rsb-font);
+    font-size: var(--rsb-action-size);
+    font-weight: var(--rsb-action-weight);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-action-track);
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+        background 180ms cubic-bezier(0.16, 1, 0.3, 1),
+        color 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/*
+ * The button tick: `html.motion .btn .tick` on the page, ported.
+ *
+ * A stripe strip in the button face taking `currentColor`, so it inverts with
+ * the face on hover without a second rule. It is the only piece of the page's
+ * motion vocabulary the first port left out, and without it a button is the one
+ * surface in the system with no ornament to drift.
+ */
+.rsb-tick {
+    flex: none;
+    width: 1.6rem;
+    height: 7px;
+    background: currentColor;
+    -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px);
+    mask-image: repeating-linear-gradient(90deg, #000 0 1px, transparent 1px 4px);
+    -webkit-mask-repeat: repeat-x;
+    mask-repeat: repeat-x;
+    /* one pattern period, so the drift loops seamlessly */
+    --rsb-drift: 4px;
+    user-select: none;
+}
+
+/* a disabled button is a hairline outline; its tick goes with the face */
+.rsb-btn:disabled .rsb-tick {
+    opacity: 0.45;
+}
+
+.rsb-btn:hover,
+.rsb-btn:focus-visible {
+    background: var(--rsb-ground);
+    color: var(--rsb-ink);
+}
+
+.rsb-btn--quiet {
+    background: transparent;
+    color: var(--rsb-ink);
+    border-color: var(--rsb-quiet);
+    font-weight: 500;
+}
+
+.rsb-btn--quiet:hover,
+.rsb-btn--quiet:focus-visible {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+    border-color: var(--rsb-ink);
+}
+
+/*
+ * Disabled is drawn as a hairline outline with no fill rather than a greyed
+ * face, for the same reason as everything else here: grey is a line, not a
+ * surface. The label stays pure ink so it remains readable.
+ */
+.rsb-btn[disabled],
+.rsb-btn[aria-disabled="true"] {
+    background: transparent;
+    color: var(--rsb-ink);
+    border-color: var(--rsb-rule);
+    cursor: default;
+    pointer-events: none;
+}
+
+/* every row of controls in the plugin: modal footers, the pre-flight, the
+   ledger's filter, the status panel */
+.rsb-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--rsb-sm);
+    align-items: center;
+}
+
+/* -------------------------------------------------------------------------
+   small compositions
+   ------------------------------------------------------------------------- */
+
+.rsb-kv {
+    display: flex;
+    gap: var(--rsb-sm);
+    align-items: baseline;
+    font-size: var(--rsb-data-size);
+}
+
+.rsb-kv__k {
+    flex: none;
+    min-width: 9ch;
+    font-size: var(--rsb-micro-size);
+    letter-spacing: var(--rsb-micro-track);
+    text-transform: uppercase;
+    color: var(--rsb-ink);
+}
+
+.rsb-kv__v {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* an empty state is a sentence, not an illustration */
+.rsb-empty {
+    padding: var(--rsb-md) 0;
+    font-size: var(--rsb-data-size);
+    color: var(--rsb-ink);
+    max-width: var(--rsb-measure);
+}
+
+/* free text from a third party: shown, never parsed as markdown or HTML */
+.rsb-evidence {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: var(--rsb-data-size);
+    max-width: var(--rsb-measure);
+}
+
+/* progress: a hairline frame filled with a bar field, not a coloured track */
+.rsb-bar {
+    height: 12px;
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    background: transparent;
+    overflow: hidden;
+}
+
+.rsb-bar__fill {
+    height: 100%;
+    background: var(--rsb-ink);
+    -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 5px);
+    mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 5px);
+    -webkit-mask-size: 5px 100%;
+    mask-size: 5px 100%;
+    /* one pattern period, so the drift loops seamlessly */
+    --rsb-drift: 5px;
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+}
+
+/* -------------------------------------------------------------------------
+   scrollers
+
+   Discord's ScrollerThin is the only host component the plugin nests inside on
+   purpose, because a modal that grows past the viewport is a modal with no
+   footer — and the footer is where the attribution and the retention notice
+   live. It needs a bound to scroll against, which is all these rules give it.
+   ------------------------------------------------------------------------- */
+
+.rsb-scroll {
+    min-height: 0;
+    max-height: 58vh;
+}
+
+/*
+ * A scroller *inside* the scan modal is a panel within a surface that already
+ * has its own height, so it takes a smaller share. Two nested scrollers each
+ * claiming 58vh is the classic double-scrollbar, and in a ledger it means the
+ * summary underneath — the part that says what was not answered — never comes
+ * into view.
+ */
+.rsb-scan .rsb-scroll {
+    max-height: 34vh;
+}
+
+/* -------------------------------------------------------------------------
+   the surfaces the plugin owns end to end
+
+   These three roots are painted with the ground rather than left transparent.
+   A decorator must not paint a black box into someone else's member list, but
+   a modal body, a settings panel and a profile block are ours from frame to
+   frame — and `.rsb` imposes white ink unconditionally, so a transparent root
+   is white-on-white the moment somebody runs Discord's light theme.
+   ------------------------------------------------------------------------- */
+
+/* Ground, ink and padding come from `.rsb--field`, which all three roots carry.
+   Restating them here would be two copies of one decision, and the copy that
+   gets edited is never the one that is read. These rules add layout only. */
+.rsb-report,
+.rsb-scan,
+.rsb-purge,
+.rsb-mod,
+.rsb-status {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-md);
+}
+
+.rsb-status__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--rsb-sm);
+    align-items: center;
+    margin: var(--rsb-sm) 0;
+}
+
+/*
+ * The scan history adds no classes of its own, and that is a decision rather
+ * than an omission. A stored scan is the same object as a live one — a source,
+ * a backend, counts, a ledger of findings — so the history modal draws it with
+ * `.rsb-node`, `.rsb-job*`, `.rsb-ledger*`, `.rsb-tally*` and `.rsb-warn`
+ * exactly as the scan window does, and the settings panel's scan-database block
+ * is another `.rsb-node` with `.rsb-status__actions` under it. Two surfaces
+ * showing one kind of thing must not drift apart by having two stylesheets, so
+ * nothing above is unused: `.rsb-jobs`/`.rsb-job` in particular have a second
+ * caller in components/HistoryModal.tsx and are not the scan queue's alone.
+ */
+
+/*
+ * The modal title sits in Discord's own header, above our root, so it is host
+ * chrome carrying our type rather than our surface carrying host type. That is
+ * the one case where the host's text token is the right answer — a title
+ * hard-set to #ffffff disappears against a light-theme modal header — and it
+ * costs nothing, because a title is not evidence.
+ */
+.rsb-modal-title {
+    display: inline-block;
+    font-size: var(--rsb-label-size);
+    font-weight: var(--rsb-label-weight);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-label-track);
+    text-transform: uppercase;
+    color: var(--text-strong, var(--rsb-ink));
+}
+
+/* the footer of a modal: the attribution, the appeal route, the retention
+   notice. Ruled off from the report above it, never boxed. */
+.rsb-foot {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--rsb-xs);
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+    padding-top: var(--rsb-md);
+    max-width: var(--rsb-measure);
+}
+
+.rsb-foot .rsb-actions {
+    margin-bottom: var(--rsb-xs);
+}
+
+/* a failed scan, stated in its own frame rather than as a red banner: the run
+   failing is not a verdict about anybody, so it gets no verdict hue */
+.rsb-error {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    padding: var(--rsb-md);
+}
+
+/* -------------------------------------------------------------------------
+   the triage call
+   ------------------------------------------------------------------------- */
+
+/*
+ * Ruled off on the left rather than framed, so it reads as an annotation on the
+ * verdict above it rather than as a second, competing claim. The recommendation
+ * word carries the hue; the frame stays a hairline.
+ */
+.rsb-triage {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    align-items: flex-start;
+    border-left: var(--rsb-hairline) solid var(--rsb-rule);
+    padding-left: var(--rsb-md);
+}
+
+.rsb-triage__hd {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+}
+
+/* the basis lines: why the rule fired, one clause each */
+.rsb-basis {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    list-style: none;
+    margin: var(--rsb-xs) 0 0;
+    padding: 0;
+    max-width: var(--rsb-measure);
+}
+
+/*
+ * The marker is a drawn hairline, not a bullet character. Same rule as the
+ * verdict marks (DESIGN.md:611-616): a typed codepoint neither inverts nor
+ * takes currentColor, and `list-style` would hand the shape to the font.
+ */
+.rsb-basis__item {
+    position: relative;
+    padding-left: 1.3rem;
+    font-size: var(--rsb-data-size);
+    line-height: 1.62;
+    color: var(--rsb-ink);
+}
+
+.rsb-basis__item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.75em;
+    width: 0.8rem;
+    height: var(--rsb-hairline);
+    background: currentColor;
+}
+
+/* -------------------------------------------------------------------------
+   linked accounts — the evidence itself
+   ------------------------------------------------------------------------- */
+
+/*
+ * The left rule takes the account's own verdict hue. That is colour used as
+ * evidence in the strict sense — the block is a claim about one account and the
+ * rule states its tier — and it is never the only carrier: the meter's duty
+ * cycle, the flag name and the actionability line all say it again in the
+ * header immediately beside it.
+ */
+.rsb-acct {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    align-items: flex-start;
+    border-left: var(--rsb-hairline) solid var(--rsb-verdict);
+    padding-left: var(--rsb-md);
+}
+
+.rsb-acct + .rsb-acct {
+    margin-top: var(--rsb-lg);
+    padding-top: var(--rsb-lg);
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+.rsb-acct__hd {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--rsb-sm);
+}
+
+/* one detector's finding within an account, ruled off from the account's own
+   facts because the words in it are the detector's, not Rotector's summary */
+.rsb-reason {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    align-items: flex-start;
+    margin-top: var(--rsb-sm);
+    border-left: var(--rsb-hairline) solid var(--rsb-rule);
+    padding-left: var(--rsb-sm);
+}
+
+.rsb-reason__name {
+    font-size: var(--rsb-data-size);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+}
+
+/* -------------------------------------------------------------------------
+   sources — who was asked, including whoever did not answer
+   ------------------------------------------------------------------------- */
+
+.rsb-source {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+    padding: var(--rsb-sm) 0;
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+.rsb-source__name {
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.rsb-source__state {
+    font-size: var(--rsb-data-size);
+    color: var(--rsb-ink);
+}
+
+/*
+ * A database that did not answer. It is indented behind a rule in the CAUTION
+ * hue so that silence is structurally different from an answer and not merely a
+ * different colour — letting an outage sit flush with a "no detections" line is
+ * the single easiest way for this plugin to mislead somebody.
+ */
+.rsb-source--silent {
+    border-left: var(--rsb-hairline) solid var(--rsb-verdict);
+    padding-left: var(--rsb-md);
+}
+
+/* -------------------------------------------------------------------------
+   staleness
+
+   A finding answered more than 24 hours ago. It only exists because one setting
+   can lift the retention ceiling past Rotector's Terms of Use window — and
+   because a window left open overnight ages its own results — so anything shown
+   from beyond that window says how old it is, everywhere it is shown.
+
+   The CAUTION hue is borrowed rather than invented, and the precedent is
+   `.rsb-source--silent` directly above: a source that went quiet is drawn in
+   CAUTION because it is a finding *about the evidence*, which is what the design
+   language reserves colour for. Staleness is the same kind of fact — the
+   evidence is real and it is old — so it takes the same treatment: the hue
+   arrives through `data-verdict="CAUTION"` on the element, the same indent
+   behind a hairline says it structurally as well as chromatically, and no sixth
+   colour enters the plugin. The verdict mark's own hue never changes; a stale
+   THREAT is still a THREAT, about three days ago.
+   ------------------------------------------------------------------------- */
+
+.rsb-stale {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+    padding: var(--rsb-sm) 0;
+    border-left: var(--rsb-hairline) solid var(--rsb-verdict);
+    padding-left: var(--rsb-md);
+}
+
+/*
+ * The short form: "STALE 3d" under a verdict in a ledger cell. Block, because it
+ * belongs under the verdict it qualifies rather than beside it, and a ledger row
+ * has no width to spare — the same construction `.rsb-row__handle` uses for the
+ * `@handle` and the rule id.
+ */
+.rsb-stale-tag {
+    display: block;
+    color: var(--rsb-verdict);
+    font-size: var(--rsb-micro-size);
+    font-weight: var(--rsb-action-weight);
+    letter-spacing: var(--rsb-micro-track);
+    line-height: 1.9;
+    white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------
+   tracked servers
+   ------------------------------------------------------------------------- */
+
+.rsb-srv {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+    padding: var(--rsb-xs) 0;
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+.rsb-srv__name {
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------------------------------
+   the source picker
+
+   `.rsb-source` is shared with the report's source lines above, which are a
+   baseline row of spans; a picker entry is a stacked hit target with an
+   expanding role list under it. The child combinator off `.rsb-sources` is what
+   separates the two — the report's lines have no such parent.
+   ------------------------------------------------------------------------- */
+
+.rsb-sources {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-sm);
+}
+
+.rsb-sources > .rsb-source {
+    display: block;
+    padding: 0;
+    border-top: 0;
+}
+
+.rsb-source__hit {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--rsb-xs);
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    color: var(--rsb-ink);
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    padding: var(--rsb-sm) var(--rsb-md);
+    font-family: var(--rsb-font);
+    font-size: var(--rsb-body-size);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-body-track);
+    cursor: pointer;
+}
+
+.rsb-source__hit:hover,
+.rsb-source__hit:focus-visible {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+    border-color: var(--rsb-ink);
+}
+
+.rsb-source__label {
+    font-weight: 700;
+    color: inherit;
+}
+
+/* the source's coverage sentence: micro type, full-opacity, and inheriting the
+   hover inversion so it never drops out of the target it belongs to */
+.rsb-source__meta {
+    font-size: var(--rsb-micro-size);
+    font-weight: 400;
+    line-height: 1.9;
+    letter-spacing: var(--rsb-micro-track);
+    color: inherit;
+}
+
+.rsb-roles {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--rsb-xs);
+    margin-top: var(--rsb-sm);
+    border-left: var(--rsb-hairline) solid var(--rsb-rule);
+    padding-left: var(--rsb-md);
+}
+
+.rsb-role {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    color: var(--rsb-ink);
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    padding: var(--rsb-xs) var(--rsb-sm);
+    font-family: var(--rsb-font);
+    font-size: var(--rsb-data-size);
+    line-height: 1.62;
+    letter-spacing: var(--rsb-body-track);
+    cursor: pointer;
+}
+
+.rsb-role:hover,
+.rsb-role:focus-visible {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+    border-color: var(--rsb-ink);
+}
+
+/* -------------------------------------------------------------------------
+   the scan summary's tally
+   ------------------------------------------------------------------------- */
+
+.rsb-tally {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+}
+
+.rsb-tally__row {
+    display: flex;
+    align-items: center;
+    gap: var(--rsb-sm);
+    padding: var(--rsb-xs) 0;
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+/* the count is the figure the row exists to state, so it is set against the
+   far edge where the eye can run down the column of them */
+.rsb-tally__row .rsb-num {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------------------
+   the profile panel section
+
+   The compact report, embedded in somebody else's panel. It is framed and
+   painted with the ground for the same reason the modals are: this block is
+   ours end to end, and `.rsb` imposes white ink whatever theme is underneath.
+   ------------------------------------------------------------------------- */
+
+.rsb-profile {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--rsb-xs);
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    background: var(--rsb-ground);
+    color: var(--rsb-ink);
+    padding: var(--rsb-sm) var(--rsb-md);
+}
+
+.rsb-profile--full {
+    max-width: var(--rsb-measure);
+}
+
+/* the sidebar panel is roughly 22ch wide; the type ramp does not change, the
+   padding does, and the rows wrap instead of scrolling sideways */
+.rsb-profile--sidebar {
+    padding: var(--rsb-xs) var(--rsb-sm);
+}
+
+.rsb-profile__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+}
+
+/* -------------------------------------------------------------------------
+   inversion
+
+   The only alternative surface state there is: a whole frame flips to black on
+   white. There is no half-measure tint between the two, and every supporting
+   tone flips with it — a half-inverted frame with dark-mode rules left inside
+   is the exact failure this rule exists to prevent (DESIGN.md:227-231, 579-582).
+
+   The purge screen's `.rsb-warn` is what earns it: "this cannot be undone" is
+   the one passage in the plugin that has to stop a reader, and the way this
+   system does emphasis is inversion rather than a colour. Deliberately not a
+   colour — the five verdict hexes mean "evidence about a person", so a warning
+   painted in one would be claiming to be a finding, and a sixth hue invented
+   for warnings would stop the other five reading as evidence at all.
+   ------------------------------------------------------------------------- */
+
+.rsb.rsb--invert,
+.rsb .rsb--invert {
+    --rsb-ink: #000000;
+    --rsb-ground: #ffffff;
+
+    /*
+     * Read from the declared tokens rather than restated as literals. The four
+     * inverted tones are named in DESIGN.md:227-231 and they were being spelled
+     * out here as hex while the tokens holding the same decision sat unread a
+     * few lines above — two copies of one choice, which is one copy too many
+     * the first time either moves.
+     *
+     * --rsb-quiet takes Invert Comment rather than Invert Label because the
+     * quiet stroke is the mirror of #9a9a9a: the *lighter* of the two greys
+     * against its own ground, so that a secondary button outlines without
+     * reading as a second rule weight. Invert Label goes where DESIGN.md puts
+     * it, on section labels, just below.
+     */
+    --rsb-rule: var(--rsb-invert-rule);
+    --rsb-texture-1: var(--rsb-invert-texture);
+    --rsb-texture-2: var(--rsb-invert-texture);
+    --rsb-quiet: var(--rsb-invert-comment);
+
+    /*
+     * These two are restated rather than left to inherit, and they now say
+     * exactly what the base block above says: the raised step is the ground and
+     * hover paints nothing. That used to be an asymmetry — this frame had no
+     * counterpart to #101010 / #161616, since a #f4f4f4 header is precisely the
+     * "slightly lighter panel" the No Grey Fill Rule refuses — and the dark frame
+     * has since been brought here rather than the other way round. Written out
+     * because the values are relative: they resolve against *this* block's
+     * --rsb-ground, so a reader can see that the inverted frame is two values in
+     * the same way the upright one is.
+     */
+    --rsb-near: var(--rsb-ground);
+    --rsb-hover: transparent;
+
+    background: var(--rsb-ground);
+    color: var(--rsb-ink);
+}
+
+/*
+ * Section labels dim in an inverted frame — DESIGN.md:229 names Invert Label
+ * for exactly this. It does not breach the Pure Ink Rule: a node's uppercase
+ * heading is structural chrome, and the count beside it, which is a measured
+ * figure, deliberately stays ink.
+ */
+.rsb--invert .rsb-label,
+.rsb--invert .rsb-node__name {
+    color: var(--rsb-invert-label);
+}
+
+/* ornament flips to the inverted texture tone rather than inheriting a dimmed
+   label colour through currentColor */
+.rsb--invert .rsb-chip {
+    background: var(--rsb-invert-texture);
+    opacity: 1;
+}
+
+/*
+ * The sticky ledger header and the row hover used to need putting back here,
+ * because the upright frame drew them with a fill this one had nothing to answer
+ * with. They are not restated any more: the base rules above draw both out of
+ * --rsb-near, --rsb-hover and --rsb-ink, all three of which this block has
+ * already flipped, so an inverted ledger gets a white header on a #c4c4c4 rule
+ * and a black hover outline without a second copy of either decision.
+ */
+
+.rsb--invert ::selection {
+    background: var(--rsb-ink);
+    color: var(--rsb-ground);
+}
+
+/* -------------------------------------------------------------------------
+   the scan queue (components/ScanModal.tsx)
+
+   Several scans at once split one rate-limit budget rather than adding a
+   second, so the queue is a list of claims on a shared thing. It reads as a
+   stack of ruled rows for exactly that reason: no boxes, no fills, nothing
+   that suggests one scan has a lane of its own.
+   ------------------------------------------------------------------------- */
+
+.rsb-jobs {
+    display: flex;
+    flex-direction: column;
+}
+
+.rsb-job {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    padding: var(--rsb-sm) 0;
+    border-bottom: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+.rsb-job:last-child {
+    border-bottom: 0;
+}
+
+/* The job whose results are on screen. A rule on the left rather than a fill,
+   which is the same device the triage annotation uses: emphasis here is a
+   hairline moving, never a panel changing colour. */
+.rsb-job--current {
+    border-left: var(--rsb-hairline) solid var(--rsb-ink);
+    padding-left: var(--rsb-sm);
+}
+
+.rsb-job__hd {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--rsb-sm);
+}
+
+/* A source label is somebody's server name and can be long; it wraps rather
+   than widening the modal, and the state stays pinned to the right. */
+.rsb-job__name {
+    font-size: var(--rsb-data-size);
+    overflow-wrap: anywhere;
+}
+
+.rsb-job__state {
+    font-size: var(--rsb-micro-size);
+    letter-spacing: var(--rsb-micro-track);
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.rsb-job__meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+}
+
+/* the checkbox column in the ledger: as narrow as its content, never a share
+   of the table's width */
+.rsb-ledger__pick {
+    width: 1%;
+    white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------
+   checkboxes (components/ModerationDialog.tsx, the scan ledger)
+
+   Discord's own checkbox is a rounded filled square with a drawn tick in it;
+   both halves are things this world does not have. So the control is a bare
+   input with `appearance: none` and a hairline frame, and the checked state is
+   an inversion — ink where the ground was — rather than a glyph. It stays a
+   real <input> so the keyboard, the label association and the accessibility
+   tree are Discord's rather than ours to reimplement.
+   ------------------------------------------------------------------------- */
+
+.rsb-check {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+    cursor: pointer;
+}
+
+.rsb-check__box {
+    appearance: none;
+    flex: 0 0 auto;
+    width: 0.82rem;
+    height: 0.82rem;
+    /* baseline-aligned by hand: a bare box has no baseline of its own and
+       would otherwise sit on the text's descender line */
+    transform: translateY(0.06rem);
+    border: var(--rsb-hairline) solid var(--rsb-quiet);
+    background: transparent;
+    cursor: pointer;
+}
+
+.rsb-check__box:checked {
+    background: var(--rsb-ink);
+    border-color: var(--rsb-ink);
+}
+
+.rsb-check__box:disabled {
+    border-style: dashed;
+    cursor: not-allowed;
+}
+
+.rsb-check__text {
+    font-size: var(--rsb-data-size);
+    letter-spacing: normal;
+    overflow-wrap: anywhere;
+}
+
+/* In the ledger the label is there for a screen reader rather than the eye —
+   the row beside it already names the member — so the text is taken out of the
+   layout without being taken out of the accessibility tree. */
+.rsb-ledger__pick .rsb-check__text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------
+   the moderation dialog (components/ModerationDialog.tsx)
+
+   One result per member, as a ruled row. A failed action is marked by a dashed
+   rule rather than by a colour: the five verdict hexes mean "evidence about a
+   person", and painting a failed request in one would claim the failure was a
+   finding.
+   ------------------------------------------------------------------------- */
+
+.rsb-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    padding: var(--rsb-sm) 0;
+    border-bottom: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+.rsb-result:last-child {
+    border-bottom: 0;
+}
+
+.rsb-result--failed {
+    border-left: var(--rsb-hairline) dashed var(--rsb-quiet);
+    padding-left: var(--rsb-sm);
+}
+
+.rsb-result__state {
+    font-size: var(--rsb-micro-size);
+    letter-spacing: var(--rsb-micro-track);
+    text-transform: uppercase;
+}
+
+.rsb-result__name {
+    font-size: var(--rsb-data-size);
+    overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------------------------------
+   the purge screen (components/PurgeModal.tsx)
+   ------------------------------------------------------------------------- */
+
+/* The preview list is the safety mechanism, so it gets the taller scroller of
+   the two — a confirmation given against three visible rows is not one. */
+.rsb-purge .rsb-scroll {
+    max-height: 38vh;
+}
+
+/*
+ * The scope statement and the "this cannot be undone" block.
+ *
+ * Emphasis here is inversion, not colour. The five verdict hexes are the only
+ * colour this plugin emits and they mean "evidence about a person"; a warning
+ * painted in one would be claiming to be a finding, and a sixth hue invented
+ * for warnings would stop the other five reading as evidence at all. The node
+ * carries `.rsb--invert`, which swaps the two values and every supporting tone
+ * with them, so this block is painted out of the same palette as everything
+ * around it rather than out of a new one.
+ */
+.rsb-warn {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    background: var(--rsb-ground);
+    color: var(--rsb-ink);
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    padding: var(--rsb-md);
+    max-width: var(--rsb-measure);
+}
+
+.rsb-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-md);
+}
+
+.rsb-form__row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    max-width: var(--rsb-measure);
+}
+
+/* A hint is content, not ornament, so it stays full-opacity ink and only steps
+   down the ramp. Dimming it is how a "0 = all of it" stops being read. */
+.rsb-form__hint {
+    font-size: var(--rsb-data-size);
+    letter-spacing: normal;
+    line-height: 1.5;
+    color: var(--rsb-ink);
+}
+
+/*
+ * A field is a rule you type on.
+ *
+ * Discord's own TextInput brings a filled grey panel and a corner radius, which
+ * is why the modal draws a bare `<input>` instead: tone here is a hairline, and
+ * `appearance: none` strips the UA's own chrome on top of that. The background
+ * is transparent rather than the ground so a field sits correctly on whichever
+ * frame contains it, inverted or not.
+ */
+.rsb-input {
+    appearance: none;
+    font-family: var(--rsb-font);
+    font-variant-ligatures: none;
+    font-size: var(--rsb-body-size);
+    letter-spacing: var(--rsb-body-track);
+    color: var(--rsb-ink);
+    background: transparent;
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    padding: var(--rsb-xs) var(--rsb-sm);
+    width: 100%;
+}
+
+.rsb-input:focus,
+.rsb-input:focus-visible {
+    outline: var(--rsb-hairline) solid var(--rsb-focus);
+    outline-offset: 2px;
+    border-color: var(--rsb-ink);
+}
+
+/* Disabled draws as a dashed hairline rather than a greyed face — grey is a
+   line in this system and never a surface, the same rule .rsb-btn follows. */
+.rsb-input:disabled {
+    border-style: dashed;
+}
+
+/* the planned messages, one per row, in the order the run will delete them */
+.rsb-preview {
+    display: flex;
+    flex-direction: column;
+}
+
+.rsb-preview__row {
+    display: grid;
+    grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+    gap: var(--rsb-sm);
+    align-items: baseline;
+    padding: var(--rsb-xs) 0;
+    border-bottom: var(--rsb-hairline) solid var(--rsb-rule);
+}
+
+.rsb-preview__row:last-child {
+    border-bottom: 0;
+}
+
+.rsb-preview__when {
+    font-size: var(--rsb-micro-size);
+    letter-spacing: var(--rsb-micro-track);
+    white-space: nowrap;
+}
+
+/* Message text is somebody's own words and can be one unbroken 4,000-character
+   token; `anywhere` keeps that inside the column instead of widening the modal. */
+.rsb-preview__text {
+    font-size: var(--rsb-data-size);
+    overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------------------------------
+   vibe mode — the player, and the field behind it
+
+   The field is the project page's own device: a fixed barcode whose columns
+   never move and whose brightness is the audio (docs/index.html's player).
+   It is drawn into a canvas in currentColor, so it inverts with .rsb--invert
+   for free and there is no glyph anywhere in it.
+   ------------------------------------------------------------------------- */
+
+.rsb-vibe {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+    border-top: var(--rsb-hairline) solid var(--rsb-rule);
+    padding-top: var(--rsb-sm);
+    color: var(--rsb-ink);
+}
+
+.rsb-vibe__hd {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--rsb-sm);
+}
+
+/* a hairline frame with the barcode inside it and no fill of its own — the
+   bars are the tone, which is the no-grey-fill rule applied to a canvas */
+.rsb-vibe__field {
+    display: block;
+    width: 100%;
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    background: transparent;
+}
+
+.rsb-vibe__now {
+    font-size: var(--rsb-data-size);
+    overflow-wrap: anywhere;
+}
+
+.rsb-vibe__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--rsb-sm);
+}
+
+/* the licence link is a button so the click can go through the host opener
+   rather than navigating Discord itself; this undoes the button chrome */
+.rsb-vibe__source {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-family: inherit;
+    font-size: var(--rsb-micro-size);
+    letter-spacing: var(--rsb-micro-track);
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+/* the scrub bar is .rsb-bar with a click target: hairline frame, stripe fill */
+.rsb-vibe__seek {
+    height: 10px;
+    border: var(--rsb-hairline) solid var(--rsb-rule);
+    background: transparent;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.rsb-vibe__fill {
+    display: block;
+    height: 100%;
+    background: var(--rsb-ink);
+    -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 5px);
+    mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 5px);
+    -webkit-mask-size: 5px 100%;
+    mask-size: 5px 100%;
+    /* one pattern period, so the drift loops seamlessly */
+    --rsb-drift: 5px;
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+}
+
+.rsb-vibe__time {
+    display: flex;
+    justify-content: space-between;
+}
+
+/* the footer form: no rule of its own, because it is already inside one */
+.rsb-vibe--compact {
+    border-top: 0;
+    padding-top: 0;
+    flex-direction: column;
+    gap: var(--rsb-xs);
+}
+
+
+/* -------------------------------------------------------------------------
+   motion
+
+   Off by default and gated on one class the settings toggle puts on <html>.
+   The whole vocabulary is one keyframe that offsets a mask; nothing moves
+   position and nothing reflows. Adding drift to someone else's client is a
+   larger imposition than adding it to your own page, which is why the default
+   here is off rather than on.
+   ------------------------------------------------------------------------- */
+
+/*
+ * One mask period per cycle, and never a fixed distance.
+ *
+ * This used to travel a flat -18px for every element, transliterated from the
+ * page, where the one animated chip happens to have a 17px period. Here the
+ * periods differ per element — 17px on a chip, 4px on a button tick, 5px on the
+ * progress fills, and 5px to 24px on a mark depending on its verdict tier — so
+ * a flat 18px ended each cycle part-way through the pattern and snapped back to
+ * the start. A barcode that jumps once per cycle does not read as drifting, it
+ * reads as broken, which is the whole reason this looked like nothing was
+ * moving.
+ *
+ * Travelling exactly `--rsb-drift` — which each element sets to its own period,
+ * the same value it gives `mask-size` — puts the pattern back where it started,
+ * so the loop is seamless and the duration now means something legible: one
+ * full pattern cycle per period.
+ */
+@keyframes rsb-mask-drift {
+    to {
+        -webkit-mask-position: calc(-1 * var(--rsb-drift, 18px)) 0;
+        mask-position: calc(-1 * var(--rsb-drift, 18px)) 0;
+    }
+}
+
+/*
+ * Every chip, not only the ones in a node header.
+ *
+ * This selector used to be `.rsb-node__hd .rsb-chip`, transliterated from the
+ * page's own `html.motion .node__hd .chip` — but on the page a chip only ever
+ * appears in a node header, so the qualifier described where chips were rather
+ * than which of them may move. Here there is a second one, the identity band's
+ * `.rsb-id__chip` in the report modal, and it sat still beside three drifting
+ * neighbours. `Chip` IS the ornament primitive: it is aria-hidden and carries
+ * no content, so every instance of it is drift-eligible by construction and the
+ * qualifier only created a way to get this wrong again.
+ */
+html.rsb-motion .rsb-chip {
+    animation: rsb-mask-drift 2.8s linear infinite;
+}
+
+html.rsb-motion .rsb-meter {
+    animation: rsb-mask-drift 4.2s linear infinite;
+}
+
+html.rsb-motion .rsb-bar__fill {
+    animation: rsb-mask-drift 1.9s linear infinite;
+}
+
+/* the barcode field's own animation is the audio, and it is already gated in
+   JS on the motion setting and prefers-reduced-motion — only the stripe fill
+   takes the shared drift, and only under the same gate as everything else */
+html.rsb-motion .rsb-vibe__fill {
+    animation: rsb-mask-drift 1.9s linear infinite;
+}
+
+/*
+ * The decorator drifts too.
+ *
+ * This used to be excluded on the grounds that a verdict mark is evidence
+ * rather than ornament, and DESIGN.md's rule is drift across ornament and never
+ * across content. The exclusion is dropped at the operator's request, and the
+ * reasoning it rested on was thinner than it looked: the mark carries no
+ * characters, its meaning is in its hue and duty cycle, and the drift offsets a
+ * mask rather than moving the element — so nothing a reader reads is in motion
+ * and nothing reflows. The whole thing is still behind one gate they can clear,
+ * which is the guarantee the motion rules actually make.
+ *
+ * The slowest period in the set, deliberately: a member list can hold hundreds
+ * of these at once, where every other drifting element appears once or twice on
+ * a surface.
+ */
+html.rsb-motion .rsb-mark {
+    animation: rsb-mask-drift 5.6s linear infinite;
+}
+
+/* the button tick, the page's own third animation (index.html:501) */
+html.rsb-motion .rsb-tick {
+    animation: rsb-mask-drift 1.9s linear infinite;
+}
+
+/*
+ * A pending mark or meter has no mask to offset — it is a hairline outline
+ * whose whole point is that nothing has been said yet — so there is nothing for
+ * the drift to move, and it is left out rather than given an animation that
+ * would compute to nothing.
+ */
+
+@media (prefers-reduced-motion: reduce) {
+    .rsb,
+    .rsb *,
+    .rsb *::before,
+    .rsb *::after {
+        animation: none !important;
+        transition: none !important;
+    }
+}
